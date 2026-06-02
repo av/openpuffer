@@ -1,0 +1,23 @@
+# project
+
+- project is set up and ready for development
+
+# product
+- project name is openpuffer @draft
+- openpuffer is a turbopuffer-compatible vector and full-text search service @draft
+
+# architecture
+- deployable as a single static binary with no required sidecar services @draft
+- server process holds no durable local state; all persistence uses S3-compatible object storage @draft
+- horizontal scaling works by running multiple stateless instances against the same bucket @draft
+
+# search
+- supports approximate nearest-neighbor vector search over embedding attributes @draft
+- supports BM25-style full-text search over text attributes @draft
+- supports hybrid queries combining vector and full-text ranking @draft
+
+# storage
+- connects to S3 backends via configurable endpoint bucket and credentials @draft
+
+# api
+- exposes an HTTP API for namespace upsert delete vector query FTS query and hybrid query @draft
