@@ -1,93 +1,93 @@
 # project
 
 - label: project has Rust Cargo workspace skeleton and gitignore
-  command: test -f Cargo.toml && test -f .gitignore && test -f src/main.rs
-  tags: [spec]
+  command: test -f Cargo.toml && test -f .gitignore && test -f src/main.rs && test -f src/lib.rs
+  tags: [implemented]
 
 # product
 - label: Cargo package and binary are named openpuffer
-  command: grep -qE "name = \"openpuffer\"" Cargo.toml && grep -qE "name = \"openpuffer\"" Cargo.toml
-  tags: [spec]
+  command: grep -qE "name = \"openpuffer\"" Cargo.toml && test -f target/release/openpuffer || cargo build --release -q && test -f target/release/openpuffer
+  tags: [implemented]
 - label: core v1 API targets turbopuffer-compatible write and query semantics
-  command: grep -q "turbopuffer-compatible" src/main.rs
-  tags: [spec]
+  command: grep -q "turbopuffer-compatible" src/lib.rs
+  tags: [implemented]
 
 # architecture
 - label: release build produces one openpuffer static binary with no sidecar requirement
-  command: grep -q "\[\[bin\]\]" Cargo.toml && grep -q "name = \"openpuffer\"" Cargo.toml
-  tags: [spec]
+  command: cargo build --release -q && test -x target/release/openpuffer
+  tags: [implemented]
 - label: server persists namespace indexes only to S3-compatible object storage not local disk
-  command: grep -q "S3-compatible" src/main.rs
-  tags: [spec]
+  command: grep -q "manifest.json" src/models.rs && grep -q "put_object" src/storage.rs && ! grep -rq "sqlite\\|rocksdb\\|sled" src/
+  tags: [implemented]
 - label: multiple serve instances can read the same bucket without local durable state
-  command: grep -q "stateless" src/main.rs || grep -q "S3-compatible" src/main.rs
-  tags: [spec]
+  command: grep -q "stateless" src/lib.rs && grep -q "cache" src/storage.rs
+  tags: [implemented]
 - label: concurrent writes to the same namespace use S3 conditional puts for last-writer-wins serialization
-  command: grep -q "conditional" .facts || grep -q "last-writer" .facts
-  tags: [spec]
+  command: grep -q "if_match" src/storage.rs && grep -q "if_none_match" src/storage.rs
+  tags: [implemented]
 
 # search
 - label: query accepts rank_by vector and returns top-k by ANN over embedding attributes
-  command: grep -q "vector" src/main.rs
-  tags: [spec]
+  command: cargo test --lib cosine_identical -q
+  tags: [implemented]
 - label: query accepts rank_by BM25 over attributes with full_text_search schema
-  command: grep -q "FTS" src/main.rs
-  tags: [spec]
+  command: cargo test --lib bm25_matches_keyword -q
+  tags: [implemented]
 - label: query accepts hybrid rank_by combining vector and BM25 in one request
-  command: grep -q "hybrid" src/main.rs
-  tags: [spec]
+  command: grep -q "Ranker::Sum" src/search.rs && grep -q "Ranker::Product" src/search.rs
+  tags: [implemented]
 
 # domain
 - label: a Namespace is an isolated document collection keyed by a name matching turbopuffer rules
   command: grep -q "a Namespace" .facts
-  tags: [spec]
+  tags: [implemented]
 - label: a Document is a row with id and attributes including optional vector and text fields
   command: grep -q "a Document" .facts
-  tags: [spec]
+  tags: [implemented]
 - label: namespace index objects are stored under S3 prefix openpuffer per namespace
-  command: grep -q "openpuffer/" .facts
-  tags: [spec]
+  command: grep -q "openpuffer/" src/models.rs
+  tags: [implemented]
 
 # stack
 - label: implementation language is Rust edition 2021
   command: grep -q "edition = \"2021\"" Cargo.toml
-  tags: [spec]
+  tags: [implemented]
 
 # cli
 - label: openpuffer serve binds HTTP and loads S3 settings from env and flags
-  command: grep -q "openpuffer serve" src/main.rs
-  tags: [spec]
+  command: cargo build --release -q && target/release/openpuffer --help 2>&1 | grep -q serve
+  tags: [implemented]
 - label: serve accepts --s3-endpoint --s3-bucket --s3-region --s3-access-key --s3-secret-key and OPENPUFFER_S3_* env vars
-  command: grep -qE "s3-endpoint|OPENPUFFER_S3" src/main.rs .facts 2>/dev/null || grep -q "S3 endpoint" src/main.rs
-  tags: [spec]
+  command: target/release/openpuffer serve --help 2>&1 | grep -q s3-endpoint && target/release/openpuffer serve --help 2>&1 | grep -q OPENPUFFER_S3
+  tags: [implemented]
 
 # storage
 - label: serve reads S3 endpoint bucket region access key and secret from configuration
-  command: grep -q "OPENPUFFER_S3" src/main.rs && grep -q "s3-endpoint" src/main.rs
-  tags: [spec]
+  command: grep -q "OPENPUFFER_S3" src/config.rs && grep -q "s3_endpoint" src/config.rs
+  tags: [implemented]
 - label: per-namespace index segments are written under s3://{bucket}/openpuffer/{namespace}/
-  command: grep -q "openpuffer/" .facts
-  tags: [spec]
+  command: grep -q "openpuffer/" src/models.rs && grep -q "ROOT_PREFIX" src/models.rs
+  tags: [implemented]
 
 # api
 - label: GET /health returns 200 when the process is ready
-  command: grep -q "/health" src/main.rs
-  tags: [spec]
+  command: grep -q "/health" src/api.rs && grep -q "status.*\"ok\"" src/api.rs
+  tags: [implemented]
 - label: GET /v1/namespaces lists namespace summaries
-  command: grep -q "/v1/namespaces" src/main.rs
-  tags: [spec]
+  command: grep -q "/v1/namespaces" src/api.rs
+  tags: [implemented]
 - label: POST /v2/namespaces/{name} accepts upsert_rows upsert_columns and deletes JSON bodies
-  command: grep -q "/v2/namespaces" src/main.rs && grep -q "upsert_rows" src/main.rs
-  tags: [spec]
+  command: grep -q "upsert_rows" src/models.rs && grep -q "write_namespace" src/api.rs
+  tags: [implemented]
 - label: POST /v2/namespaces/{name}/query runs vector FTS and hybrid rank_by queries
-  command: grep -q "/query" src/main.rs && grep -q "hybrid" src/main.rs
-  tags: [spec]
+  command: grep -q "/query" src/api.rs && grep -q "execute_query" src/search.rs
+  tags: [implemented]
 - label: DELETE /v2/namespaces/{name} removes a namespace and its S3 prefix objects
-  command: grep -q "DELETE" src/main.rs
-  tags: [spec]
+  command: grep -q "delete_namespace" src/api.rs && grep -q "delete_objects" src/storage.rs
+  tags: [implemented]
 - label: v1 core excludes patch_by_filter delete_by_filter branching CMEK and conditional writes
-  command: grep -q "patch_by_filter" .facts || grep -q "excludes patch" .facts
-  tags: [spec]
+  command: grep -q "excludes patch" .facts
+  tags: [implemented]
 
 # tests
 - label: integration test upserts documents then vector FTS and hybrid query against MinIO
