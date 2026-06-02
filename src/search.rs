@@ -18,6 +18,12 @@ enum Ranker {
 }
 
 pub fn execute_query(docs: &HashMap<String, Document>, req: &QueryRequest) -> Result<QueryResponse> {
+    if let Some(filters) = &req.filters {
+        if !filters.is_null() {
+            bail!("filters are not supported in v1");
+        }
+    }
+
     let top_k = req.top_k.unwrap_or(10) as usize;
     let ranker = parse_rank_by(&req.rank_by)?;
     let mut scored: Vec<(String, f64)> = Vec::new();
@@ -32,15 +38,20 @@ pub fn execute_query(docs: &HashMap<String, Document>, req: &QueryRequest) -> Re
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k);
 
-    let include_all = req.include_attributes.is_none();
+    let include_attrs = match &req.include_attributes {
+        None => true,
+        Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        Some(_) => true,
+    };
     let rows = scored
         .into_iter()
         .map(|(id, score)| {
             let doc = docs.get(&id);
-            let attributes = if include_all {
+            let attributes = if include_attrs {
                 doc.map(|d| d.attributes.clone())
             } else {
-                doc.map(|d| d.attributes.clone())
+                None
             };
             QueryRow {
                 id,
@@ -212,6 +223,7 @@ pub fn bm25_score(document: &str, query: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{Document, QueryRequest};
 
     #[test]
     fn cosine_identical() {
@@ -223,5 +235,32 @@ mod tests {
     fn bm25_matches_keyword() {
         let s = bm25_score("hello world foo", "hello");
         assert!(s > 0.0);
+    }
+
+    #[test]
+    fn include_attributes_false_omits_attrs() {
+        let mut docs = HashMap::new();
+        docs.insert(
+            "a".into(),
+            Document {
+                id: "a".into(),
+                attributes: [("text".into(), Value::String("hi".into()))]
+                    .into_iter()
+                    .collect(),
+            },
+        );
+        let req = QueryRequest {
+            rank_by: Value::Array(vec![
+                Value::String("BM25".into()),
+                Value::String("text".into()),
+                Value::String("hi".into()),
+            ]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: Some(Value::Bool(false)),
+        };
+        let resp = execute_query(&docs, &req).unwrap();
+        assert_eq!(resp.rows.len(), 1);
+        assert!(resp.rows[0].attributes.is_none());
     }
 }

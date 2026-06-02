@@ -1,7 +1,9 @@
 use crate::config::AppConfig;
 use crate::models::{
-    Document, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest, WriteRequest,
+    validate_doc_id, Document, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest,
+    WriteRequest,
 };
+use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
 use axum::{
@@ -45,11 +47,7 @@ async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
         }
         Err(e) => {
             error!("list namespaces: {e:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            storage_error_response(e)
         }
     }
 }
@@ -61,10 +59,18 @@ async fn write_namespace(
 ) -> impl IntoResponse {
     let mut upserts = Vec::new();
     for row in body.upsert_rows {
+        if let Err(msg) = validate_doc_id(&row.id) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+        }
         upserts.push(Document {
             id: row.id,
             attributes: row.attributes,
         });
+    }
+    for id in &body.deletes {
+        if let Err(msg) = validate_doc_id(id) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+        }
     }
 
     if let Some(cols) = body.upsert_columns {
@@ -74,7 +80,8 @@ async fn write_namespace(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({"error": err})),
-                );
+                )
+                    .into_response();
             }
         }
     }
@@ -87,13 +94,11 @@ async fn write_namespace(
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok", "namespace": name})),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             error!("write namespace {name}: {e:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
+            storage_error_response(e)
         }
     }
 }
@@ -126,6 +131,9 @@ fn apply_upsert_columns(
             .as_str()
             .ok_or_else(|| "id values must be strings".to_string())?
             .to_string();
+        if let Err(msg) = validate_doc_id(&id) {
+            return Err(msg);
+        }
         let mut attrs = std::collections::HashMap::new();
         for (key, values) in obj {
             if key == "id" {
@@ -156,11 +164,7 @@ async fn query_namespace(
         },
         Err(e) => {
             error!("query load {name}: {e:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            storage_error_response(e)
         }
     }
 }
@@ -173,13 +177,38 @@ async fn delete_namespace(
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "deleted", "namespace": name})),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             error!("delete namespace {name}: {e:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
+            if e.to_string().contains("namespace not found") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "namespace not found"})),
+                )
+                    .into_response();
+            }
+            storage_error_response(e)
         }
     }
+}
+
+fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {
+    let err: anyhow::Error = e.into();
+    let (status, message) = match s3_error_hint(&err) {
+        Some("bucket") => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "S3 bucket not found".to_string(),
+        ),
+        Some("invalid_object_name") => (
+            StatusCode::BAD_REQUEST,
+            "document id is not valid for object storage".to_string(),
+        ),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+    (
+        status,
+        Json(serde_json::json!({"error": message})),
+    )
+        .into_response()
 }

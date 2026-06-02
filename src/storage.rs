@@ -10,6 +10,18 @@ use tokio::sync::RwLock;
 
 const MANIFEST_RETRIES: u32 = 8;
 
+/// Classify common S3 API failures for HTTP mapping.
+pub fn s3_error_hint(err: &anyhow::Error) -> Option<&'static str> {
+    let msg = format!("{err:#}");
+    if msg.contains("NoSuchBucket") {
+        return Some("bucket");
+    }
+    if msg.contains("XMinioInvalidObjectName") || msg.contains("InvalidObjectName") {
+        return Some("invalid_object_name");
+    }
+    None
+}
+
 pub struct Storage {
     client: Client,
     bucket: String,
@@ -156,6 +168,8 @@ impl Storage {
                 let service = e.into_service_error();
                 if service.is_no_such_key() {
                     Ok(None)
+                } else if service.meta().code() == Some("NoSuchBucket") {
+                    Err(anyhow!("S3 bucket not found"))
                 } else {
                     Err(anyhow!("get manifest: {service}"))
                 }
@@ -276,6 +290,9 @@ impl Storage {
     }
 
     pub async fn delete_namespace(&self, name: &str) -> Result<()> {
+        let manifest_key = models::manifest_key(name);
+        let had_manifest = self.get_manifest(&manifest_key).await?.is_some();
+
         let prefix = models::namespace_prefix(name);
         let mut keys = Vec::new();
         let mut token: Option<String> = None;
@@ -298,6 +315,10 @@ impl Storage {
             if token.is_none() {
                 break;
             }
+        }
+
+        if keys.is_empty() && !had_manifest {
+            return Err(anyhow!("namespace not found"));
         }
 
         for chunk in keys.chunks(1000) {

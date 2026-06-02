@@ -4,6 +4,26 @@ use std::collections::HashMap;
 
 pub const ROOT_PREFIX: &str = "openpuffer/";
 
+/// Max length for a document id used as a single S3 path segment (MinIO/S3 limit is 255).
+pub const MAX_DOC_ID_BYTES: usize = 255;
+
+/// Validate document id before using it in an object key.
+pub fn validate_doc_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("document id must not be empty".into());
+    }
+    if id.len() > MAX_DOC_ID_BYTES {
+        return Err(format!(
+            "document id exceeds maximum length of {} bytes",
+            MAX_DOC_ID_BYTES
+        ));
+    }
+    if id.contains('/') || id.contains('\\') || id.contains('\0') {
+        return Err("document id must not contain path separators or null bytes".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Manifest {
     pub doc_ids: Vec<String>,
@@ -85,4 +105,15 @@ pub fn manifest_key(name: &str) -> String {
 
 pub fn doc_key(name: &str, id: &str) -> String {
     format!("{ROOT_PREFIX}{name}/docs/{id}.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_long_ids() {
+        let id = "x".repeat(MAX_DOC_ID_BYTES + 1);
+        assert!(validate_doc_id(&id).is_err());
+    }
 }
