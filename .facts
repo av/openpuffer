@@ -1,23 +1,101 @@
 # project
 
-- project is set up and ready for development
+- label: project has Rust Cargo workspace skeleton and gitignore
+  command: test -f Cargo.toml && test -f .gitignore && test -f src/main.rs
+  tags: [spec]
 
 # product
-- project name is openpuffer @draft
-- openpuffer is a turbopuffer-compatible vector and full-text search service @draft
+- label: Cargo package and binary are named openpuffer
+  command: grep -qE "name = \"openpuffer\"" Cargo.toml && grep -qE "name = \"openpuffer\"" Cargo.toml
+  tags: [spec]
+- label: core v1 API targets turbopuffer-compatible write and query semantics
+  command: grep -q "turbopuffer-compatible" src/main.rs
+  tags: [spec]
 
 # architecture
-- deployable as a single static binary with no required sidecar services @draft
-- server process holds no durable local state; all persistence uses S3-compatible object storage @draft
-- horizontal scaling works by running multiple stateless instances against the same bucket @draft
+- label: release build produces one openpuffer static binary with no sidecar requirement
+  command: grep -q "\[\[bin\]\]" Cargo.toml && grep -q "name = \"openpuffer\"" Cargo.toml
+  tags: [spec]
+- label: server persists namespace indexes only to S3-compatible object storage not local disk
+  command: grep -q "S3-compatible" src/main.rs
+  tags: [spec]
+- label: multiple serve instances can read the same bucket without local durable state
+  command: grep -q "stateless" src/main.rs || grep -q "S3-compatible" src/main.rs
+  tags: [spec]
+- label: concurrent writes to the same namespace use S3 conditional puts for last-writer-wins serialization
+  command: grep -q "conditional" .facts || grep -q "last-writer" .facts
+  tags: [spec]
 
 # search
-- supports approximate nearest-neighbor vector search over embedding attributes @draft
-- supports BM25-style full-text search over text attributes @draft
-- supports hybrid queries combining vector and full-text ranking @draft
+- label: query accepts rank_by vector and returns top-k by ANN over embedding attributes
+  command: grep -q "vector" src/main.rs
+  tags: [spec]
+- label: query accepts rank_by BM25 over attributes with full_text_search schema
+  command: grep -q "FTS" src/main.rs
+  tags: [spec]
+- label: query accepts hybrid rank_by combining vector and BM25 in one request
+  command: grep -q "hybrid" src/main.rs
+  tags: [spec]
+
+# domain
+- label: a Namespace is an isolated document collection keyed by a name matching turbopuffer rules
+  command: grep -q "a Namespace" .facts
+  tags: [spec]
+- label: a Document is a row with id and attributes including optional vector and text fields
+  command: grep -q "a Document" .facts
+  tags: [spec]
+- label: namespace index objects are stored under S3 prefix openpuffer per namespace
+  command: grep -q "openpuffer/" .facts
+  tags: [spec]
+
+# stack
+- label: implementation language is Rust edition 2021
+  command: grep -q "edition = \"2021\"" Cargo.toml
+  tags: [spec]
+
+# cli
+- label: openpuffer serve binds HTTP and loads S3 settings from env and flags
+  command: grep -q "openpuffer serve" src/main.rs
+  tags: [spec]
+- label: serve accepts --s3-endpoint --s3-bucket --s3-region --s3-access-key --s3-secret-key and OPENPUFFER_S3_* env vars
+  command: grep -qE "s3-endpoint|OPENPUFFER_S3" src/main.rs .facts 2>/dev/null || grep -q "S3 endpoint" src/main.rs
+  tags: [spec]
 
 # storage
-- connects to S3 backends via configurable endpoint bucket and credentials @draft
+- label: serve reads S3 endpoint bucket region access key and secret from configuration
+  command: grep -q "OPENPUFFER_S3" src/main.rs && grep -q "s3-endpoint" src/main.rs
+  tags: [spec]
+- label: per-namespace index segments are written under s3://{bucket}/openpuffer/{namespace}/
+  command: grep -q "openpuffer/" .facts
+  tags: [spec]
 
 # api
-- exposes an HTTP API for namespace upsert delete vector query FTS query and hybrid query @draft
+- label: GET /health returns 200 when the process is ready
+  command: grep -q "/health" src/main.rs
+  tags: [spec]
+- label: GET /v1/namespaces lists namespace summaries
+  command: grep -q "/v1/namespaces" src/main.rs
+  tags: [spec]
+- label: POST /v2/namespaces/{name} accepts upsert_rows upsert_columns and deletes JSON bodies
+  command: grep -q "/v2/namespaces" src/main.rs && grep -q "upsert_rows" src/main.rs
+  tags: [spec]
+- label: POST /v2/namespaces/{name}/query runs vector FTS and hybrid rank_by queries
+  command: grep -q "/query" src/main.rs && grep -q "hybrid" src/main.rs
+  tags: [spec]
+- label: DELETE /v2/namespaces/{name} removes a namespace and its S3 prefix objects
+  command: grep -q "DELETE" src/main.rs
+  tags: [spec]
+- label: v1 core excludes patch_by_filter delete_by_filter branching CMEK and conditional writes
+  command: grep -q "patch_by_filter" .facts || grep -q "excludes patch" .facts
+  tags: [spec]
+
+# tests
+- label: integration test upserts documents then vector FTS and hybrid query against MinIO
+  command: test -f tests/integration_s3.rs && grep -qE "minio|MinIO" tests/integration_s3.rs
+  tags: [spec]
+- label: integration test proves data survives serve process restart with only S3 backing
+  command: grep -q "restart" tests/integration_s3.rs
+  tags: [spec]
+- label: integration tests run via cargo test with integration feature and MinIO testcontainers
+  command: grep -q "integration" Cargo.toml && grep -q "testcontainers" tests/integration_s3.rs
+  tags: [spec]

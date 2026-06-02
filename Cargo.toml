@@ -1,0 +1,21 @@
+[package]
+name = "openpuffer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Object-storage-backed vector and full-text search (turbopuffer-compatible API)"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "openpuffer"
+path = "src/main.rs"
+
+[dependencies]
+# Implementation dependencies added in build phase.
+
+[dev-dependencies]
+# testcontainers / MinIO client added when integration tests are implemented.
+
+[features]
+default = []
+integration = []
