@@ -91,11 +91,11 @@
 
 # tests
 - label: integration test upserts documents then vector FTS and hybrid query against MinIO
-  command: test -f tests/integration_s3.rs && grep -qE "minio|MinIO" tests/integration_s3.rs
-  tags: [spec]
+  command: cargo test -F integration --test integration_s3
+  tags: [implemented]
 - label: integration test proves data survives serve process restart with only S3 backing
-  command: grep -q "restart" tests/integration_s3.rs
-  tags: [spec]
+  command: cargo test -F integration --test integration_s3
+  tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
-  command: grep -q "integration" Cargo.toml && grep -q "testcontainers" tests/integration_s3.rs
-  tags: [spec]
+  command: cargo test -F integration --test integration_s3
+  tags: [implemented]

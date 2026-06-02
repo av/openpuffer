@@ -14,6 +14,11 @@ path = "src/lib.rs"
 name = "openpuffer"
 path = "src/main.rs"
 
+[[test]]
+name = "integration_s3"
+path = "tests/integration_s3.rs"
+required-features = ["integration"]
+
 [dependencies]
 anyhow = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
@@ -32,3 +37,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 integration = []
+
+[dev-dependencies]
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["minio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
