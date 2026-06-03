@@ -1,5 +1,7 @@
 # openpuffer
 
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
+
 Stateless vector and full-text search server backed by **S3-compatible object storage**. HTTP API is compatible with [turbopuffer](https://turbopuffer.com/docs) core write/query paths; the **on-disk architecture** follows [turbopuffer’s WAL + index model](https://turbopuffer.com/docs/architecture), not a per-document JSON store.
 
 ## How it compares to turbopuffer
