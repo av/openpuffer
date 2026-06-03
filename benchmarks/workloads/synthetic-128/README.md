@@ -43,8 +43,10 @@ Use [`scripts/ingest-large.sh`](../../../scripts/ingest-large.sh) (A2): generate
 export OPENPUFFER_S3_ENDPOINT=... OPENPUFFER_S3_BUCKET=... OPENPUFFER_S3_ACCESS_KEY=... OPENPUFFER_S3_SECRET_KEY=...
 ./scripts/ingest-large.sh --tier l1
 
-# Dry-run (toolchain + plan only)
+# Dry-run (toolchain + plan only; no S3)
 ./scripts/ingest-large.sh --dry-run
+./scripts/ingest-large.sh --tier l2 --dry-run
+./scripts/ingest-large.sh --tier l3 --dry-run
 
 # Re-use pre-generated batch dir
 OPENPUFFER_INGEST_BATCH_DIR=/tmp/synthetic-100k ./scripts/ingest-large.sh
@@ -66,10 +68,17 @@ done
 | Tier | Docs | Committed manifest dir |
 |------|------|------------------------|
 | L1 | 100k | `l1-100k/` |
-| L2 | 250k–500k | generate locally |
-| L3 | 1M | generate locally |
+| L2 | 500k | `l2-500k/` |
+| L3 | 1M | `l3-1m/` |
 
-**Default comparison tier: L1 (100k).**
+Manifest + `queries.json` only (no `batches/` in git). Regenerate with `generate_synthetic.py` if schema changes.
+
+**Default comparison tier: L1 (100k).** L2/L3 for stress and 1M cold SLO runs.
+
+```bash
+./scripts/bench-large.sh --tier l2 --dry-run
+./scripts/bench-large.sh --tier l3 --dry-run
+```
 
 ## Correctness gates (G2)
 

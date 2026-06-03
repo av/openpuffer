@@ -492,7 +492,7 @@ A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program �
 - [x] Phase 4/5/6 operator runbook in [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) (metrics matrix, cold protocol, debugging, pass/fail vs tpuf).
 - [x] Harness scripts A1–A5: `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `tpuf_driver/run_benchmark.py`, `render-report.sh`.
 - [ ] MinIO: full `cargo test -F bench` + `integration` green on main.
-- [ ] Workload manifest committed; seed documented.
+- [x] Workload manifests committed for L1–L3 (`synthetic-128/{l1-100k,l2-500k,l3-1m}/`; seed 42 in manifest).
 - [ ] openpuffer AWS: ingest + index catch-up + `preferred_ann_version == 3`.
 - [ ] `benchmarks/results/large-aws-<tier>.json` committed or attached to report PR.
 - [ ] turbopuffer: same tier ingested; `tpuf-<tier>.json` captured.

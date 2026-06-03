@@ -121,12 +121,10 @@ def test_cli_writes_manifest_and_queries(tmp_path: Path) -> None:
     assert len(queries["vector_queries"]) == 50
 
 
-def test_committed_l1_manifest_matches_generator() -> None:
-    """Guardrail: committed l1-100k manifest stays in sync with generator defaults."""
-    l1 = WORKLOADS_DIR / "synthetic-128" / "l1-100k"
-    if not (l1 / "manifest.json").is_file():
-        pytest.skip("l1-100k manifest not generated yet")
-    committed = json.loads((l1 / "manifest.json").read_text())
+def _assert_committed_manifest_matches_generator(tier_dir: Path) -> None:
+    if not (tier_dir / "manifest.json").is_file():
+        pytest.skip(f"{tier_dir.name} manifest not generated yet")
+    committed = json.loads((tier_dir / "manifest.json").read_text())
     cfg = gen.WorkloadConfig(
         seed=committed["seed"],
         num_docs=committed["num_docs"],
@@ -136,3 +134,21 @@ def test_committed_l1_manifest_matches_generator() -> None:
         embedding_fn=committed["embedding_fn"],
     )
     assert gen.manifest_dict(cfg) == committed
+    queries = json.loads((tier_dir / "queries.json").read_text())
+    assert queries == gen.queries_dict(cfg)
+
+
+@pytest.mark.parametrize(
+    "subdir,num_docs",
+    [
+        ("l1-100k", 100_000),
+        ("l2-500k", 500_000),
+        ("l3-1m", 1_000_000),
+    ],
+)
+def test_committed_tier_manifest_matches_generator(subdir: str, num_docs: int) -> None:
+    """Guardrail: committed synthetic-128 tier manifests stay in sync with generator."""
+    tier_dir = WORKLOADS_DIR / "synthetic-128" / subdir
+    _assert_committed_manifest_matches_generator(tier_dir)
+    committed = json.loads((tier_dir / "manifest.json").read_text())
+    assert committed["num_docs"] == num_docs
