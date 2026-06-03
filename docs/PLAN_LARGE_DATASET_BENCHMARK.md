@@ -504,6 +504,7 @@ Ordered work to make this plan one-command reproducible:
 | [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) | MinIO JSON **shape** only (`environment=minio`) | `large-aws-l1-schema-minio.example.json` |
 | [`run-id-overlap-spotcheck.sh`](../scripts/run-id-overlap-spotcheck.sh) | Phase 3.3 cross-system id overlap | `id-overlap-{tier}.json` |
 | [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | G2 MinIO test subset | (no comparison JSON) |
+| [`run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) | G2 → G3 → G4 → 3.3 → G5 dry-run (optional `--warm`, `--measured-report`) | All tier artifacts + report skeleton |
 
 A1–A6 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
 

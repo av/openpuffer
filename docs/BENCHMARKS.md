@@ -38,6 +38,19 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 
 ### End-to-end operator flow
 
+**One command** (chains G2 → G3 → G4 → id-overlap → G5 report dry-run; documents AWS + tpuf env):
+
+```bash
+./scripts/run-large-benchmark-program.sh --dry-run          # plan + fixture report (no creds)
+./scripts/run-large-benchmark-program.sh --tier l1          # live when OPENPUFFER_S3_* + TURBOPUFFER_API_KEY set
+./scripts/run-large-benchmark-program.sh --tier l1 --warm   # adds warm/filter/hybrid secondary on both sides
+./scripts/run-large-benchmark-program.sh --preflight-only     # G2 + AWS/tpuf preflight only
+./scripts/run-large-benchmark-program.sh --aws-only --tier l1 # G3 only
+./scripts/run-large-benchmark-program.sh --measured-report  # render-report without --dry-run (after JSON committed)
+```
+
+See [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) `--help` for flags (`--skip-g2`, `--full-g2`, `--skip-tpuf`, etc.).
+
 | Step | Phase | Command | Output |
 |------|-------|---------|--------|
 | 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
@@ -89,6 +102,7 @@ Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.s
 **Dry-run** (no credentials):
 
 ```bash
+./scripts/run-large-benchmark-program.sh --dry-run --tier l1
 ./scripts/run-aws-large-benchmark.sh --dry-run
 ./scripts/run-tpuf-large-benchmark.sh --dry-run
 ./scripts/ingest-large.sh --tier l1 --dry-run
