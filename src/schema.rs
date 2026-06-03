@@ -91,6 +91,24 @@ fn field_is_vector_type_str(t: &str) -> bool {
     t.contains("f32") || t.contains("f16") || t.contains("vector") || t.contains("[]f")
 }
 
+/// Reject patch writes that touch vector-typed schema fields (turbopuffer returns 400).
+pub fn validate_patch_attributes(
+    attributes: &std::collections::HashMap<String, Value>,
+    schema: &Value,
+) -> Result<(), String> {
+    let Some(schema_obj) = schema.as_object() else {
+        return Ok(());
+    };
+    for key in attributes.keys() {
+        if let Some(spec) = schema_obj.get(key) {
+            if field_is_vector_spec(spec) {
+                return Err(format!("cannot patch vector field '{key}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn scalar_type_filterable(t: &str) -> bool {
     t.contains("string")
         || t.contains("bool")
@@ -136,5 +154,14 @@ mod tests {
     fn vector_shorthand() {
         assert!(field_is_vector_spec(&json!("[128]f32")));
         assert!(!field_filterable(&json!("[128]f32")));
+    }
+
+    #[test]
+    fn validate_patch_rejects_vector_field() {
+        let schema = json!({"embedding": "[3]f32", "text": {"type": "string"}});
+        let attrs = [("embedding".into(), json!([1.0, 0.0, 0.0]))].into();
+        assert!(validate_patch_attributes(&attrs, &schema).is_err());
+        let ok = [("text".into(), json!("hi"))].into();
+        assert!(validate_patch_attributes(&ok, &schema).is_ok());
     }
 }

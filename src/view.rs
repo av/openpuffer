@@ -110,13 +110,14 @@ mod tests {
                 attributes: [("k".into(), json!(1))].into(),
             }],
             vec![],
+            vec![],
         )
         .unwrap();
         view.apply_committed(1, &e1).unwrap();
         assert_eq!(view.last_applied_wal_seq, 1);
         assert!(view.docs.contains_key("a"));
 
-        let e2 = WalEntry::from_write(vec![], vec!["a".into()]).unwrap();
+        let e2 = WalEntry::from_write(vec![], vec![], vec!["a".into()]).unwrap();
         view.apply_committed(2, &e2).unwrap();
         assert_eq!(view.last_applied_wal_seq, 2);
         assert!(!view.docs.contains_key("a"));

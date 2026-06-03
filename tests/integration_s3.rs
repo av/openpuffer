@@ -25,6 +25,7 @@ const NAMESPACE: &str = "itest";
 const NAMESPACE_INCR: &str = "itest-incr";
 const NAMESPACE_WARM: &str = "itest-warm";
 const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
+const NAMESPACE_PATCH: &str = "itest-patch";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -781,5 +782,129 @@ async fn schema_on_write_and_delete_by_filter() {
     assert!(
         filter_ids.is_empty(),
         "deleted free-tier doc must not match filter query, got {filter_ids:?}"
+    );
+}
+
+/// patch_rows merges attributes in WAL; patched text is visible in FTS after indexing.
+#[tokio::test]
+async fn patch_rows_updates_fts_after_index() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!({
+            "schema": {
+                "text": {"type": "string", "full_text_search": true},
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [{
+                "id": "doc-patch",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "original keyword"
+                }
+            }]
+        }),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_PATCH, Duration::from_secs(30)).await;
+
+    let before = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!(["BM25", "text", "original"]),
+        None,
+    )
+    .await;
+    assert!(
+        before.contains(&"doc-patch".to_string()),
+        "FTS should find doc before patch, got {before:?}"
+    );
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!({
+            "patch_rows": [{
+                "id": "doc-patch",
+                "attributes": { "text": "patched keyword unique" }
+            }]
+        }),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_PATCH, Duration::from_secs(30)).await;
+
+    let after = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!(["BM25", "text", "patched"]),
+        None,
+    )
+    .await;
+    assert!(
+        after.contains(&"doc-patch".to_string()),
+        "FTS should find doc after patch, got {after:?}"
+    );
+
+    let stale = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!(["BM25", "text", "original"]),
+        None,
+    )
+    .await;
+    assert!(
+        !stale.contains(&"doc-patch".to_string()),
+        "old token should not match after text patch, got {stale:?}"
+    );
+
+    // Patches to missing ids are ignored (turbopuffer semantics).
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_PATCH,
+        json!({
+            "patch_rows": [{
+                "id": "no-such-doc",
+                "attributes": { "text": "ghost" }
+            }]
+        }),
+    )
+    .await;
+
+    // Vector fields cannot be patched.
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_PATCH
+        ))
+        .json(&json!({
+            "patch_rows": [{
+                "id": "doc-patch",
+                "attributes": { "embedding": [0.0, 1.0, 0.0] }
+            }]
+        }))
+        .send()
+        .await
+        .expect("patch vector request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "patching vector field must return 400: {}",
+        resp.text().await.unwrap_or_default()
     );
 }

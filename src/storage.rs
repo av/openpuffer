@@ -228,6 +228,7 @@ impl Storage {
         &self,
         namespace: &str,
         upserts: Vec<Document>,
+        patches: Vec<Document>,
         mut deletes: Vec<String>,
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
@@ -247,7 +248,7 @@ impl Storage {
 
         let committed = self
             .write_buffer
-            .write(namespace, upserts, deletes, schema_patch)
+            .write(namespace, upserts, patches, deletes, schema_patch)
             .await?;
 
         let mut views = self.views.lock().await;

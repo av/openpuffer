@@ -289,6 +289,9 @@ pub fn wal_touched_doc_ids(entries: &[crate::wal::WalEntry]) -> HashSet<String> 
         for u in &entry.upserts {
             ids.insert(u.id.clone());
         }
+        for p in &entry.patches {
+            ids.insert(p.id.clone());
+        }
     }
     ids
 }

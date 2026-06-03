@@ -38,6 +38,10 @@ pub struct WriteRequest {
     #[serde(default)]
     pub upsert_columns: Option<Value>,
     #[serde(default)]
+    pub patch_rows: Vec<PatchRow>,
+    #[serde(default)]
+    pub patch_columns: Option<Value>,
+    #[serde(default)]
     pub deletes: Vec<String>,
     /// turbopuffer schema hints (`full_text_search`, `filterable`, `[N]f32`, …).
     #[serde(default)]
@@ -49,6 +53,13 @@ pub struct WriteRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct UpsertRow {
+    pub id: String,
+    #[serde(default)]
+    pub attributes: HashMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchRow {
     pub id: String,
     #[serde(default)]
     pub attributes: HashMap<String, Value>,

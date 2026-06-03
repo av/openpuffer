@@ -46,6 +46,7 @@ pub struct CommittedBatch {
 
 struct BufferState {
     upserts: Vec<Document>,
+    patches: Vec<Document>,
     deletes: Vec<String>,
     schema_patch: Option<Value>,
     waiters: Vec<oneshot::Sender<Result<CommittedBatch>>>,
@@ -86,6 +87,7 @@ impl WriteBufferManager {
         &self,
         namespace: &str,
         upserts: Vec<Document>,
+        patches: Vec<Document>,
         deletes: Vec<String>,
         schema_patch: Option<Value>,
     ) -> Result<CommittedBatch> {
@@ -94,6 +96,7 @@ impl WriteBufferManager {
         let flush_now = {
             let mut st = buf.state.lock().await;
             st.upserts.extend(upserts);
+            st.patches.extend(patches);
             st.deletes.extend(deletes);
             if let Some(patch) = schema_patch {
                 st.schema_patch = Some(match st.schema_patch.take() {
@@ -102,7 +105,7 @@ impl WriteBufferManager {
                 });
             }
             st.waiters.push(tx);
-            let ops = st.upserts.len() + st.deletes.len();
+            let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
             let schema_only = ops == 0 && st.schema_patch.is_some();
             if ops >= self.config.max_batch_ops || schema_only {
                 true
@@ -150,6 +153,7 @@ impl WriteBufferManager {
                 Arc::new(NamespaceBuffer {
                     state: Mutex::new(BufferState {
                         upserts: Vec::new(),
+                        patches: Vec::new(),
                         deletes: Vec::new(),
                         schema_patch: None,
                         waiters: Vec::new(),
@@ -188,14 +192,19 @@ impl WriteBufferManager {
             return Ok(());
         };
 
-        let (upserts, deletes, schema_patch, waiters) = {
+        let (upserts, patches, deletes, schema_patch, waiters) = {
             let mut st = buf.state.lock().await;
-            if st.upserts.is_empty() && st.deletes.is_empty() && st.schema_patch.is_none() {
+            if st.upserts.is_empty()
+                && st.patches.is_empty()
+                && st.deletes.is_empty()
+                && st.schema_patch.is_none()
+            {
                 return Ok(());
             }
             let _ = st.timer.take();
             (
                 std::mem::take(&mut st.upserts),
+                std::mem::take(&mut st.patches),
                 std::mem::take(&mut st.deletes),
                 st.schema_patch.take(),
                 std::mem::take(&mut st.waiters),
@@ -203,14 +212,12 @@ impl WriteBufferManager {
         };
 
         let result: Result<CommittedBatch> = async {
-            let entry = WalEntry::from_write(upserts, deletes)?;
-            let docs = entry.clone().into_documents()?;
+            let entry = WalEntry::from_write(upserts, patches, deletes)?;
             let seq = append_wal(
                 &self.client,
                 &self.bucket,
                 namespace,
-                docs,
-                entry.deletes.clone(),
+                entry.clone(),
                 schema_patch.as_ref(),
             )
             .await?;
@@ -260,7 +267,7 @@ mod tests {
             });
         }
 
-        let entry = WalEntry::from_write(pending_upserts, pending_deletes).unwrap();
+        let entry = WalEntry::from_write(pending_upserts, vec![], pending_deletes).unwrap();
         assert_eq!(entry.upserts.len(), 3);
         assert!(entry.deletes.is_empty());
     }

@@ -10,6 +10,7 @@ use crate::index::fts::FtsSegment;
 use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
 use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
 use crate::namespace::{fetch_meta, replay_wal_entries};
+use crate::wal::{collect_index_delta, WalEntry};
 
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
@@ -49,14 +50,14 @@ pub async fn index_wal_range(
                 ..Default::default()
             });
 
-        let mut upserts: Vec<(String, crate::models::Document)> = Vec::new();
-        let mut deletes: Vec<String> = Vec::new();
-        for entry in &entries {
-            deletes.extend(entry.deletes.clone());
-            for doc in entry.clone().into_documents()? {
-                upserts.push((doc.id.clone(), doc));
-            }
-        }
+        let (upserts, deletes) = index_delta_from_wal_entries(
+            client,
+            bucket,
+            namespace,
+            meta.index_cursor,
+            &entries,
+        )
+        .await?;
         segment.apply_delta(&upserts, &deletes);
         segment.segment_id = to;
 
@@ -569,6 +570,30 @@ pub async fn load_vector_index_for_query(
         centroids,
         clusters,
     }))
+}
+
+async fn index_delta_from_wal_entries(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    index_cursor: u64,
+    entries: &[WalEntry],
+) -> Result<(Vec<(String, crate::models::Document)>, Vec<String>)> {
+    let has_patches = entries.iter().any(|e| !e.patches.is_empty());
+    if !has_patches {
+        let mut upserts = Vec::new();
+        let mut deletes = Vec::new();
+        for entry in entries {
+            deletes.extend(entry.deletes.clone());
+            for doc in entry.clone().into_documents()? {
+                upserts.push((doc.id.clone(), doc));
+            }
+        }
+        return Ok((upserts, deletes));
+    }
+
+    let mut baseline = docs_at_index_cursor(client, bucket, namespace, index_cursor).await?;
+    collect_index_delta(&mut baseline, entries)
 }
 
 /// Collect all documents up to `index_cursor` by replaying WAL (for vector rebuild / tests).

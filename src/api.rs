@@ -3,6 +3,7 @@ use crate::models::{
     validate_doc_id, Document, HealthResponse, NamespaceSummary,
     NamespacesResponse, QueryRequest, WriteRequest,
 };
+use crate::schema::{merge_schema, validate_patch_attributes};
 use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
@@ -156,7 +157,7 @@ async fn write_namespace(
     }
 
     if let Some(cols) = body.upsert_columns {
-        match apply_upsert_columns(&mut upserts, cols) {
+        match apply_column_batch(&mut upserts, cols, false) {
             Ok(()) => {}
             Err(err) => {
                 return (
@@ -168,11 +169,46 @@ async fn write_namespace(
         }
     }
 
+    let mut patches = Vec::new();
+    for row in body.patch_rows {
+        if let Err(msg) = validate_doc_id(&row.id) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+        }
+        patches.push(Document {
+            id: row.id,
+            attributes: row.attributes,
+        });
+    }
+    if let Some(cols) = body.patch_columns {
+        match apply_column_batch(&mut patches, cols, true) {
+            Ok(()) => {}
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": err})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let effective_schema = effective_write_schema(&state, &name, body.schema.as_ref()).await;
+    for patch in &patches {
+        if let Err(msg) = validate_patch_attributes(&patch.attributes, &effective_schema) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    }
+
     match state
         .storage
         .write_documents(
             &name,
             upserts,
+            patches,
             body.deletes,
             body.schema,
             body.delete_by_filter,
@@ -191,17 +227,44 @@ async fn write_namespace(
     }
 }
 
-fn apply_upsert_columns(
-    upserts: &mut Vec<Document>,
+async fn effective_write_schema(
+    state: &AppState,
+    namespace: &str,
+    request_schema: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let base = match crate::namespace::fetch_meta(
+        state.storage.client(),
+        state.storage.bucket(),
+        namespace,
+    )
+    .await
+    {
+        Ok(Some((meta, _))) => meta.schema,
+        _ => serde_json::json!({}),
+    };
+    match request_schema {
+        Some(patch) => merge_schema(&base, patch),
+        None => base,
+    }
+}
+
+fn apply_column_batch(
+    rows: &mut Vec<Document>,
     cols: serde_json::Value,
+    patch_mode: bool,
 ) -> Result<(), String> {
+    let col_label = if patch_mode {
+        "patch_columns"
+    } else {
+        "upsert_columns"
+    };
     let obj = cols
         .as_object()
-        .ok_or_else(|| "upsert_columns must be an object".to_string())?;
+        .ok_or_else(|| format!("{col_label} must be an object"))?;
     let id_col = obj
         .get("id")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| "upsert_columns requires id column".to_string())?;
+        .ok_or_else(|| format!("{col_label} requires id column"))?;
     let n = id_col.len();
     for (key, values) in obj {
         if key == "id" {
@@ -231,7 +294,7 @@ fn apply_upsert_columns(
                 attrs.insert(key.clone(), v.clone());
             }
         }
-        upserts.push(Document { id, attributes: attrs });
+        rows.push(Document { id, attributes: attrs });
     }
     Ok(())
 }

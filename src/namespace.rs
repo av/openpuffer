@@ -81,11 +81,9 @@ pub async fn append_wal(
     client: &Client,
     bucket: &str,
     namespace: &str,
-    upserts: Vec<Document>,
-    deletes: Vec<String>,
+    entry: WalEntry,
     schema_patch: Option<&Value>,
 ) -> Result<u64> {
-    let entry = WalEntry::from_write(upserts, deletes)?;
 
     for attempt in 0..META_RETRIES {
         let key = meta_key(namespace);
@@ -222,9 +220,10 @@ mod tests {
                 attributes: Default::default(),
             }],
             vec![],
+            vec![],
         )
         .unwrap();
-        let e2 = WalEntry::from_write(vec![], vec!["x".into()]).unwrap();
+        let e2 = WalEntry::from_write(vec![], vec![], vec!["x".into()]).unwrap();
 
         let mut docs = HashMap::new();
         apply_entry(&mut docs, &e1).unwrap();

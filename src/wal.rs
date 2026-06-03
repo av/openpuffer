@@ -4,10 +4,12 @@ use crate::models::Document;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-/// One committed WAL batch (upserts and deletes in a single object).
+/// One committed WAL batch (upserts, attribute patches, and deletes in a single object).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WalEntry {
     pub upserts: Vec<WalUpsert>,
+    #[serde(default)]
+    pub patches: Vec<WalPatch>,
     pub deletes: Vec<String>,
 }
 
@@ -18,32 +20,83 @@ pub struct WalUpsert {
     pub attributes: Vec<u8>,
 }
 
+/// Partial attribute merge for an existing document (ignored if id does not exist).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WalPatch {
+    pub id: String,
+    pub attributes: Vec<u8>,
+}
+
 impl WalEntry {
-    pub fn from_write(upserts: Vec<Document>, deletes: Vec<String>) -> Result<Self> {
+    pub fn from_write(
+        upserts: Vec<Document>,
+        patches: Vec<Document>,
+        deletes: Vec<String>,
+    ) -> Result<Self> {
         let upserts = upserts
             .into_iter()
-            .map(|doc| {
-                Ok(WalUpsert {
-                    id: doc.id,
-                    attributes: serde_json::to_vec(&doc.attributes).context("encode attributes")?,
-                })
-            })
+            .map(document_to_upsert)
             .collect::<Result<Vec<_>>>()?;
-        Ok(WalEntry { upserts, deletes })
+        let patches = patches
+            .into_iter()
+            .map(document_to_patch)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(WalEntry {
+            upserts,
+            patches,
+            deletes,
+        })
     }
 
     pub fn into_documents(self) -> Result<Vec<Document>> {
         self.upserts
             .into_iter()
-            .map(|u| {
+            .map(wal_upsert_to_document)
+            .collect()
+    }
+
+    pub fn patch_documents(&self) -> Result<Vec<Document>> {
+        self.patches
+            .iter()
+            .map(|p| {
                 let attributes: HashMap<String, serde_json::Value> =
-                    serde_json::from_slice(&u.attributes).context("decode attributes")?;
+                    serde_json::from_slice(&p.attributes).context("decode patch attributes")?;
                 Ok(Document {
-                    id: u.id,
+                    id: p.id.clone(),
                     attributes,
                 })
             })
             .collect()
+    }
+}
+
+fn document_to_upsert(doc: Document) -> Result<WalUpsert> {
+    Ok(WalUpsert {
+        id: doc.id,
+        attributes: serde_json::to_vec(&doc.attributes).context("encode attributes")?,
+    })
+}
+
+fn document_to_patch(doc: Document) -> Result<WalPatch> {
+    Ok(WalPatch {
+        id: doc.id,
+        attributes: serde_json::to_vec(&doc.attributes).context("encode patch attributes")?,
+    })
+}
+
+fn wal_upsert_to_document(u: WalUpsert) -> Result<Document> {
+    let attributes: HashMap<String, serde_json::Value> =
+        serde_json::from_slice(&u.attributes).context("decode attributes")?;
+    Ok(Document {
+        id: u.id,
+        attributes,
+    })
+}
+
+/// Shallow-merge `patch` attributes into `doc` (turbopuffer patch_rows semantics).
+pub fn merge_document_attributes(doc: &mut Document, patch: &Document) {
+    for (k, v) in &patch.attributes {
+        doc.attributes.insert(k.clone(), v.clone());
     }
 }
 
@@ -59,13 +112,44 @@ pub fn decode(bytes: &[u8]) -> Result<WalEntry> {
     bincode::deserialize(bytes).context("decode WalEntry")
 }
 
-/// Apply a WAL entry to an in-memory document map (last write wins per id).
+/// Build FTS/filter/vector `apply_delta` inputs from WAL batches against a doc map baseline.
+///
+/// `baseline` should reflect namespace state at `index_cursor` before the batch; each entry
+/// is applied in order so patches merge into existing documents.
+pub fn collect_index_delta(
+    baseline: &mut HashMap<String, Document>,
+    entries: &[WalEntry],
+) -> Result<(Vec<(String, Document)>, Vec<String>)> {
+    let mut upsert_map: HashMap<String, Document> = HashMap::new();
+    let mut deletes = Vec::new();
+    for entry in entries {
+        deletes.extend(entry.deletes.clone());
+        let upsert_ids: Vec<String> = entry.upserts.iter().map(|u| u.id.clone()).collect();
+        let patch_ids: Vec<String> = entry.patches.iter().map(|p| p.id.clone()).collect();
+        apply_entry(baseline, entry)?;
+        for id in upsert_ids.into_iter().chain(patch_ids) {
+            if let Some(doc) = baseline.get(&id) {
+                upsert_map.insert(id, doc.clone());
+            }
+        }
+    }
+    Ok((upsert_map.into_iter().collect(), deletes))
+}
+
+/// Apply a WAL entry to an in-memory document map.
+///
+/// Order: deletes → full upserts → attribute patches (patches to missing ids are ignored).
 pub fn apply_entry(docs: &mut HashMap<String, Document>, entry: &WalEntry) -> Result<()> {
     for id in &entry.deletes {
         docs.remove(id);
     }
     for doc in entry.clone().into_documents()? {
         docs.insert(doc.id.clone(), doc);
+    }
+    for patch in entry.patch_documents()? {
+        if let Some(existing) = docs.get_mut(&patch.id) {
+            merge_document_attributes(existing, &patch);
+        }
     }
     Ok(())
 }
@@ -84,6 +168,7 @@ mod tests {
                 id: "a".into(),
                 attributes: [("text".into(), json!("hello"))].into(),
             }],
+            vec![],
             vec!["b".into()],
         )
         .unwrap();
@@ -118,11 +203,72 @@ mod tests {
                 id: "new".into(),
                 attributes: Default::default(),
             }],
+            vec![],
             vec!["old".into()],
         )
         .unwrap();
         apply_entry(&mut docs, &entry).unwrap();
         assert!(!docs.contains_key("old"));
         assert!(docs.contains_key("new"));
+    }
+
+    #[test]
+    fn apply_entry_patch_merges_existing_ignores_missing() {
+        let mut docs = HashMap::new();
+        docs.insert(
+            "a".into(),
+            Document {
+                id: "a".into(),
+                attributes: [
+                    ("text".into(), json!("original")),
+                    ("tier".into(), json!("pro")),
+                ]
+                .into(),
+            },
+        );
+        let entry = WalEntry::from_write(
+            vec![],
+            vec![Document {
+                id: "a".into(),
+                attributes: [("text".into(), json!("patched"))].into(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        apply_entry(&mut docs, &entry).unwrap();
+        assert_eq!(docs["a"].attributes["text"], json!("patched"));
+        assert_eq!(docs["a"].attributes["tier"], json!("pro"));
+
+        let entry2 = WalEntry::from_write(
+            vec![],
+            vec![Document {
+                id: "missing".into(),
+                attributes: [("x".into(), json!(1))].into(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        apply_entry(&mut docs, &entry2).unwrap();
+        assert!(!docs.contains_key("missing"));
+    }
+
+    #[test]
+    fn apply_entry_patch_after_upsert_in_same_batch() {
+        let mut docs = HashMap::new();
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "a".into(),
+                attributes: [("text".into(), json!("base"))].into(),
+            }],
+            vec![Document {
+                id: "a".into(),
+                attributes: [("tier".into(), json!("pro"))].into(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        apply_entry(&mut docs, &entry).unwrap();
+        assert_eq!(docs["a"].attributes["text"], json!("base"));
+        assert_eq!(docs["a"].attributes["tier"], json!("pro"));
     }
 }

@@ -10,7 +10,7 @@ Each namespace is rooted at `openpuffer/{namespace}/`:
 openpuffer/{ns}/
 ├── meta.json              # NamespaceMeta (index cursor, WAL commit, schema, distance metric)
 ├── wal/
-│   ├── 00000001.bin       # WalEntry (bincode): batched upserts + deletes
+│   ├── 00000001.bin       # WalEntry (bincode): batched upserts + patches + deletes
 │   ├── 00000002.bin
 │   └── ...
 └── index/
@@ -42,7 +42,7 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 
 1. API accepts turbopuffer-shaped JSON (`upsert_rows`, `upsert_columns`, `deletes`).
 2. Enqueue in per-namespace **write buffer** (`buffer.rs`): group commit by time (default 1s) or batch size.
-3. Flush builds one `WalEntry` batch (upserts + deletes).
+3. Flush builds one `WalEntry` batch (upserts + attribute patches + deletes). Patches merge into existing docs on replay; missing ids ignored; vector fields cannot be patched.
 4. Assign `seq = wal_commit_seq + 1`.
 5. **PUT** `wal/{seq:08}.bin` (bincode payload) — durable before ACK.
 6. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
