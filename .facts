@@ -6,8 +6,8 @@
 
 # product
 
-- label: release v0.2.0 is documented in CHANGELOG.md and Cargo.toml with annotated git tag v0.2.0
-  command: grep -q 'version = "0.2.0"' Cargo.toml && test -f CHANGELOG.md && grep -q '## \[0.2.0\]' CHANGELOG.md && git rev-parse v0.2.0^{} >/dev/null
+- label: release v0.3.0 is documented in CHANGELOG.md and Cargo.toml with v0.2.0 history retained
+  command: grep -q 'version = "0.3.0"' Cargo.toml && test -f CHANGELOG.md && grep -q '## \[0.3.0\]' CHANGELOG.md && grep -q '## \[0.2.0\]' CHANGELOG.md && git rev-parse v0.2.0^{} >/dev/null
   tags: [implemented]
 - label: Cargo package and binary are named openpuffer
   command: grep -qE 'name = "openpuffer"' Cargo.toml && test -f target/release/openpuffer || cargo build --release -q && test -f target/release/openpuffer
@@ -378,8 +378,8 @@
 - label: integration test multi_instance_stateless_integration proves two serve processes share one MinIO bucket with cross-read write export and S3 asserts
   command: cargo test -F integration --test integration_s3 multi_instance_stateless_integration -q
   tags: [implemented]
-- label: integration_s3.rs defines fifty-one MinIO integration tests with hardened S3 harness ListObjects retries and index segment polling
-  command: test $(grep -c "#\[tokio::test\]" tests/integration_s3.rs) -eq 51 && grep -q LIST_OBJECTS_RETRY_ATTEMPTS tests/common/s3_harness.rs
+- label: integration_s3.rs defines sixty-seven MinIO integration tests with hardened S3 harness ListObjects retries and index segment polling
+  command: test $(grep -c "#\[tokio::test\]" tests/integration_s3.rs) -eq 67 && grep -q LIST_OBJECTS_RETRY_ATTEMPTS tests/common/s3_harness.rs
   tags: [implemented]
 
 # bench
