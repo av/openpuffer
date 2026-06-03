@@ -75,7 +75,8 @@ Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.
 
 | Path | What happens |
 |------|----------------|
-| **Cold** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
+| **Cold** | No disk cache (`--cache-dir=""`): batched parallel S3 plan ([`s3_batch.rs`](../src/s3_batch.rs)) — round 1 centroids+FTS, round 2 filter+clusters, WAL tail in extra rounds; `performance.storage_roundtrips` on query JSON |
+| **Cold (cached)** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
 | **Warm** | Local file + HEAD etag match: serve from disk (no `GetObject`) |
 | **Prefetch** | After `centroids.bin` loads, background task fetches all `clusters-*.bin` into cache for follow-up ANN queries |
 

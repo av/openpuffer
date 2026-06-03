@@ -47,6 +47,8 @@ pub struct QueryContext<'a> {
     pub filter_index: Option<&'a FilterSegment>,
     pub tail_doc_ids: &'a HashSet<String>,
     pub consistency: QueryConsistency,
+    /// Logical S3 fetch rounds for cold query (batched parallel plan).
+    pub storage_roundtrips: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +105,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         filter_index: ctx.filter_index,
         tail_doc_ids: ctx.tail_doc_ids,
         consistency,
+        storage_roundtrips: ctx.storage_roundtrips,
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
@@ -180,6 +183,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
             .full_scan_docs
             .saturating_add(planner.stats.tail_docs_examined),
         query_execution_us: started.elapsed().as_micros() as u64,
+        storage_roundtrips: effective_ctx.storage_roundtrips,
     };
 
     Ok(QueryResponse {
@@ -663,6 +667,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust programming"]),
@@ -710,6 +715,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -804,6 +810,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
 
         let bm25_resp = execute_query(&ctx, &bm25_only).unwrap();
@@ -850,6 +857,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -884,6 +892,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: Value::Array(vec![
@@ -972,6 +981,7 @@ mod tests {
             filter_index: Some(&filter_seg),
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -984,6 +994,29 @@ mod tests {
         assert!(!resp.rows.is_empty());
         assert!(resp.rows.iter().all(|r| r.id == "pro-close" || r.id == "pro-exact"));
         assert!(!resp.rows.iter().any(|r| r.id == "free-exact"));
+    }
+
+    #[test]
+    fn query_performance_includes_storage_roundtrips() {
+        let ctx = QueryContext {
+            docs: &HashMap::new(),
+            meta: &NamespaceMeta::default(),
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &HashSet::new(),
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: Some(4),
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "x"]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert_eq!(resp.performance.as_ref().unwrap().storage_roundtrips, Some(4));
     }
 
     #[test]
@@ -1032,6 +1065,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
         let req = QueryRequest {
@@ -1067,6 +1101,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "anything"]),
@@ -1095,6 +1130,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         for top_k in [Some(0), Some((MAX_TOP_K as u32) + 1)] {
             let req = QueryRequest {
@@ -1121,6 +1157,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let cases = [
             json!([]),
@@ -1182,6 +1219,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0]]),
@@ -1238,6 +1276,7 @@ mod tests {
             filter_index: Some(&filter_seg),
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1278,6 +1317,7 @@ mod tests {
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
         };
         let expr = parse_filter(&json!(["tier", "Eq", "free"])).unwrap();
         let ids = matching_doc_ids_for_filter(&ctx, &expr).unwrap();

@@ -6,7 +6,8 @@
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::{fetch_meta, replay_wal_range};
-use crate::wal::{apply_entry, WalEntry};
+use crate::s3_batch;
+use crate::wal::{apply_entry, decode, WalEntry};
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
@@ -91,6 +92,36 @@ impl NamespaceView {
             meta_etag: etag,
             last_applied_wal_seq: last,
         })
+    }
+
+    /// Cold load without disk cache: batched meta + parallel WAL (`storage_roundtrips` for WAL only).
+    pub async fn load_cold_batched(
+        client: &Client,
+        bucket: &str,
+        namespace: &str,
+    ) -> Result<(Self, u32)> {
+        let (meta, etag, wal_bytes, wal_roundtrips) =
+            s3_batch::cold_load_meta_and_wal(client, bucket, namespace).await?;
+        if wal_roundtrips == 0 && etag.is_none() {
+            return Ok((Self::empty(), 0));
+        }
+        let mut docs = HashMap::new();
+        let last = meta.wal_commit_seq;
+        for seq in 1..=last {
+            if let Some(bytes) = wal_bytes.get(&seq) {
+                let entry = decode(bytes)?;
+                apply_entry(&mut docs, &entry)?;
+            }
+        }
+        Ok((
+            Self {
+                docs,
+                meta,
+                meta_etag: etag,
+                last_applied_wal_seq: last,
+            },
+            wal_roundtrips,
+        ))
     }
 }
 

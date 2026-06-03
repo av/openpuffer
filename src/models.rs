@@ -188,6 +188,9 @@ pub struct QueryPerformance {
     pub exhaustive_search_count: u64,
     /// Server-side query planner time in microseconds.
     pub query_execution_us: u64,
+    /// Logical S3 fetch rounds (parallel batch = 1 roundtrip; turbopuffer cold-query model).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_roundtrips: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]

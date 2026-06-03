@@ -29,6 +29,7 @@ pub mod indexer;
 pub mod meta;
 pub mod models;
 pub mod namespace;
+pub mod s3_batch;
 pub mod schema;
 pub mod search;
 pub mod storage;

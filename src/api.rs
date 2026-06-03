@@ -319,6 +319,7 @@ async fn query_namespace(
                 filter_index: loaded.filter_index.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
                 consistency: search::QueryConsistency::default(),
+                storage_roundtrips: loaded.storage_roundtrips,
             };
             match search::execute_query(&ctx, &body) {
             Ok(resp) => {
@@ -375,6 +376,11 @@ fn query_performance_headers(perf: Option<&QueryPerformance>) -> HeaderMap {
     let fraction = format!("{}/{}", perf.candidates, perf.approx_namespace_size);
     if let Ok(v) = HeaderValue::from_str(&fraction) {
         headers.insert("X-Openpuffer-Candidates-Fraction", v);
+    }
+    if let Some(rt) = perf.storage_roundtrips {
+        if let Ok(v) = HeaderValue::from_str(&rt.to_string()) {
+            headers.insert("X-Openpuffer-Storage-Roundtrips", v);
+        }
     }
     headers
 }

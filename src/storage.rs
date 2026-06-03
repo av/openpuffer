@@ -8,6 +8,7 @@ use crate::index::vector::VectorIndex;
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
+use crate::s3_batch::replay_wal_entries_batched;
 use crate::search::{matching_doc_ids_for_filter, QueryConsistency, QueryContext};
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
@@ -47,6 +48,8 @@ pub struct LoadedNamespace {
     pub vector: Option<VectorIndex>,
     pub filter_index: Option<FilterSegment>,
     pub tail_doc_ids: HashSet<String>,
+    /// Logical S3 roundtrips for cold load (index batch plan + optional WAL batch).
+    pub storage_roundtrips: Option<u32>,
 }
 
 impl Storage {
@@ -140,15 +143,24 @@ impl Storage {
     }
 
     pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
+        let cold_batch = !self.cache.enabled();
         let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(name) {
             view.catch_up(&self.client, &self.bucket, name).await?;
-            return self.loaded_from_view(name, view).await;
+            return self
+                .loaded_from_view(name, view, cold_batch, 0)
+                .await;
         }
 
-        let mut view = NamespaceView::load(&self.client, &self.bucket, name).await?;
+        let (mut view, wal_roundtrips) = if cold_batch {
+            NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
+        } else {
+            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0)
+        };
         view.catch_up(&self.client, &self.bucket, name).await?;
-        let loaded = self.loaded_from_view(name, &view).await?;
+        let loaded = self
+            .loaded_from_view(name, &view, cold_batch, wal_roundtrips)
+            .await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
     }
@@ -166,44 +178,74 @@ impl Storage {
         .await
     }
 
-    async fn loaded_from_view(&self, name: &str, view: &NamespaceView) -> Result<LoadedNamespace> {
-        let fts = crate::indexer::load_fts_segment_for_query(
-            &self.client,
-            &self.bucket,
-            name,
-            &view.meta,
-            &self.cache,
-        )
-        .await?;
-        let vector = crate::indexer::load_vector_index_for_query(
-            &self.client,
-            &self.bucket,
-            name,
-            &view.meta,
-            &self.cache,
-        )
-        .await?;
-        let filter_index = crate::indexer::load_filter_segment_for_query(
-            &self.client,
-            &self.bucket,
-            name,
-            &view.meta,
-            &self.cache,
-        )
-        .await?;
-        let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {
-            let from = view.meta.index_cursor.saturating_add(1);
-            let entries = replay_wal_entries(
+    async fn loaded_from_view(
+        &self,
+        name: &str,
+        view: &NamespaceView,
+        cold_batch: bool,
+        wal_roundtrips: u32,
+    ) -> Result<LoadedNamespace> {
+        let (fts, vector, filter_index, index_roundtrips) = if cold_batch {
+            let art = crate::s3_batch::fetch_cold_index_artifacts(
                 &self.client,
                 &self.bucket,
                 name,
-                from,
-                view.meta.wal_commit_seq,
+                &view.meta,
             )
             .await?;
+            (art.fts, art.vector, art.filter, art.storage_roundtrips)
+        } else {
+            let fts = crate::indexer::load_fts_segment_for_query(
+                &self.client,
+                &self.bucket,
+                name,
+                &view.meta,
+                &self.cache,
+            )
+            .await?;
+            let vector = crate::indexer::load_vector_index_for_query(
+                &self.client,
+                &self.bucket,
+                name,
+                &view.meta,
+                &self.cache,
+            )
+            .await?;
+            let filter_index = crate::indexer::load_filter_segment_for_query(
+                &self.client,
+                &self.bucket,
+                name,
+                &view.meta,
+                &self.cache,
+            )
+            .await?;
+            (fts, vector, filter_index, 0)
+        };
+
+        let mut storage_roundtrips = if cold_batch {
+            wal_roundtrips.saturating_add(index_roundtrips)
+        } else {
+            0
+        };
+
+        let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {
+            let from = view.meta.index_cursor.saturating_add(1);
+            let to = view.meta.wal_commit_seq;
+            let entries = if cold_batch {
+                storage_roundtrips += 1;
+                replay_wal_entries_batched(&self.client, &self.bucket, name, from, to).await?
+            } else {
+                replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
+            };
             wal_touched_doc_ids(&entries)
         } else {
             HashSet::new()
+        };
+
+        let storage_roundtrips = if cold_batch {
+            Some(storage_roundtrips)
+        } else {
+            None
         };
         Ok(LoadedNamespace {
             docs: view.docs.clone(),
@@ -213,6 +255,7 @@ impl Storage {
             vector,
             filter_index,
             tail_doc_ids,
+            storage_roundtrips,
         })
     }
 
@@ -288,6 +331,7 @@ impl Storage {
             filter_index: loaded.filter_index.as_ref(),
             tail_doc_ids: &loaded.tail_doc_ids,
             consistency: QueryConsistency::Strong,
+            storage_roundtrips: loaded.storage_roundtrips,
         };
         let ids = matching_doc_ids_for_filter(&ctx, &expr)?;
         Ok(ids.into_iter().collect())
