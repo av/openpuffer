@@ -132,6 +132,9 @@
 - label: write accepts delete_condition filtering deletes with $ref_new always null on committed doc
   command: grep -q 'delete_condition' src/models.rs && grep -q 'apply_delete_condition' src/storage.rs && cargo test --lib delete_condition_ref_new_resolves_to_null -q
   tags: [implemented]
+- label: write accepts block_until_indexed true blocking HTTP response until index_cursor catches wal_commit_seq up to 30s
+  command: grep -q 'block_until_indexed' src/models.rs && grep -q 'BLOCK_UNTIL_INDEXED_TIMEOUT' src/indexer.rs && cargo test -F integration --test integration_s3 block_until_indexed_write_waits_for_background_indexer -q
+  tags: [implemented]
 
 # query
 
@@ -206,6 +209,9 @@
   tags: [implemented]
 - label: per-namespace objects live under s3://{bucket}/openpuffer/{namespace}/ with meta wal and index subtrees
   command: grep -q 'ROOT_PREFIX' src/models.rs && grep -q 'meta.json' src/meta.rs && grep -q 'wal/' src/wal.rs
+  tags: [implemented]
+- label: Storage caches namespace list ListObjects results with TTL and invalidates on write delete and namespace mutations
+  command: test -f src/namespace_list_cache.rs && grep -q 'invalidate_namespace_list_cache' src/storage.rs && cargo test --lib cache_miss_after_invalidate -q
   tags: [implemented]
 
 # api
@@ -335,6 +341,9 @@
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
+  tags: [implemented]
+- label: large_stress cargo feature adds optional ignored stress_50k integration test for 50k document workloads
+  command: grep -q 'large_stress = \["integration"\]' Cargo.toml && test -f tests/stress_50k.rs && grep -q 'name = "stress_50k"' Cargo.toml
   tags: [implemented]
 - label: integration test full_architecture_smoke exercises WAL index dual-vector hybrid filter compaction branch on MinIO
   command: cargo test -F integration --test integration_s3 full_architecture_smoke -q
