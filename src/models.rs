@@ -252,6 +252,15 @@ pub struct QueryRow {
     pub dist: Option<f64>,
 }
 
+/// Query billing estimates (turbopuffer `billing` subset; nested under `performance` in openpuffer v1).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct QueryBilling {
+    /// Estimated logical bytes processed (`candidates × avg_doc_logical_bytes`).
+    pub billable_logical_bytes_queried: u64,
+    /// Sum of logical bytes in returned row payloads (id + projected attributes).
+    pub billable_logical_bytes_returned: u64,
+}
+
 /// Query observability (turbopuffer `performance` object subset).
 #[derive(Debug, Clone, Serialize)]
 pub struct QueryPerformance {
@@ -270,6 +279,8 @@ pub struct QueryPerformance {
     /// Logical S3 fetch rounds (parallel batch = 1 roundtrip; turbopuffer cold-query model).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_roundtrips: Option<u32>,
+    /// v1 billing estimates (turbopuffer top-level `billing`; nested here for API stability).
+    pub billing: QueryBilling,
 }
 
 #[derive(Debug, Serialize)]

@@ -22,6 +22,7 @@
 //!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
 
 pub mod api;
+pub mod billing;
 pub mod buffer;
 pub mod cache;
 pub mod commit_lock;

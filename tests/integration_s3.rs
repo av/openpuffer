@@ -32,6 +32,7 @@ const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_ORDER_BY: &str = "itest-order-by";
+const NAMESPACE_QUERY_BILLING: &str = "itest-query-billing";
 const NAMESPACE_DISTANCE_METRIC: &str = "itest-distance-metric";
 const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const NAMESPACE_S3_WAL_BYTES: &str = "itest-s3-wal-bytes";
@@ -1802,6 +1803,65 @@ async fn upsert_condition_insert_if_not_exists() {
     );
 }
 
+/// Query responses expose `performance.billing` logical-byte estimates.
+#[tokio::test]
+async fn query_performance_billing_fields_smoke() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_QUERY_BILLING,
+        json!({
+            "upsert_rows": [
+                {
+                    "id": "qb-1",
+                    "attributes": {
+                        "text": "billing smoke document one",
+                        "embedding": [1.0, 0.0, 0.0]
+                    }
+                },
+                {
+                    "id": "qb-2",
+                    "attributes": {
+                        "text": "billing smoke document two",
+                        "embedding": [0.0, 1.0, 0.0]
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let v = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_QUERY_BILLING,
+        json!({
+            "rank_by": ["BM25", "text", "billing smoke"],
+            "top_k": 2,
+            "include_attributes": true
+        }),
+    )
+    .await;
+    let billing = v["performance"]["billing"]
+        .as_object()
+        .expect("performance.billing");
+    let queried = billing["billable_logical_bytes_queried"]
+        .as_u64()
+        .expect("billable_logical_bytes_queried");
+    let returned = billing["billable_logical_bytes_returned"]
+        .as_u64()
+        .expect("billable_logical_bytes_returned");
+    assert!(queried > 0, "queried bytes should be positive");
+    assert!(returned > 0, "returned bytes should be positive");
+    assert!(queried >= returned, "queried >= returned for top_k=2");
+}
+
 /// `order_by` breaks ties after `rank_by` scoring (turbopuffer attribute sort shape).
 #[tokio::test]
 async fn order_by_sorts_tied_bm25_results_by_attribute() {
@@ -3514,7 +3574,7 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
 
     let (status, body) = write_expect(
         &serve.base_url,
-        "bad!namespace",
+        "bad/name",
         json!({ "upsert_rows": [{ "id": "a", "attributes": {} }] }),
     )
     .await;

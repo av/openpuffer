@@ -6,8 +6,11 @@ use crate::index::filter::FilterSegment;
 use crate::index::fts::{bm25_doc_score, extract_index_text, FtsSegment};
 use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, VectorIndex};
 
+use crate::billing::{
+    avg_document_logical_bytes, billable_logical_bytes_queried, billable_logical_bytes_returned,
+};
 use crate::meta::NamespaceMeta;
-use crate::models::{Document, QueryPerformance, QueryRequest, QueryResponse, QueryRow};
+use crate::models::{Document, QueryBilling, QueryPerformance, QueryRequest, QueryResponse, QueryRow};
 use crate::vector_encoding::{
     project_row_attributes, IncludeVectors, VectorEncoding,
 };
@@ -179,7 +182,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     let (include_attrs, include_attr_names) = parse_include_attributes(&req.include_attributes)?;
     let include_vectors = IncludeVectors::parse(req.include_vectors.as_ref())?;
     let vector_encoding = VectorEncoding::parse(req.vector_encoding.as_deref())?;
-    let rows = ranked
+    let rows: Vec<QueryRow> = ranked
         .into_iter()
         .map(|(id, score)| {
             let attributes = effective_ctx.docs.get(&id).and_then(|doc| {
@@ -212,6 +215,14 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     } else {
         candidate_count as f64 / namespace_size as f64
     };
+    let avg_doc_bytes = avg_document_logical_bytes(effective_ctx.docs);
+    let billing = QueryBilling {
+        billable_logical_bytes_queried: billable_logical_bytes_queried(
+            candidate_count,
+            avg_doc_bytes,
+        ),
+        billable_logical_bytes_returned: billable_logical_bytes_returned(&rows),
+    };
     let performance = QueryPerformance {
         approx_namespace_size: namespace_size,
         candidates: candidate_count,
@@ -223,6 +234,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
             .saturating_add(planner.stats.tail_docs_examined),
         query_execution_us: started.elapsed().as_micros() as u64,
         storage_roundtrips: effective_ctx.storage_roundtrips,
+        billing,
     };
 
     Ok(QueryResponse {
@@ -1242,6 +1254,66 @@ mod tests {
     }
 
     #[test]
+    fn query_performance_billing_estimates_queried_and_returned() {
+        let doc = Document {
+            id: "bill-a".into(),
+            attributes: [
+                ("text".into(), json!("billing estimate smoke")),
+                ("embedding".into(), json!([1.0, 0.0, 0.0, 0.0])),
+            ]
+            .into(),
+        };
+        let map = HashMap::from([(doc.id.clone(), doc.clone())]);
+        let pairs = vec![(doc.id.clone(), doc)];
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+            &json!({}),
+            crate::config::AnnProbeConfig::default(),
+        )
+        .unwrap()
+        .expect("vector index");
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            dimensions: 4,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: Some(json!(true)),
+            consistency: None,
+            order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        let perf = resp.performance.expect("performance");
+        assert!(perf.billing.billable_logical_bytes_queried > 0);
+        assert!(perf.billing.billable_logical_bytes_returned > 0);
+        assert!(
+            perf.billing.billable_logical_bytes_queried
+                >= perf.billing.billable_logical_bytes_returned
+        );
+    }
+
+    #[test]
     fn indexed_vector_candidates_ratio_under_ten_percent() {
         const N: usize = 5_000;
         const DIM: usize = 128;
@@ -1345,6 +1417,8 @@ mod tests {
         let perf = resp.performance.unwrap();
         assert_eq!(perf.approx_namespace_size, 0);
         assert_eq!(perf.candidates, 0);
+        assert_eq!(perf.billing.billable_logical_bytes_queried, 0);
+        assert_eq!(perf.billing.billable_logical_bytes_returned, 0);
     }
 
     #[test]
