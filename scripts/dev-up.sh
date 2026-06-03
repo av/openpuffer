@@ -26,7 +26,23 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 echo "Starting MinIO (S3 API :9000, console :9001)..."
-compose up -d --wait
+compose up -d
+
+echo "Waiting for MinIO..."
+for _ in $(seq 1 60); do
+  if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+  echo "error: MinIO did not become healthy on :9000" >&2
+  exit 1
+fi
+
+# Idempotent bucket create (no-op if minio-init already ran).
+compose run --rm minio-init >/dev/null
 
 cat <<'EOF'
 
