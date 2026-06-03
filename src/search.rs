@@ -13,6 +13,11 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+/// Default `top_k` when omitted (turbopuffer-style).
+pub const DEFAULT_TOP_K: usize = 10;
+/// Hard cap to avoid candidate-pool OOM on pathological requests.
+pub const MAX_TOP_K: usize = 1200;
+
 /// How unindexed WAL tail participates in candidate collection and scoring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryConsistency {
@@ -88,7 +93,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         Some(v) => Some(parse_filter(v)?),
     };
 
-    let top_k = req.top_k.unwrap_or(10) as usize;
+    let top_k = parse_top_k(req.top_k)?;
     let consistency = QueryConsistency::parse(req.consistency.as_deref())?;
     let effective_ctx = QueryContext {
         docs: ctx.docs,
@@ -101,6 +106,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
+    validate_ranker_vector_dims(&effective_ctx, &ranker)?;
     let mut planner = QueryPlanner {
         ctx: &effective_ctx,
         candidate_pool: top_k.saturating_mul(8).max(64),
@@ -482,6 +488,54 @@ fn min_max_normalize(scored: Vec<(String, f64)>) -> HashMap<String, f64> {
             (id, norm)
         })
         .collect()
+}
+
+fn parse_top_k(v: Option<u32>) -> Result<usize> {
+    match v {
+        None => Ok(DEFAULT_TOP_K),
+        Some(0) => bail!("top_k must be at least 1"),
+        Some(n) if n as usize > MAX_TOP_K => {
+            bail!("top_k {n} exceeds maximum of {MAX_TOP_K}");
+        }
+        Some(n) => Ok(n as usize),
+    }
+}
+
+/// Reject vector queries whose length disagrees with the indexed dimensionality.
+fn validate_ranker_vector_dims(ctx: &QueryContext<'_>, ranker: &Ranker) -> Result<()> {
+    match ranker {
+        Ranker::Vector { query, .. } => validate_query_vector_dims(ctx, query)?,
+        Ranker::Sum(subs) | Ranker::Product(subs) => {
+            for sub in subs {
+                validate_ranker_vector_dims(ctx, sub)?;
+            }
+        }
+        Ranker::Bm25 { .. } => {}
+    }
+    Ok(())
+}
+
+fn validate_query_vector_dims(ctx: &QueryContext<'_>, query: &[f64]) -> Result<()> {
+    if let Some(vindex) = ctx.vector {
+        let dim = vindex.centroids.dimensions as usize;
+        if dim > 0 && !query.is_empty() && query.len() != dim {
+            bail!(
+                "query vector length {} does not match index dimensions {}",
+                query.len(),
+                dim
+            );
+        }
+    } else if ctx.meta.dimensions > 0 && !query.is_empty() {
+        let dim = ctx.meta.dimensions as usize;
+        if query.len() != dim {
+            bail!(
+                "query vector length {} does not match namespace dimensions {}",
+                query.len(),
+                dim
+            );
+        }
+    }
+    Ok(())
 }
 
 fn parse_rank_by(v: &Value) -> Result<Ranker> {
@@ -998,6 +1052,203 @@ mod tests {
         );
         assert!(perf.candidates < perf.approx_namespace_size);
         assert_eq!(perf.exhaustive_search_count, 0);
+    }
+
+    #[test]
+    fn empty_namespace_query_returns_empty_rows() {
+        let docs = HashMap::new();
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &docs,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "anything"]),
+            top_k: Some(10),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert!(resp.rows.is_empty());
+        let perf = resp.performance.unwrap();
+        assert_eq!(perf.approx_namespace_size, 0);
+        assert_eq!(perf.candidates, 0);
+    }
+
+    #[test]
+    fn top_k_zero_and_huge_are_rejected() {
+        let docs = HashMap::new();
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &docs,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        for top_k in [Some(0), Some((MAX_TOP_K as u32) + 1)] {
+            let req = QueryRequest {
+                rank_by: json!(["BM25", "text", "x"]),
+                top_k,
+                filters: None,
+                include_attributes: None,
+                consistency: None,
+            };
+            assert!(execute_query(&ctx, &req).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_rank_by_rejected() {
+        let docs = HashMap::new();
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &docs,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let cases = [
+            json!([]),
+            json!(["bogus", "x"]),
+            json!(["vector", "ANN", "embedding"]),
+            json!(["BM25", "text"]),
+        ];
+        for rank_by in cases {
+            let req = QueryRequest {
+                rank_by,
+                top_k: Some(1),
+                filters: None,
+                include_attributes: None,
+                consistency: None,
+            };
+            assert!(execute_query(&ctx, &req).is_err(), "expected error for {req:?}");
+        }
+    }
+
+    #[test]
+    fn vector_dimension_mismatch_rejected() {
+        let mut map: HashMap<String, Document> = HashMap::new();
+        map.insert(
+            "a".into(),
+            Document {
+                id: "a".into(),
+                attributes: [
+                    ("text".into(), json!("x")),
+                    ("embedding".into(), json!([1.0, 0.0, 0.0, 0.0])),
+                ]
+                .into(),
+            },
+        );
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+        )
+        .unwrap()
+        .expect("vector index");
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            dimensions: 4,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: Some(&vindex),
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0]]),
+            top_k: Some(5),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let err = execute_query(&ctx, &req).unwrap_err().to_string();
+        assert!(err.contains("does not match"), "{err}");
+    }
+
+    #[test]
+    fn filter_vector_empty_intersection_returns_empty_not_error() {
+        let mut map: HashMap<String, Document> = HashMap::new();
+        map.insert(
+            "match-filter".into(),
+            Document {
+                id: "match-filter".into(),
+                attributes: [
+                    ("embedding".into(), json!([0.0, 1.0, 0.0, 0.0])),
+                    ("tier".into(), json!("free")),
+                ]
+                .into(),
+            },
+        );
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+        )
+        .unwrap()
+        .expect("vector index");
+        let filter_seg = FilterSegment::build(1, &json!({}), &pairs);
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            filter_segment_id: 1,
+            dimensions: 4,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: Some(&vindex),
+            filter_index: Some(&filter_seg),
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
+            top_k: Some(5),
+            filters: Some(json!(["tier", "Eq", "pro"])),
+            include_attributes: None,
+            consistency: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert!(resp.rows.is_empty());
+        assert_eq!(resp.performance.unwrap().candidates, 0);
     }
 
     #[test]

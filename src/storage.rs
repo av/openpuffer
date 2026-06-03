@@ -263,8 +263,10 @@ impl Storage {
                 view.meta_etag = etag;
             }
         } else {
-            let mut view = NamespaceView::empty();
-            view.apply_committed(committed.seq, &committed.entry)?;
+            // Cold cache: replay full WAL from S3 (includes the batch we just committed).
+            // Do not `apply_committed` here — that would skip prior segments and duplicate
+            // the latest batch if we loaded after append.
+            let view = NamespaceView::load(&self.client, &self.bucket, namespace).await?;
             views.insert(namespace.to_string(), view);
         }
         Ok(stats)

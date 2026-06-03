@@ -253,6 +253,29 @@ mod tests {
     }
 
     #[test]
+    fn apply_entry_twice_is_idempotent() {
+        let mut docs = HashMap::new();
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "a".into(),
+                attributes: [("text".into(), json!("v1"))].into(),
+            }],
+            vec![Document {
+                id: "a".into(),
+                attributes: [("tier".into(), json!("pro"))].into(),
+            }],
+            vec!["gone".into()],
+        )
+        .unwrap();
+        apply_entry(&mut docs, &entry).unwrap();
+        let snapshot = docs.clone();
+        apply_entry(&mut docs, &entry).unwrap();
+        assert_eq!(docs.len(), snapshot.len());
+        assert_eq!(docs.get("a").map(|d| &d.attributes["text"]), snapshot.get("a").map(|d| &d.attributes["text"]));
+        assert!(!docs.contains_key("gone"));
+    }
+
+    #[test]
     fn apply_entry_patch_after_upsert_in_same_batch() {
         let mut docs = HashMap::new();
         let entry = WalEntry::from_write(

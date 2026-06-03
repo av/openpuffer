@@ -27,6 +27,7 @@ const NAMESPACE_WARM: &str = "itest-warm";
 const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
 const NAMESPACE_PATCH: &str = "itest-patch";
 const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
+const NAMESPACE_RESTART_WRITE: &str = "itest-restart-write";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -1032,4 +1033,76 @@ async fn concurrent_writes_ten_parallel_clients() {
     for id in doc_ids {
         assert!(docs.contains_key(&id), "missing doc {id}");
     }
+}
+
+/// Regression: first request after restart must not be a write that drops prior WAL replay.
+#[tokio::test]
+async fn write_after_restart_before_query_preserves_prior_docs() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+
+    let mut serve1 = ServeHandle::spawn(&endpoint, &listen);
+    serve1.wait_ready().await;
+    upsert_batch(
+        &serve1.base_url,
+        NAMESPACE_RESTART_WRITE,
+        json!([{
+            "id": "seed-a",
+            "attributes": {
+                "embedding": [1.0, 0.0, 0.0],
+                "text": "seed alpha",
+                "tier": "seed"
+            }
+        }]),
+    )
+    .await;
+    wait_until_indexed_ns(&serve1.base_url, NAMESPACE_RESTART_WRITE, Duration::from_secs(30))
+        .await;
+
+    serve1.stop();
+    drop(serve1);
+    sleep(Duration::from_millis(500)).await;
+
+    let serve2 = ServeHandle::spawn(&endpoint, &listen);
+    serve2.wait_ready().await;
+
+    // Write before any query — previously created an empty in-memory view and lost WAL history.
+    write_batch(
+        &serve2.base_url,
+        NAMESPACE_RESTART_WRITE,
+        json!({
+            "upsert_rows": [{
+                "id": "post-restart",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "after restart",
+                    "tier": "new"
+                }
+            }]
+        }),
+    )
+    .await;
+
+    let ids = query_ids_ns(
+        &serve2.base_url,
+        NAMESPACE_RESTART_WRITE,
+        json!(["BM25", "text", "seed"]),
+        None,
+    )
+    .await;
+    assert!(
+        ids.contains(&"seed-a".to_string()),
+        "prior WAL doc must survive cold-cache write, got {ids:?}"
+    );
 }
