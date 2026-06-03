@@ -29,7 +29,11 @@ Bench tests and `scripts/bench-1m.sh` print one JSON object per run with these k
 | `p50_query_latency_ms` | p50 over 7 cold queries (cache reset each run) |
 | `candidates_ratio` | ANN candidate pool fraction |
 | `recall_at_10` | ANN vs brute (100k bench, 1M script via `/recall`) |
-| `index_object_count` | S3 keys under `index/` matching `clusters-*` or `centroids-l1-*.bin` (MinIO benches) |
+| `cold_s3_keys_fetched` | `performance.cold_s3_keys_fetched` on last cold query |
+| `preferred_ann_version` | Namespace meta (`3` required for v0.3 1M) |
+| `index_cursor_eq_wal_commit_seq` | `true` when meta `index_cursor == wal_commit_seq` before query |
+| `index_object_count` | S3 keys under `index/` matching `clusters-*` or `centroids-l1-*.bin` (MinIO benches; optional on AWS via `aws` CLI) |
+| `s3_get_count_note` | Explains segment-cache counter vs `cold_s3_keys_fetched` (10k baseline) |
 
 Committed 10k snapshot: [`benchmarks/results/baseline-10k.json`](../benchmarks/results/baseline-10k.json).
 
@@ -126,24 +130,35 @@ Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**r
 
 **Measured @ 50k (MinIO testcontainers, release, 2026-06-03):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `index_object_count` **175**, `ann_version` **3** (strong cold, empty `--cache-dir`). Gates also require `candidates_ratio` < 0.20 and `storage_roundtrips` ≤ 4.
 
-## 1M manual (AWS)
+## 1M manual (AWS, v0.3)
 
 **Prerequisites**
 
 1. AWS S3 bucket in the target region; IAM user or role with read/write on the bucket.
-2. **Ingest out of band:** 1M × 128-dim `f32` via `upsert_columns` batches (~1 WAL commit/s — see README 50k stress notes, scaled up). Namespace must reach `index_cursor == wal_commit_seq`.
-3. Tools on the runner: `bash`, `curl`, `jq`, `python3`, release `openpuffer` binary (script builds via `cargo build --release`).
+2. **Ingest out of band:** 1M × 128-dim `f32` via `upsert_columns` batches (~1 WAL commit/s — see README 50k stress notes, scaled up). Index with **`OPENPUFFER_ANN_VERSION=3`** (or `serve --ann-version 3`) so namespace meta has **`preferred_ann_version == 3`** and **`index_cursor == wal_commit_seq`** before benchmarking.
+3. Tools on the runner: `bash`, `curl`, `jq`, `python3`, `cargo` (script builds release `openpuffer`). Optional: `aws` CLI for `index_object_count` / `index_keys_total` in the JSON artifact.
 4. Do **not** use MinIO timings for the p50 SLO; AWS WAN latency is the gate.
+
+**Dry-run** (no AWS credentials, no `serve`):
+
+```bash
+./scripts/bench-1m.sh --dry-run
+# or: OPENPUFFER_BENCH_DRY_RUN=1 ./scripts/bench-1m.sh
+```
+
+Validates toolchain, defaults `OPENPUFFER_ANN_VERSION=3`, and prints bench tuning. S3 env vars are optional in dry-run.
 
 **Environment variables**
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `OPENPUFFER_S3_ENDPOINT` | yes | — | AWS S3 endpoint URL |
-| `OPENPUFFER_S3_BUCKET` | yes | — | Bucket name |
-| `OPENPUFFER_S3_ACCESS_KEY` | yes | — | Access key |
-| `OPENPUFFER_S3_SECRET_KEY` | yes | — | Secret key |
-| `OPENPUFFER_S3_REGION` | no | `us-east-1` | Region passed to `serve` |
+| `OPENPUFFER_S3_ENDPOINT` | yes* | — | AWS S3 endpoint URL (*not in dry-run) |
+| `OPENPUFFER_S3_BUCKET` | yes* | — | Bucket name |
+| `OPENPUFFER_S3_ACCESS_KEY` | yes* | — | Access key |
+| `OPENPUFFER_S3_SECRET_KEY` | yes* | — | Secret key |
+| `OPENPUFFER_S3_REGION` | no | `us-east-1` | Region passed to `serve` / `aws` list |
+| `OPENPUFFER_ANN_VERSION` | no | **`3`** | Passed to `serve --ann-version` (warn if not 3) |
+| `OPENPUFFER_BENCH_DRY_RUN` | no | — | Set `1` or use `--dry-run` |
 | `OPENPUFFER_BENCH_NAMESPACE` | no | `bench-1m-cold` | Namespace to benchmark |
 | `OPENPUFFER_BENCH_DOCS` | no | `1000000` | Expected doc count (metadata only) |
 | `OPENPUFFER_BENCH_LISTEN` | no | `127.0.0.1:8080` | `serve` listen address |
@@ -152,9 +167,9 @@ Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**r
 | `OPENPUFFER_BENCH_RECALL_NUM` | no | `20` | `/recall` query count |
 | `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC` | no | `7200` | Wait for indexer catch-up |
 | `OPENPUFFER_BENCH_SKIP_SERVE` | no | — | Set if `serve` already running |
-| `OPENPUFFER_BENCH_SKIP_INDEX_WAIT` | no | — | Set if namespace already caught up |
+| `OPENPUFFER_BENCH_SKIP_INDEX_WAIT` | no | — | Still verifies meta; skips poll loop |
+| `OPENPUFFER_BENCH_SKIP_INDEX_STATS` | no | — | Skip optional `aws s3api list-objects-v2` |
 | `OPENPUFFER_BENCH_ENFORCE_GATES` | no | `1` | Exit 1 if SLOs fail |
-| `OPENPUFFER_ANN_VERSION` | no | — | e.g. `3` for v3 index on `serve` |
 
 **Run**
 
@@ -163,15 +178,19 @@ export OPENPUFFER_S3_ENDPOINT=...
 export OPENPUFFER_S3_BUCKET=...
 export OPENPUFFER_S3_ACCESS_KEY=...
 export OPENPUFFER_S3_SECRET_KEY=...
+export OPENPUFFER_ANN_VERSION=3   # default in script; required for v0.3 meta gate
 
-# After ingest + index catch-up:
+# After ingest + index catch-up (preferred_ann_version==3, index_cursor==wal_commit_seq):
 ./scripts/bench-1m.sh
 # or record without failing on SLO:
 OPENPUFFER_BENCH_ENFORCE_GATES=0 ./scripts/bench-1m.sh
 ```
 
+Output JSON matches **10k / 100k** tiers (`cold_s3_keys_fetched`, `s3_get_count`, `s3_get_count_note`, `index_cursor_eq_wal_commit_seq`, `preferred_ann_version`, plus `recall_at_10` and optional `index_object_count`).
+
 **Targets** (written to `benchmarks/results/1m-aws.json`):
 
+- `preferred_ann_version == 3` and `index_cursor_eq_wal_commit_seq == true` (checked before cold queries)
 - `storage_roundtrips ≤ 4`
 - `recall_at_10 ≥ 0.85` (from `POST /v1/namespaces/{name}/recall`)
 - `p50_query_latency_ms < 600` on AWS
