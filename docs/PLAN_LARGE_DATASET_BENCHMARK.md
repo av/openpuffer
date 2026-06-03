@@ -480,7 +480,7 @@ Ordered work to make this plan one-command reproducible:
 | A3 | `scripts/bench-large.sh` (generalize `bench-1m.sh` for `OPENPUFFER_BENCH_DOCS`) | `large-aws-100k.json` |
 | A4 | `benchmarks/tpuf_driver/run_benchmark.py` | `tpuf-100k.json` |
 | A5 | `scripts/render-report.sh` (merge JSON → markdown) | Report skeleton |
-| A6 | Optional: GitHub Actions `workflow_dispatch` with secrets | CI not default (cost) |
+| A6 | GitHub Actions `workflow_dispatch` dry-run gates ([`benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml)); live AWS/tpuf secrets optional later | CI not default (cost) |
 
 A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) for metrics, cold protocol, debugging, and pass/fail. For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid (`bench-large.sh --tier l3` supersedes for shared workload).
 
@@ -491,6 +491,7 @@ A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program �
 - [x] MinIO G2 subset: `cargo test --test synthetic_workload_gate` + `synthetic_128_g2_correctness_gates_on_minio` + `bench_cold_10k_synthetic_128_workload_gate` (see [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh)).
 - [x] Phase 4/5/6 operator runbook in [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) (metrics matrix, cold protocol, debugging, pass/fail vs tpuf).
 - [x] Harness scripts A1–A5: `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `tpuf_driver/run_benchmark.py`, `render-report.sh`.
+- [x] A6: `.github/workflows/benchmark-large-dispatch.yml` (`workflow_dispatch` tier l1/l2/l3; dry-run + `facts check` bench-large/bench-tpuf).
 - [ ] MinIO: full `cargo test -F bench` + `integration` green on main.
 - [x] Workload manifests committed for L1–L3 (`synthetic-128/{l1-100k,l2-500k,l3-1m}/`; seed 42 in manifest).
 - [ ] openpuffer AWS: ingest + index catch-up + `preferred_ann_version == 3`.

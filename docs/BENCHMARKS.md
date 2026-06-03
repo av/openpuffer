@@ -57,6 +57,22 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
 
 Tiers: **l1** (100k, default comparison), **l2** (500k), **l3** (1M). Workloads under `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/`.
 
+### GitHub Actions — manual dry-run preflight (A6)
+
+Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes before a live comparison run.
+
+1. GitHub → **Actions** → **Large-dataset benchmark (dispatch)** → **Run workflow**.
+2. Choose **tier** (`l1`, `l2`, or `l3`; default `l1`).
+3. Workflow runs offline gates only (no repository secrets required in this iteration):
+   - `pytest benchmarks/workloads/test_generate_synthetic.py`
+   - `pytest benchmarks/tpuf_driver/test_run_benchmark.py`
+   - [`scripts/test_render-report.sh`](../scripts/test_render-report.sh)
+   - [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) / [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--dry-run` for the selected tier
+   - [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--dry-run`
+   - `facts check --tags bench-large` and `facts check --tags bench-tpuf`
+
+Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml). Live ingest/bench on AWS and managed turbopuffer still run from an operator host with credentials (future: optional job inputs + secrets for one-click live runs).
+
 ### Phase 4 — Metrics matrix
 
 Collect the same **logical** metrics on both sides where APIs allow. JSON field names align across [`bench-large.sh`](../scripts/bench-large.sh) and [`run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) for [`render-report.sh`](../scripts/render-report.sh).

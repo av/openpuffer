@@ -1,0 +1,66 @@
+# Manual large-dataset harness preflight (dry-run only; no AWS / tpuf secrets).
+# Validates workloads, scripts, report merge, and @spec facts before operator spend.
+name: Large-dataset benchmark (dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Workload tier (l1=100k, l2=500k, l3=1M)
+        required: true
+        default: l1
+        type: choice
+        options:
+          - l1
+          - l2
+          - l3
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  dry-run-gates:
+    name: dry-run gates (${{ inputs.tier }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-large-dispatch
+
+      - name: Python tooling (pytest)
+        run: python3 -m pip install --upgrade pip pytest
+
+      - name: pytest workloads (generate_synthetic)
+        run: python3 -m pytest benchmarks/workloads/test_generate_synthetic.py -q
+
+      - name: pytest tpuf driver (offline)
+        run: python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
+
+      - name: render-report offline tests
+        run: ./scripts/test_render-report.sh
+
+      - name: ingest-large dry-run
+        run: ./scripts/ingest-large.sh --tier ${{ inputs.tier }} --dry-run
+
+      - name: bench-large dry-run
+        run: ./scripts/bench-large.sh --tier ${{ inputs.tier }} --dry-run
+
+      - name: tpuf driver dry-run
+        run: python3 benchmarks/tpuf_driver/run_benchmark.py --tier ${{ inputs.tier }} --dry-run
+
+      - name: Install facts CLI
+        run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
+
+      - name: facts check (bench-large)
+        run: facts check --tags bench-large
+
+      - name: facts check (bench-tpuf)
+        run: facts check --tags bench-tpuf
