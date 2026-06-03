@@ -42,6 +42,7 @@ const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const NAMESPACE_S3_WAL_BYTES: &str = "itest-s3-wal-bytes";
 const NAMESPACE_S3_L1_CENTROIDS: &str = "itest-s3-l1-centroids";
 const NAMESPACE_VEC_B64: &str = "itest-vec-b64";
+const NAMESPACE_INCLUDE_ATTRS: &str = "itest-include-attrs";
 const NAMESPACE_FAIR_HOT: &str = "itest-fair-hot";
 const NAMESPACE_FAIR_B: &str = "itest-fair-b";
 const NAMESPACE_FAIR_C: &str = "itest-fair-c";
@@ -2816,6 +2817,69 @@ async fn s3_branch_from_namespace_clones_prefix() {
     assert_eq!(
         dest_meta.wal_commit_seq, src_meta.wal_commit_seq,
         "branch dest should inherit WAL commit seq from source"
+    );
+}
+
+/// `include_attributes` as a field whitelist returns only the requested attribute keys.
+#[tokio::test]
+async fn include_attributes_field_projection() {
+    use common::s3_harness::query_response_ns;
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_INCLUDE_ATTRS,
+        json!({
+            "schema": { "embedding": "[3]f32" },
+            "upsert_rows": [{
+                "id": "proj-1",
+                "attributes": {
+                    "text": "include attributes projection smoke",
+                    "tier": "pro",
+                    "secret": "hidden",
+                    "embedding": [1.0, 0.0, 0.0]
+                }
+            }]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let v = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_INCLUDE_ATTRS,
+        json!({
+            "rank_by": ["BM25", "text", "projection smoke"],
+            "top_k": 1,
+            "include_attributes": ["text", "tier"]
+        }),
+    )
+    .await;
+    let attrs = v["rows"][0]["attributes"]
+        .as_object()
+        .expect("projected attributes");
+    assert_eq!(attrs.get("text").and_then(Value::as_str), Some("include attributes projection smoke"));
+    assert_eq!(attrs.get("tier").and_then(Value::as_str), Some("pro"));
+    assert!(!attrs.contains_key("secret"));
+    assert!(!attrs.contains_key("embedding"));
+
+    let no_attrs = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_INCLUDE_ATTRS,
+        json!({
+            "rank_by": ["BM25", "text", "projection smoke"],
+            "top_k": 1,
+            "include_attributes": false
+        }),
+    )
+    .await;
+    assert!(
+        no_attrs["rows"][0]["attributes"].is_null(),
+        "include_attributes:false must omit attributes"
     );
 }
 
