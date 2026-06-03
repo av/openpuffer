@@ -3540,6 +3540,9 @@ async fn two_vector_columns_query_each_field() {
 }
 
 /// POST write and return HTTP status + JSON body (for limit violation tests).
+///
+/// Namespace names are percent-encoded in the path so invalid names like `bad/name`
+/// reach the handler as one segment (otherwise `/` splits the route and returns 404).
 async fn write_expect(base_url: &str, namespace: &str, body: Value) -> (StatusCode, Value) {
     let resp = reqwest::Client::new()
         .post(format!(
