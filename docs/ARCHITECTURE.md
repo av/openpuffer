@@ -13,9 +13,10 @@ openpuffer/{ns}/
 │   ├── 00000001.bin       # WalEntry (bincode): batched upserts + deletes
 │   ├── 00000002.bin
 │   └── ...
-└── index/                 # (iter 3+) ANN centroids/clusters, FTS postings, filter indexes
-    ├── centroids.bin
-    ├── clusters-*.bin
+└── index/
+    ├── fts-{segment_id:08}.bin   # BM25 inverted postings (bincode)
+    ├── centroids.bin               # ANN centroid table (bincode)
+    ├── clusters-{centroid_id:08}.bin  # doc id + vector per cluster
     └── ...
 ```
 
@@ -29,6 +30,9 @@ Legacy layout (`manifest.json`, `docs/{id}.json`) is **read-only fallback** for 
 | `wal_commit_seq` | Last durably committed WAL file (`wal/{seq:08}.bin`) |
 | `schema` | JSON schema hints (attributes, vector dims) |
 | `distance_metric` | ANN distance: `cosine_distance` (default) or `euclidean_squared` |
+| `vector_segment_id` | WAL seq when `centroids.bin` + `clusters-*.bin` were last written |
+| `vector_field` | Indexed vector attribute (e.g. `embedding`) |
+| `dimensions` | Vector dimensionality (0 if no ANN index) |
 
 Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent writers serialize commits (compare-and-swap on `meta.json`).
 
@@ -55,20 +59,42 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 
 Strong consistency: after a successful write, the next query sees data replayed from committed WAL.
 
-## Background indexer (planned)
+## Background indexer
 
-Separate loop (not in iter 1):
+After each durable WAL flush (v1: synchronous on write path):
 
 - Read WAL from `index_cursor + 1` through `wal_commit_seq`.
-- Merge into `index/` (SPFresh-style centroids/clusters for vectors, inverted BM25 for FTS).
-- Advance `index_cursor` in `meta.json` via CAS.
+- **FTS:** merge upserts/deletes into `fts-{seq}.bin`, set `fts_segment_id`.
+- **Vector ANN:** rebuild centroid/cluster layout from all docs at `index_cursor` (see below), write `centroids.bin` + `clusters-{id}.bin`, set `vector_segment_id`, `vector_field`, `dimensions`.
+- CAS-advance `index_cursor` in `meta.json`.
+
+### Vector ANN (SPFresh-inspired, simplified)
+
+[turbopuffer SPFresh](https://turbopuffer.com/docs/architecture) uses hierarchical centroid clustering, re-ranking, and object-storage–friendly segments. openpuffer v1 implements a **minimal subset**:
+
+| SPFresh / turbopuffer | openpuffer v1 |
+|----------------------|---------------|
+| Multi-level centroid hierarchy | Single-level k-means (`k ≈ √n`, cap 256) |
+| Incremental cluster maintenance | Full rebuild from WAL `1..=index_cursor` on each index pass |
+| Re-rank with fresh vectors from WAL | Cluster files store doc vectors; tail WAL scored exhaustively |
+| Many small segments + merges | One `centroids.bin` + `clusters-{centroid_id:08}.bin` per namespace |
+
+**Build:** k-means (10 iterations, seed = first *k* doc vectors) assigns each document vector to a centroid; each cluster file lists `(doc_id, vector)` for cosine (or negated L2²) scoring.
+
+**Query (`rank_by: ["vector", "ANN", field, query]`):**
+
+1. Load `centroids.bin`, pick top-*M* centroids nearest to the query (*M* = 8 by default; all centroids if *k* ≤ 32).
+2. Fetch only those `clusters-*.bin` objects from S3 (not a full namespace scan).
+3. Score members in probed clusters; merge with **exhaustive** cosine on docs touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`.
+
+Distance uses `distance_metric` from `meta.json` (`cosine_distance` default).
 
 ## Query phases (turbopuffer model)
 
 | Phase | Source | Iteration |
 |-------|--------|-----------|
 | Metadata | `meta.json` | 1 |
-| Indexed ANN / FTS | `index/*` | 3–4 |
+| Indexed ANN / FTS | `index/*` | 3–4 (implemented) |
 | Unindexed tail | `wal/*.bin` after `index_cursor` | 1 (full replay), 6 (tail only) |
 | Filters | attribute indexes | 7 |
 

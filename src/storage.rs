@@ -1,5 +1,6 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
+use crate::index::vector::VectorIndex;
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
@@ -35,6 +36,7 @@ pub struct LoadedNamespace {
     pub meta: NamespaceMeta,
     pub meta_etag: Option<String>,
     pub fts: Option<FtsSegment>,
+    pub vector: Option<VectorIndex>,
     pub tail_doc_ids: HashSet<String>,
 }
 
@@ -112,6 +114,13 @@ impl Storage {
         let fts =
             crate::indexer::load_fts_segment_for_query(&self.client, &self.bucket, name, &view.meta)
                 .await?;
+        let vector = crate::indexer::load_vector_index_for_query(
+            &self.client,
+            &self.bucket,
+            name,
+            &view.meta,
+        )
+        .await?;
         let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {
             let from = view.meta.index_cursor.saturating_add(1);
             let entries = replay_wal_entries(
@@ -131,6 +140,7 @@ impl Storage {
             meta: view.meta.clone(),
             meta_etag: view.meta_etag.clone(),
             fts,
+            vector,
             tail_doc_ids,
         })
     }

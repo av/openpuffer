@@ -1,6 +1,6 @@
 //! Background-built indexes on S3 (`openpuffer/{ns}/index/`).
 //!
-//! FTS inverted postings (iter 3); ANN centroid/cluster segments (iter 4).
+//! FTS inverted postings; ANN centroid/cluster segments (SPFresh-style, v1 simplified).
 
 pub mod fts;
 pub mod vector;

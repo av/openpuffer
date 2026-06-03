@@ -23,6 +23,15 @@ pub struct NamespaceMeta {
     /// Latest FTS segment id on S3 (`index/fts-{id:08}.bin`).
     #[serde(default)]
     pub fts_segment_id: u64,
+    /// Latest vector index segment id (centroids + clusters written at this WAL seq).
+    #[serde(default)]
+    pub vector_segment_id: u64,
+    /// Indexed vector attribute name (e.g. `embedding`).
+    #[serde(default)]
+    pub vector_field: String,
+    /// Vector dimensions for the ANN index (0 if no vector index).
+    #[serde(default)]
+    pub dimensions: u32,
     /// Last committed WAL file sequence (`wal/{seq:08}.bin`).
     pub wal_commit_seq: u64,
     #[serde(default)]
@@ -36,6 +45,9 @@ impl Default for NamespaceMeta {
         Self {
             index_cursor: 0,
             fts_segment_id: 0,
+            vector_segment_id: 0,
+            vector_field: String::new(),
+            dimensions: 0,
             wal_commit_seq: 0,
             schema: Value::Object(serde_json::Map::new()),
             distance_metric: DistanceMetric::default(),
@@ -74,6 +86,9 @@ mod tests {
         let meta = NamespaceMeta {
             index_cursor: 3,
             fts_segment_id: 3,
+            vector_segment_id: 3,
+            vector_field: "embedding".into(),
+            dimensions: 128,
             wal_commit_seq: 10,
             schema: serde_json::json!({"embedding": {"type": "[]f32"}}),
             distance_metric: DistanceMetric::EuclideanSquared,

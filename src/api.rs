@@ -159,6 +159,7 @@ async fn query_namespace(
                 docs: &loaded.docs,
                 meta: &loaded.meta,
                 fts: loaded.fts.as_ref(),
+                vector: loaded.vector.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
             };
             match search::execute_query(&ctx, &body) {

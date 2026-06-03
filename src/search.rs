@@ -1,4 +1,5 @@
 use crate::index::fts::{bm25_doc_score, extract_index_text, FtsSegment};
+use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, VectorIndex};
 
 use crate::meta::NamespaceMeta;
 use crate::models::{Document, QueryRequest, QueryResponse, QueryRow};
@@ -11,6 +12,7 @@ pub struct QueryContext<'a> {
     pub docs: &'a HashMap<String, Document>,
     pub meta: &'a NamespaceMeta,
     pub fts: Option<&'a FtsSegment>,
+    pub vector: Option<&'a VectorIndex>,
     pub tail_doc_ids: &'a HashSet<String>,
 }
 
@@ -42,6 +44,9 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     match &ranker {
         Ranker::Bm25 { field, query } if ctx.fts.is_some() => {
             scored = execute_bm25_indexed(ctx, field, query, top_k)?;
+        }
+        Ranker::Vector { field, query } if ctx.vector.is_some() => {
+            scored = execute_vector_indexed(ctx, field, query, top_k)?;
         }
         _ => {
             for (id, doc) in ctx.docs {
@@ -131,6 +136,60 @@ fn execute_bm25_indexed(
     Ok(ranked)
 }
 
+/// ANN via centroid/cluster probe for indexed docs + exhaustive scan on unindexed WAL tail only.
+fn execute_vector_indexed(
+    ctx: &QueryContext<'_>,
+    field: &str,
+    query: &[f64],
+    top_k: usize,
+) -> Result<Vec<(String, f64)>> {
+    let vindex = ctx.vector.expect("caller ensures vector index is present");
+    let vfield = if vindex.centroids.vector_field.is_empty() {
+        field
+    } else {
+        &vindex.centroids.vector_field
+    };
+    let metric = ctx.meta.distance_metric;
+
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    if query.len() == vindex.centroids.dimensions as usize {
+        for (id, score) in vindex.query_ann(query, top_k.saturating_mul(4).max(32)) {
+            if ctx.tail_doc_ids.contains(&id) {
+                continue;
+            }
+            if !ctx.docs.contains_key(&id) {
+                continue;
+            }
+            scores.insert(id, score);
+        }
+    }
+
+    for id in ctx.tail_doc_ids {
+        let Some(doc) = ctx.docs.get(id) else {
+            continue;
+        };
+        let Ok(doc_vec) = extract_vector(&doc.attributes, vfield) else {
+            continue;
+        };
+        if doc_vec.len() != query.len() {
+            continue;
+        }
+        let score = score_vector(query, &doc_vec, metric);
+        if score.is_finite() {
+            scores.insert(id.clone(), score);
+        }
+    }
+
+    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    ranked.truncate(top_k);
+    Ok(ranked)
+}
+
 fn parse_rank_by(v: &Value) -> Result<Ranker> {
     let arr = v
         .as_array()
@@ -182,22 +241,11 @@ fn parse_rank_by(v: &Value) -> Result<Ranker> {
     }
 }
 
-fn value_to_f64_vec(v: &Value) -> Result<Vec<f64>> {
-    let arr = v.as_array().ok_or_else(|| anyhow!("expected vector array"))?;
-    arr.iter()
-        .map(|x| {
-            x.as_f64()
-                .or_else(|| x.as_i64().map(|i| i as f64))
-                .ok_or_else(|| anyhow!("vector element must be number"))
-        })
-        .collect()
-}
-
 fn score_doc(doc: &Document, ranker: &Ranker, ctx: &QueryContext<'_>) -> Result<f64> {
     match ranker {
         Ranker::Vector { field, query } => {
             let doc_vec = extract_vector(&doc.attributes, field)?;
-            Ok(cosine_similarity(query, &doc_vec))
+            Ok(score_vector(query, &doc_vec, ctx.meta.distance_metric))
         }
         Ranker::Bm25 { field, query } => {
             let text = extract_index_text(doc, field);
@@ -233,30 +281,9 @@ fn normalize_score(s: f64) -> f64 {
     }
 }
 
-fn extract_vector(attrs: &HashMap<String, Value>, field: &str) -> Result<Vec<f64>> {
-    let v = attrs
-        .get(field)
-        .ok_or_else(|| anyhow!("missing vector field {field}"))?;
-    value_to_f64_vec(v)
-}
-
-/// Cosine similarity (higher is better). Returns 0 for zero vectors.
+/// Cosine similarity (higher is better). Re-exported for tests and legacy callers.
 pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0;
-    let mut na = 0.0;
-    let mut nb = 0.0;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
+    crate::index::vector::cosine_similarity(a, b)
 }
 
 /// Legacy per-doc BM25 when no FTS index is available (full scan fallback).
@@ -311,6 +338,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
+            vector: None,
             tail_doc_ids: &tail,
         };
         let req = QueryRequest {
@@ -354,6 +382,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
+            vector: None,
             tail_doc_ids: &tail,
         };
         let req = QueryRequest {
@@ -385,6 +414,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
+            vector: None,
             tail_doc_ids: &tail,
         };
         let req = QueryRequest {
