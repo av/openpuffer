@@ -54,6 +54,24 @@ Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Namespace export at `wal_commit_seq`, warm-cache endpoint
 - Single static binary — no sidecar databases
 
+## Quickstart (local dev with Docker)
+
+Requires [Docker](https://docs.docker.com/get-docker/) for MinIO.
+
+```bash
+./scripts/dev-up.sh      # MinIO on :9000, bucket openpuffer-dev
+./scripts/dev-serve.sh   # build + serve on :8080
+```
+
+Smoke test:
+
+```bash
+curl -s http://127.0.0.1:8080/health
+curl -s "http://127.0.0.1:8080/health?deep=1"
+```
+
+MinIO console: http://127.0.0.1:9001 (`minioadmin` / `minioadmin`). Stop storage with `docker compose down` from the repo root.
+
 ## Build
 
 ```bash
@@ -62,13 +80,13 @@ cargo build --release
 
 ## Run
 
-Create your bucket first, then:
+Create your bucket first (or use `./scripts/dev-up.sh`), then:
 
 ```bash
 openpuffer serve \
   --listen 0.0.0.0:8080 \
   --s3-endpoint http://127.0.0.1:9000 \
-  --s3-bucket mybucket \
+  --s3-bucket openpuffer-dev \
   --s3-access-key minioadmin \
   --s3-secret-key minioadmin
 ```
