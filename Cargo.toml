@@ -26,6 +26,7 @@ required-features = ["integration"]
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = "1"
 aws-sdk-s3 = "1"

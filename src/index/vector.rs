@@ -653,16 +653,7 @@ pub fn extract_vector(attrs: &HashMap<String, Value>, field: &str) -> Result<Vec
 }
 
 pub fn value_to_f64_vec(v: &Value) -> Result<Vec<f64>> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("expected vector array"))?;
-    arr.iter()
-        .map(|x| {
-            x.as_f64()
-                .or_else(|| x.as_i64().map(|i| i as f64))
-                .ok_or_else(|| anyhow::anyhow!("vector element must be number"))
-        })
-        .collect()
+    crate::vector_encoding::decode_vector_value(v)
 }
 
 pub fn vector_fields_from_schema(schema: &Value) -> Vec<String> {

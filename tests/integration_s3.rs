@@ -36,6 +36,9 @@ const NAMESPACE_DISTANCE_METRIC: &str = "itest-distance-metric";
 const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const NAMESPACE_S3_WAL_BYTES: &str = "itest-s3-wal-bytes";
 const NAMESPACE_S3_L1_CENTROIDS: &str = "itest-s3-l1-centroids";
+const NAMESPACE_VEC_B64: &str = "itest-vec-b64";
+/// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
+const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
 const STRESS_BATCH: usize = 2_000;
 const STRESS_DIM: usize = 128;
@@ -1916,4 +1919,64 @@ async fn s3_two_level_centroids_exist_on_backend() {
         keys.iter().any(|k| k.contains("/index/fts-")),
         "indexed namespace should have fts segments on S3, keys={keys:?}"
     );
+}
+
+/// Base64 vector upsert (turbopuffer f32 LE) round-trips through `include_vectors` query options.
+#[tokio::test]
+async fn base64_vector_upsert_query_include_vectors_roundtrip() {
+    use common::s3_harness::query_response_ns;
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    let write_body = json!({
+        "schema": { "embedding": "[3]f32" },
+        "upsert_rows": [{
+            "id": "b64-doc",
+            "attributes": {
+                "text": "base64 vector doc",
+                "embedding": EMB_B64_THREE
+            }
+        }]
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v2/namespaces/{}", serve.base_url, NAMESPACE_VEC_B64))
+        .json(&write_body)
+        .send()
+        .await
+        .expect("write");
+    assert_eq!(resp.status(), StatusCode::OK, "{}", resp.text().await.unwrap_or_default());
+
+    let float_q = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_VEC_B64,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 1,
+            "include_vectors": true,
+            "vector_encoding": "float"
+        }),
+    )
+    .await;
+    let row = &float_q["rows"][0];
+    assert_eq!(row["id"], "b64-doc");
+    assert_eq!(row["attributes"]["embedding"], json!([1.0, 0.0, 0.0]));
+
+    let b64_q = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_VEC_B64,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 1,
+            "include_vectors": ["embedding"],
+            "vector_encoding": "base64"
+        }),
+    )
+    .await;
+    let emb = b64_q["rows"][0]["attributes"]["embedding"]
+        .as_str()
+        .expect("base64 embedding");
+    assert_eq!(emb, EMB_B64_THREE);
 }

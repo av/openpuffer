@@ -165,6 +165,12 @@ pub struct QueryRequest {
     /// Secondary sort after `rank_by` scoring, e.g. `["priority", "desc"]` (turbopuffer attribute order shape).
     #[serde(default)]
     pub order_by: Option<Value>,
+    /// `true` or field name list — return vector columns in row attributes (turbopuffer query option).
+    #[serde(default)]
+    pub include_vectors: Option<Value>,
+    /// `float` (default) or `base64` (little-endian f32) for vectors in the response.
+    #[serde(default)]
+    pub vector_encoding: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

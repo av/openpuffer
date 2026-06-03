@@ -37,6 +37,7 @@ pub mod s3_batch;
 pub mod schema;
 pub mod search;
 pub mod storage;
+pub mod vector_encoding;
 pub mod view;
 pub mod view_cache;
 pub mod warm;

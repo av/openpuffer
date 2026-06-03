@@ -507,6 +507,22 @@ async fn write_namespace(
         },
     };
 
+    let norm_meta = crate::meta::NamespaceMeta {
+        schema: effective_schema.clone(),
+        ..Default::default()
+    };
+    for doc in &mut upserts {
+        if let Err(e) =
+            crate::vector_encoding::normalize_document_vectors(&mut doc.attributes, &norm_meta)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{e:#}")})),
+            )
+                .into_response();
+        }
+    }
+
     if let Some(metric) = distance_metric {
         if let Ok(Some((meta, _))) = crate::namespace::fetch_meta(
             state.storage.client(),

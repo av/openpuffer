@@ -8,6 +8,9 @@ use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, Vecto
 
 use crate::meta::NamespaceMeta;
 use crate::models::{Document, QueryPerformance, QueryRequest, QueryResponse, QueryRow};
+use crate::vector_encoding::{
+    project_row_attributes, IncludeVectors, VectorEncoding,
+};
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -87,6 +90,27 @@ struct QueryPlanner<'a, 'b> {
     stats: QueryStats,
 }
 
+/// Parse turbopuffer `include_attributes` (`true` | `false` | attribute name list).
+fn parse_include_attributes(v: &Option<Value>) -> Result<(bool, Option<HashSet<String>>)> {
+    match v {
+        None => Ok((true, None)),
+        Some(Value::Bool(false)) => Ok((false, None)),
+        Some(Value::Bool(true)) => Ok((true, None)),
+        Some(Value::Array(arr)) => {
+            let names: HashSet<String> = arr
+                .iter()
+                .map(|x| {
+                    x.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| anyhow!("include_attributes entries must be strings"))
+                })
+                .collect::<Result<_>>()?;
+            Ok((true, Some(names)))
+        }
+        Some(_) => bail!("include_attributes must be true, false, or an array of field names"),
+    }
+}
+
 pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<QueryResponse> {
     let started = Instant::now();
     let filter_expr = match req.filters.as_ref() {
@@ -151,21 +175,22 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     });
     ranked.truncate(top_k);
 
-    let include_attrs = match &req.include_attributes {
-        None => true,
-        Some(Value::Bool(false)) => false,
-        Some(Value::Bool(true)) => true,
-        Some(_) => true,
-    };
+    let (include_attrs, include_attr_names) = parse_include_attributes(&req.include_attributes)?;
+    let include_vectors = IncludeVectors::parse(req.include_vectors.as_ref())?;
+    let vector_encoding = VectorEncoding::parse(req.vector_encoding.as_deref())?;
     let rows = ranked
         .into_iter()
         .map(|(id, score)| {
-            let doc = effective_ctx.docs.get(&id);
-            let attributes = if include_attrs {
-                doc.map(|d| d.attributes.clone())
-            } else {
-                None
-            };
+            let attributes = effective_ctx.docs.get(&id).and_then(|doc| {
+                project_row_attributes(
+                    doc,
+                    effective_ctx.meta,
+                    include_attrs,
+                    include_attr_names.as_ref(),
+                    &include_vectors,
+                    vector_encoding,
+                )
+            });
             QueryRow {
                 id,
                 attributes,
@@ -778,6 +803,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows[0].id, "a");
@@ -827,6 +854,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows[0].dist.unwrap_or(0.0) == 0.0);
@@ -878,6 +907,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let vector_only = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", query_vec.clone()]),
@@ -886,6 +917,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let hybrid = QueryRequest {
             rank_by: json!([
@@ -898,6 +931,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
 
         let meta = NamespaceMeta {
@@ -973,9 +1008,60 @@ mod tests {
             include_attributes: None,
             consistency: Some("eventual".into()),
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows.iter().all(|r| r.id != "a"));
+    }
+
+    #[test]
+    fn include_vectors_returns_base64_encoding() {
+        let meta = NamespaceMeta {
+            schema: json!({ "embedding": "[2]f32" }),
+            ..Default::default()
+        };
+        let doc = Document {
+            id: "v".into(),
+            attributes: [
+                ("text".into(), json!("x")),
+                ("embedding".into(), json!([1.0, 0.0])),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let mut docs = HashMap::new();
+        docs.insert("v".into(), doc);
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &docs,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "x"]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: Some(json!(["text"])),
+            consistency: None,
+            order_by: None,
+            include_vectors: Some(json!(true)),
+            vector_encoding: Some("base64".into()),
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        let emb = resp.rows[0]
+            .attributes
+            .as_ref()
+            .unwrap()
+            .get("embedding")
+            .unwrap();
+        assert!(emb.as_str().is_some());
+        assert!(resp.rows[0].attributes.as_ref().unwrap().contains_key("text"));
     }
 
     #[test]
@@ -1013,6 +1099,8 @@ mod tests {
             include_attributes: Some(Value::Bool(false)),
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows.len(), 1);
@@ -1099,6 +1187,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(!resp.rows.is_empty());
@@ -1125,6 +1215,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.performance.as_ref().unwrap().storage_roundtrips, Some(4));
@@ -1186,6 +1278,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         let perf = resp.performance.expect("performance stats");
@@ -1222,6 +1316,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty());
@@ -1253,6 +1349,8 @@ mod tests {
                 include_attributes: None,
                 consistency: None,
                 order_by: None,
+                include_vectors: None,
+                vector_encoding: None,
             };
             assert!(execute_query(&ctx, &req).is_err());
         }
@@ -1287,6 +1385,8 @@ mod tests {
                 include_attributes: None,
                 consistency: None,
                 order_by: None,
+                include_vectors: None,
+                vector_encoding: None,
             };
             assert!(execute_query(&ctx, &req).is_err(), "expected error for {req:?}");
         }
@@ -1343,6 +1443,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let err = execute_query(&ctx, &req).unwrap_err().to_string();
         assert!(err.contains("does not match"), "{err}");
@@ -1401,6 +1503,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty());
@@ -1488,6 +1592,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: Some(json!(["priority", "desc"])),
+            include_vectors: None,
+            vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         let ids: Vec<_> = resp.rows.iter().map(|r| r.id.as_str()).collect();
@@ -1521,6 +1627,8 @@ mod tests {
             include_attributes: None,
             consistency: None,
             order_by: Some(json!(["priority"])),
+            include_vectors: None,
+            vector_encoding: None,
         };
         let err = execute_query(&ctx, &req).unwrap_err().to_string();
         assert!(err.contains("order_by"), "{err}");

@@ -78,6 +78,8 @@ fn perf_indexed_vector_query_candidate_ratio_and_latency() {
         include_attributes: None,
         consistency: None,
         order_by: None,
+        include_vectors: None,
+        vector_encoding: None,
     };
 
     // Warm planner + index structures.

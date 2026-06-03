@@ -114,6 +114,12 @@
 - label: query returns performance.candidates_ratio for indexed ANN regression guard
   command: cargo test --lib indexed_vector_candidates_ratio_under_ten_percent -q
   tags: [implemented]
+- label: query accepts include_vectors and vector_encoding float or base64 on responses
+  command: grep -q 'include_vectors' src/models.rs && grep -q 'vector_encoding' src/vector_encoding.rs
+  tags: [implemented]
+- label: write accepts base64-encoded f32 little-endian vectors decoded on upsert
+  command: grep -q 'normalize_document_vectors' src/vector_encoding.rs && grep -q 'decode_base64_f32_le' src/vector_encoding.rs
+  tags: [implemented]
 - label: perf test on 5k docs asserts candidates_ratio stays below 12 percent
   command: cargo test -F perf --test perf_namespace -q
   tags: [implemented]
@@ -227,6 +233,9 @@
   tags: [implemented]
 - label: integration test return_affected_ids_lists_upserts_and_deletes returns id lists
   command: cargo test -F integration --test integration_s3 return_affected_ids_lists_upserts -q
+  tags: [implemented]
+- label: integration test base64_vector_upsert_query_include_vectors_roundtrip decodes write and encodes query
+  command: cargo test -F integration --test integration_s3 base64_vector_upsert_query_include_vectors -q
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
