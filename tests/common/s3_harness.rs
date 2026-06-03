@@ -555,11 +555,15 @@ pub fn free_port() -> u16 {
 }
 
 pub fn openpuffer_bin() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_openpuffer")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/openpuffer")
-        })
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_openpuffer") {
+        return PathBuf::from(p);
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let release = manifest.join("target/release/openpuffer");
+    if release.exists() {
+        return release;
+    }
+    manifest.join("target/debug/openpuffer")
 }
 
 pub struct ServeHandle {

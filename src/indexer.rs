@@ -244,7 +244,14 @@ pub async fn index_wal_range(
             continue;
         }
 
-        let next_meta = meta_after_index_commit(&fresh_meta, to, to, to, vector_fields)?;
+        let next_meta = meta_after_index_commit(
+            &fresh_meta,
+            to,
+            to,
+            to,
+            vector_fields,
+            ann_build.ann_version,
+        )?;
 
         let meta_body = serde_json::to_vec(&next_meta)?;
         let mkey = meta_key(namespace);
@@ -828,6 +835,7 @@ pub fn meta_after_index_commit(
     fts_segment_id: u64,
     filter_segment_id: u64,
     vector_fields: Vec<VectorFieldConfig>,
+    indexer_ann_version: u8,
 ) -> Result<NamespaceMeta> {
     if index_cursor > meta.wal_commit_seq {
         return Err(anyhow!(
@@ -849,6 +857,9 @@ pub fn meta_after_index_commit(
     push_segment_id(&mut next.filter_segment_ids, filter_segment_id);
     next.vector_fields = vector_fields;
     sync_legacy_vector_fields(&mut next);
+    if indexer_ann_version >= crate::index::vector::ANN_VERSION_V3 {
+        next.preferred_ann_version = crate::index::vector::ANN_VERSION_V3;
+    }
     Ok(next)
 }
 
@@ -1159,6 +1170,7 @@ async fn index_delta_from_wal_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::vector::ANN_VERSION_V2;
     use crate::meta::NamespaceMeta;
 
     #[test]
@@ -1175,7 +1187,7 @@ mod tests {
             segment_ids: vec![5],
             ..Default::default()
         };
-        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![vf]).unwrap();
+        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![vf], ANN_VERSION_V2).unwrap();
         assert_eq!(next.index_cursor, 5);
         assert_eq!(next.fts_segment_id, 5);
         assert_eq!(next.fts_segment_ids, vec![5]);
@@ -1195,7 +1207,7 @@ mod tests {
             index_cursor: 4,
             ..Default::default()
         };
-        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![]).unwrap();
+        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![], ANN_VERSION_V2).unwrap();
         assert_eq!(next.wal_commit_seq, 10);
         assert_eq!(next.index_cursor, 5);
     }
@@ -1207,7 +1219,20 @@ mod tests {
             wal_commit_seq: 5,
             ..Default::default()
         };
-        assert!(meta_after_index_commit(&meta, 5, 5, 5, vec![]).is_err());
+        assert!(meta_after_index_commit(&meta, 5, 5, 5, vec![], ANN_VERSION_V2).is_err());
+    }
+
+    #[test]
+    fn meta_after_index_commit_sets_preferred_ann_version_v3() {
+        use crate::index::vector::{ANN_VERSION_V2, ANN_VERSION_V3};
+        let meta = NamespaceMeta {
+            wal_commit_seq: 2,
+            ..Default::default()
+        };
+        let next = meta_after_index_commit(&meta, 1, 1, 1, vec![], ANN_VERSION_V3).unwrap();
+        assert_eq!(next.preferred_ann_version, ANN_VERSION_V3);
+        let next_v2 = meta_after_index_commit(&next, 2, 2, 2, vec![], ANN_VERSION_V2).unwrap();
+        assert_eq!(next_v2.preferred_ann_version, ANN_VERSION_V3);
     }
 
     #[test]

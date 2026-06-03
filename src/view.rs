@@ -5,7 +5,7 @@
 
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
-use crate::namespace::{fetch_meta, load_docs_at_wal_commit, replay_wal_range};
+use crate::namespace::{fetch_meta, load_docs_at_wal_commit, read_wal_entry};
 use crate::wal_compaction::wal_replay_from;
 use crate::s3_batch;
 use crate::wal::{
@@ -23,6 +23,8 @@ pub struct NamespaceView {
     pub meta_etag: Option<String>,
     /// Last WAL sequence applied into `docs` (0 = empty namespace).
     pub last_applied_wal_seq: u64,
+    /// Last WAL seq that touched each doc (for eventual consistency filtering).
+    pub doc_last_wal_seq: HashMap<String, u64>,
 }
 
 impl NamespaceView {
@@ -32,11 +34,45 @@ impl NamespaceView {
             meta: NamespaceMeta::default(),
             meta_etag: None,
             last_applied_wal_seq: 0,
+            doc_last_wal_seq: HashMap::new(),
+        }
+    }
+
+    /// Doc map for queries; eventual consistency omits docs not yet in `index/`.
+    pub fn docs_for_query(&self, skip_wal_tail: bool) -> HashMap<String, Document> {
+        if !skip_wal_tail || self.meta.index_cursor >= self.meta.wal_commit_seq {
+            return self.docs.clone();
+        }
+        self.docs
+            .iter()
+            .filter(|(id, _)| {
+                self.doc_last_wal_seq
+                    .get(*id)
+                    .copied()
+                    .unwrap_or(0)
+                    <= self.meta.index_cursor
+            })
+            .map(|(id, doc)| (id.clone(), doc.clone()))
+            .collect()
+    }
+
+    fn record_doc_wal_seq(&mut self, seq: u64, entry: &WalEntry) {
+        for id in &entry.deletes {
+            self.doc_last_wal_seq.remove(id);
+        }
+        if let Ok(docs) = entry.clone().into_documents() {
+            for doc in docs {
+                self.doc_last_wal_seq.insert(doc.id, seq);
+            }
+        }
+        for doc in &entry.patches {
+            self.doc_last_wal_seq.insert(doc.id.clone(), seq);
         }
     }
 
     /// Apply a committed WAL batch locally (after group-commit flush).
     pub fn apply_committed(&mut self, seq: u64, entry: &WalEntry) -> Result<()> {
+        self.record_doc_wal_seq(seq, entry);
         apply_entry(&mut self.docs, entry)?;
         self.last_applied_wal_seq = seq;
         if seq > self.meta.wal_commit_seq {
@@ -67,6 +103,8 @@ impl NamespaceView {
             let (docs, last) =
                 load_docs_at_wal_commit(client, bucket, namespace, &meta).await?;
             self.docs = docs;
+            self.doc_last_wal_seq =
+                build_doc_last_wal_seq(client, bucket, namespace, &meta, Some(&self.docs)).await?;
             self.last_applied_wal_seq = last;
             self.meta = meta;
             self.meta_etag = etag;
@@ -74,16 +112,10 @@ impl NamespaceView {
         }
 
         let from = self.last_applied_wal_seq.saturating_add(1);
-        if from <= meta.wal_commit_seq {
-            replay_wal_range(
-                client,
-                bucket,
-                namespace,
-                &mut self.docs,
-                from,
-                meta.wal_commit_seq,
-            )
-            .await?;
+        for seq in from..=meta.wal_commit_seq {
+            let entry = read_wal_entry(client, bucket, namespace, seq).await?;
+            self.record_doc_wal_seq(seq, &entry);
+            apply_entry(&mut self.docs, &entry)?;
         }
 
         self.last_applied_wal_seq = meta.wal_commit_seq;
@@ -99,11 +131,14 @@ impl NamespaceView {
         };
         let (docs, last) =
             load_docs_at_wal_commit(client, bucket, namespace, &meta).await?;
+        let doc_last_wal_seq =
+            build_doc_last_wal_seq(client, bucket, namespace, &meta, Some(&docs)).await?;
         Ok(Self {
             docs,
             meta,
             meta_etag: etag,
             last_applied_wal_seq: last,
+            doc_last_wal_seq,
         })
     }
 
@@ -129,6 +164,7 @@ impl NamespaceView {
                     meta,
                     meta_etag: etag,
                     last_applied_wal_seq: 0,
+                    doc_last_wal_seq: HashMap::new(),
                 },
                 wal_roundtrips,
                 wal_s3_keys,
@@ -160,17 +196,82 @@ impl NamespaceView {
                 }
             }
         }
+        let mut doc_last_wal_seq = HashMap::new();
+        if meta.wal_snapshot_seq > 0 {
+            for id in docs.keys() {
+                doc_last_wal_seq.insert(id.clone(), meta.wal_snapshot_seq);
+            }
+        }
+        if let Some(replay_from) = wal_replay_from(last_applied.max(meta.wal_snapshot_seq), last) {
+            for seq in replay_from..=last {
+                if let Some(bytes) = wal_bytes.get(&seq) {
+                    if let Some(entry) =
+                        decode_segment_with_policy(bytes, seq, policy)?
+                    {
+                        for id in &entry.deletes {
+                            doc_last_wal_seq.remove(id);
+                        }
+                        if let Ok(batch) = entry.clone().into_documents() {
+                            for doc in batch {
+                                doc_last_wal_seq.insert(doc.id, seq);
+                            }
+                        }
+                        for doc in &entry.patches {
+                            doc_last_wal_seq.insert(doc.id.clone(), seq);
+                        }
+                    }
+                }
+            }
+        }
         Ok((
             Self {
                 docs,
                 meta,
                 meta_etag: etag,
                 last_applied_wal_seq: last,
+                doc_last_wal_seq,
             },
             wal_roundtrips,
             wal_s3_keys,
         ))
     }
+}
+
+async fn build_doc_last_wal_seq(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    seed_docs: Option<&HashMap<String, Document>>,
+) -> Result<HashMap<String, u64>> {
+    let mut map = HashMap::new();
+    if meta.wal_snapshot_seq > 0 {
+        if let Some(docs) = seed_docs {
+            for id in docs.keys() {
+                map.insert(id.clone(), meta.wal_snapshot_seq);
+            }
+        }
+    }
+    let from = if meta.wal_snapshot_seq > 0 {
+        meta.wal_snapshot_seq.saturating_add(1)
+    } else {
+        1
+    };
+    for seq in from..=meta.wal_commit_seq {
+        let entry = read_wal_entry(client, bucket, namespace, seq).await?;
+        for id in &entry.deletes {
+            map.remove(id);
+        }
+        if let Ok(batch) = entry.clone().into_documents() {
+            for doc in batch {
+                map.insert(doc.id, seq);
+            }
+        }
+        for doc in &entry.patches {
+            map.insert(doc.id.clone(), seq);
+        }
+    }
+    Ok(map)
 }
 
 #[cfg(test)]

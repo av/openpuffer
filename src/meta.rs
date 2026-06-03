@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::index::vector::vector_fields_from_schema;
+use crate::index::vector::{vector_fields_from_schema, ANN_VERSION_V2};
 use crate::schema::{vector_dimensions_for_field, vector_element_for_field, VectorElement};
 
 pub const META_RETRIES: u32 = 8;
@@ -113,6 +113,20 @@ pub struct NamespaceMeta {
     pub schema: Value,
     #[serde(default)]
     pub distance_metric: DistanceMetric,
+    /// Preferred ANN layout for index builds on this namespace (`2` default, `3` when indexed under v3).
+    #[serde(
+        default = "default_preferred_ann_version",
+        skip_serializing_if = "is_default_preferred_ann_version"
+    )]
+    pub preferred_ann_version: u8,
+}
+
+fn default_preferred_ann_version() -> u8 {
+    ANN_VERSION_V2
+}
+
+fn is_default_preferred_ann_version(v: &u8) -> bool {
+    *v == ANN_VERSION_V2
 }
 
 impl Default for NamespaceMeta {
@@ -132,6 +146,7 @@ impl Default for NamespaceMeta {
             wal_snapshot_seq: 0,
             schema: Value::Object(serde_json::Map::new()),
             distance_metric: DistanceMetric::default(),
+            preferred_ann_version: default_preferred_ann_version(),
         }
     }
 }
@@ -388,6 +403,15 @@ mod tests {
             DistanceMetric::EuclideanSquared
         );
         assert!(resolve_distance_metric(&committed, Some(DistanceMetric::CosineDistance)).is_err());
+    }
+
+    #[test]
+    fn meta_json_omits_default_preferred_ann_version() {
+        let meta = NamespaceMeta::default();
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("preferred_ann_version").is_none());
+        let back: NamespaceMeta = serde_json::from_value(json).unwrap();
+        assert_eq!(back.preferred_ann_version, ANN_VERSION_V2);
     }
 
     #[test]

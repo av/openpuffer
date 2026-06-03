@@ -449,8 +449,9 @@ impl Storage {
         } else {
             None
         };
+        let docs = view.docs_for_query(skip_wal_tail);
         Ok(LoadedNamespace {
-            docs: view.docs.clone(),
+            docs,
             meta: view.meta.clone(),
             meta_etag: view.meta_etag.clone(),
             fts,
