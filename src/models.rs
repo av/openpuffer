@@ -80,6 +80,10 @@ pub struct WriteRequest {
     /// Include `upserted_ids` and `deleted_ids` in the write response.
     #[serde(default)]
     pub return_affected_ids: bool,
+    /// When true, block the write response until the background indexer catches up
+    /// (`index_cursor == wal_commit_seq`). Times out after 30s.
+    #[serde(default)]
+    pub block_until_indexed: bool,
 }
 
 #[derive(Debug, Deserialize)]

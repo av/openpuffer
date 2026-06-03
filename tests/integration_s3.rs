@@ -2835,6 +2835,7 @@ async fn include_attributes_field_projection() {
         NAMESPACE_INCLUDE_ATTRS,
         json!({
             "schema": { "embedding": "[3]f32" },
+            "block_until_indexed": true,
             "upsert_rows": [{
                 "id": "proj-1",
                 "attributes": {
@@ -2847,7 +2848,6 @@ async fn include_attributes_field_projection() {
         }),
     )
     .await;
-    sleep(Duration::from_millis(1200)).await;
 
     let v = query_response_ns(
         &serve.base_url,
@@ -2880,6 +2880,52 @@ async fn include_attributes_field_projection() {
     assert!(
         no_attrs["rows"][0]["attributes"].is_null(),
         "include_attributes:false must omit attributes"
+    );
+}
+
+const NAMESPACE_BLOCK_INDEXED: &str = "itest-block-until-indexed";
+
+/// `block_until_indexed: true` returns 200 only after `index_cursor` catches up.
+#[tokio::test]
+async fn block_until_indexed_write_waits_for_background_indexer() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BLOCK_INDEXED,
+        json!({
+            "schema": { "text": { "type": "string", "full_text_search": true } },
+            "block_until_indexed": true,
+            "upsert_rows": [{
+                "id": "block-1",
+                "attributes": { "text": "block until indexed smoke" }
+            }]
+        }),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let meta_url = format!(
+        "{}/v1/namespaces/{}",
+        serve.base_url, NAMESPACE_BLOCK_INDEXED
+    );
+    let meta: Value = client
+        .get(&meta_url)
+        .send()
+        .await
+        .expect("metadata get")
+        .json()
+        .await
+        .expect("metadata json");
+    let cursor = meta["index_cursor"].as_u64().unwrap_or(0);
+    let commit = meta["wal_commit_seq"].as_u64().unwrap_or(0);
+    assert!(commit > 0, "wal_commit_seq should be set");
+    assert_eq!(
+        cursor, commit,
+        "write with block_until_indexed must return after indexer caught up"
     );
 }
 

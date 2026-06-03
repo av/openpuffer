@@ -61,6 +61,8 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
+Optional **`block_until_indexed: true`** on the write body blocks the HTTP response until the background indexer catches up (`index_cursor == wal_commit_seq`), up to **30s** (504 on timeout). Intended for tests and clients that need indexed segments before proceeding; default writes remain decoupled.
+
 ### Schema types (`schema` on write)
 
 Declared in `meta.json` and merged on each write. Inferred types work for strings and vectors; non-inferrable types must be declared explicitly (turbopuffer [`write` schema](https://turbopuffer.com/docs/write#param-schema)):

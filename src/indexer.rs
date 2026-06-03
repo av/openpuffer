@@ -704,11 +704,25 @@ async fn list_namespace_names(client: &Client, bucket: &str) -> Result<Vec<Strin
     Ok(namespaces)
 }
 
+/// Default timeout for write `block_until_indexed: true`.
+pub const BLOCK_UNTIL_INDEXED_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Block until `index_cursor` catches up to `wal_commit_seq` (tests / integration).
 pub async fn wait_until_indexed(
     client: &Client,
     bucket: &str,
     namespace: &str,
+    timeout: Duration,
+) -> Result<()> {
+    wait_until_indexed_with_indexer(client, bucket, namespace, None, timeout).await
+}
+
+/// Like [`wait_until_indexed`], optionally nudging the background indexer each poll.
+pub async fn wait_until_indexed_with_indexer(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    indexer: Option<&Arc<BackgroundIndexer>>,
     timeout: Duration,
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -719,6 +733,9 @@ pub async fn wait_until_indexed(
             if !needs_indexing(&meta) {
                 return Ok(());
             }
+        }
+        if let Some(idx) = indexer {
+            idx.wake(namespace).await;
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(anyhow!(

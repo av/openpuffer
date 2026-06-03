@@ -3,7 +3,10 @@ use crate::config::{AnnProbeConfig, LimitsConfig};
 use crate::limits::cap_filter_batch;
 use crate::cache::SegmentCache;
 use crate::filter::{parse_filter, should_apply_delete, should_apply_patch, should_apply_upsert};
-use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
+use crate::indexer::{
+    approx_unindexed_bytes, wait_until_indexed_with_indexer, BackgroundIndexer,
+    BLOCK_UNTIL_INDEXED_TIMEOUT,
+};
 use crate::models::IndexStatus;
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
@@ -42,6 +45,7 @@ pub struct Storage {
     bucket: String,
     cache: Arc<SegmentCache>,
     write_buffer: WriteBufferManager,
+    background_indexer: Arc<BackgroundIndexer>,
     views: Arc<Mutex<ViewCache>>,
     limits: LimitsConfig,
     namespace_list_cache: StdMutex<NamespaceListCache>,
@@ -79,19 +83,32 @@ impl Storage {
             client.clone(),
             bucket.clone(),
             write_buffer_config,
-            Some(background_indexer),
+            Some(Arc::clone(&background_indexer)),
         );
         Arc::new(Self {
             client,
             bucket,
             cache,
             write_buffer,
+            background_indexer,
             views: Arc::new(Mutex::new(ViewCache::new(max_pinned_namespaces))),
             limits,
             namespace_list_cache: StdMutex::new(NamespaceListCache::new(
                 DEFAULT_NAMESPACE_LIST_TTL,
             )),
         })
+    }
+
+    /// Block until background indexing catches up (`index_cursor == wal_commit_seq`).
+    pub async fn wait_until_indexed(&self, namespace: &str) -> Result<()> {
+        wait_until_indexed_with_indexer(
+            &self.client,
+            &self.bucket,
+            namespace,
+            Some(&self.background_indexer),
+            BLOCK_UNTIL_INDEXED_TIMEOUT,
+        )
+        .await
     }
 
     /// Drop cached `ListObjectsV2` namespace listing (new/deleted/copied namespaces).

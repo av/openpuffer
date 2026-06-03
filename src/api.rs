@@ -656,11 +656,23 @@ async fn write_namespace(
         )
         .await
     {
-        Ok(stats) => (
-            StatusCode::OK,
-            Json(crate::models::WriteResponse::from_stats(name, stats)),
-        )
-            .into_response(),
+        Ok(stats) => {
+            if body.block_until_indexed {
+                if let Err(e) = state.storage.wait_until_indexed(&name).await {
+                    error!("block_until_indexed {name}: {e:#}");
+                    let msg = e.to_string();
+                    if msg.contains("did not catch up") {
+                        return api_error(StatusCode::GATEWAY_TIMEOUT, msg);
+                    }
+                    return storage_error_response(e);
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(crate::models::WriteResponse::from_stats(name, stats)),
+            )
+                .into_response()
+        }
         Err(e) => {
             error!("write namespace {name}: {e:#}");
             let msg = e.to_string();
