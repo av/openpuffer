@@ -306,17 +306,9 @@ async fn write_vector_index(
     vindex: &VectorIndex,
     cache: &Arc<SegmentCache>,
 ) -> Result<()> {
+    // Publish L0 last so cold/warm queries never see a new probe plan before L1/clusters exist.
     let l0_key = CentroidIndexL0::key(namespace, field);
     let l0_body = vindex.l0.encode()?;
-    let l0_resp = client
-        .put_object()
-        .bucket(bucket)
-        .key(&l0_key)
-        .body(ByteStream::from(l0_body.clone()))
-        .send()
-        .await
-        .context("put centroids-l0.bin")?;
-    cache.populate_after_put(bucket, &l0_key, &l0_body, l0_resp.e_tag());
 
     for l1 in vindex.l1.values() {
         let key = CentroidIndexL1::key(namespace, field, l1.coarse_id);
@@ -373,6 +365,16 @@ async fn write_vector_index(
             .with_context(|| format!("put centroids-l2-{coarse_id:08}-{l2_id:08}"))?;
         cache.populate_after_put(bucket, &key, &body, resp.e_tag());
     }
+
+    let l0_resp = client
+        .put_object()
+        .bucket(bucket)
+        .key(&l0_key)
+        .body(ByteStream::from(l0_body.clone()))
+        .send()
+        .await
+        .context("put centroids-l0.bin")?;
+    cache.populate_after_put(bucket, &l0_key, &l0_body, l0_resp.e_tag());
     Ok(())
 }
 

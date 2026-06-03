@@ -974,6 +974,9 @@ pub(crate) fn decode_clusters_probed(
         let Some(bytes) = bytes else {
             continue;
         };
+        if bytes.is_empty() {
+            continue;
+        }
         clusters.insert(fine_id, ClusterSegment::decode(bytes)?);
     }
     Ok(clusters)
