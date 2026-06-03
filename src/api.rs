@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
+use crate::export::MAX_EXPORT_LIMIT;
 use crate::models::{
-    validate_doc_id, Document, HealthResponse, NamespaceSummary,
+    validate_doc_id, Document, ExportRequest, ExportResponse, HealthResponse, NamespaceSummary,
     NamespacesResponse, QueryRequest, WriteRequest,
 };
 use crate::schema::{merge_schema, validate_patch_attributes};
@@ -8,7 +9,7 @@ use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
@@ -29,6 +30,10 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces/{name}", get(get_namespace_metadata))
+        .route(
+            "/v1/namespaces/{name}/export",
+            get(export_namespace_get).post(export_namespace_post),
+        )
         .route("/v1/namespaces/{name}/warm", post(warm_namespace_handler))
         .route("/v2/namespaces/{name}", post(write_namespace))
         .route("/v2/namespaces/{name}/query", post(query_namespace))
@@ -74,6 +79,130 @@ async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
             storage_error_response(e)
         }
     }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ExportQueryParams {
+    #[serde(default)]
+    last_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+async fn export_namespace_get(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<ExportQueryParams>,
+) -> impl IntoResponse {
+    export_namespace_impl(
+        &state,
+        &name,
+        params.last_id.as_deref(),
+        params.limit,
+        params.format.as_deref(),
+    )
+    .await
+}
+
+async fn export_namespace_post(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Option<Json<ExportRequest>>,
+) -> impl IntoResponse {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    export_namespace_impl(
+        &state,
+        &name,
+        req.last_id.as_deref(),
+        req.limit,
+        req.format.as_deref(),
+    )
+    .await
+}
+
+async fn export_namespace_impl(
+    state: &AppState,
+    name: &str,
+    last_id: Option<&str>,
+    limit: Option<usize>,
+    format: Option<&str>,
+) -> axum::response::Response {
+    if let Some(id) = last_id {
+        if let Err(msg) = validate_doc_id(id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    }
+    let limit = limit.map(|n| n.min(MAX_EXPORT_LIMIT));
+    match state
+        .storage
+        .export_namespace_page(name, last_id, limit)
+        .await
+    {
+        Ok(page) => export_page_response(page, format),
+        Err(e) => {
+            error!("export namespace {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "namespace not found"})),
+                )
+                    .into_response();
+            }
+            storage_error_response(e)
+        }
+    }
+}
+
+fn export_page_response(
+    page: crate::export::ExportPage,
+    format: Option<&str>,
+) -> axum::response::Response {
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&page.wal_commit_seq.to_string()) {
+        headers.insert("X-Openpuffer-Wal-Commit-Seq", v);
+    }
+    if let Some(ref next) = page.next_last_id {
+        if let Ok(v) = HeaderValue::from_str(next) {
+            headers.insert("X-Openpuffer-Export-Next-Last-Id", v);
+        }
+    }
+
+    if format.map(|f| f.eq_ignore_ascii_case("ndjson")).unwrap_or(false) {
+        let mut body = String::new();
+        for (i, row) in page.rows.iter().enumerate() {
+            if i > 0 {
+                body.push('\n');
+            }
+            match serde_json::to_string(row) {
+                Ok(line) => body.push_str(&line),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": e.to_string()})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-ndjson"),
+        );
+        return (StatusCode::OK, headers, body).into_response();
+    }
+
+    let resp = ExportResponse {
+        wal_commit_seq: page.wal_commit_seq,
+        rows: page.rows,
+        next_last_id: page.next_last_id,
+    };
+    (StatusCode::OK, headers, Json(resp)).into_response()
 }
 
 async fn warm_namespace_handler(

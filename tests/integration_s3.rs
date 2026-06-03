@@ -28,6 +28,7 @@ const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
 const NAMESPACE_PATCH: &str = "itest-patch";
 const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
 const NAMESPACE_RESTART_WRITE: &str = "itest-restart-write";
+const NAMESPACE_EXPORT: &str = "itest-export";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -1105,4 +1106,116 @@ async fn write_after_restart_before_query_preserves_prior_docs() {
         ids.contains(&"seed-a".to_string()),
         "prior WAL doc must survive cold-cache write, got {ids:?}"
     );
+}
+
+async fn export_all_ids(base_url: &str, namespace: &str, page_limit: Option<usize>) -> Vec<String> {
+    let client = reqwest::Client::new();
+    let mut all = Vec::new();
+    let mut last_id: Option<String> = None;
+    loop {
+        let mut url = format!("{base_url}/v1/namespaces/{namespace}/export");
+        let mut sep = '?';
+        if let Some(ref lid) = last_id {
+            url.push_str(&format!("{sep}last_id={lid}"));
+            sep = '&';
+        }
+        if let Some(limit) = page_limit {
+            url.push_str(&format!("{sep}limit={limit}"));
+        }
+        let resp = client.get(&url).send().await.expect("export GET");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "export failed: {}",
+            resp.text().await.unwrap_or_default()
+        );
+        let v: Value = resp.json().await.expect("export json");
+        let commit = v["wal_commit_seq"].as_u64().unwrap_or(0);
+        assert!(commit > 0, "export wal_commit_seq must be set");
+        let rows = v["rows"].as_array().expect("export rows array");
+        for row in rows {
+            all.push(row["id"].as_str().expect("row id").to_string());
+        }
+        match v["next_last_id"].as_str() {
+            Some(next) => last_id = Some(next.to_string()),
+            None => break,
+        }
+        if rows.is_empty() {
+            break;
+        }
+    }
+    all.sort();
+    all.dedup();
+    all
+}
+
+/// Export reconstructs all document ids from WAL snapshot (paginated `last_id`).
+#[tokio::test]
+async fn export_after_writes_returns_all_doc_ids() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    let expected = ["exp-a", "exp-b", "exp-c"];
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_EXPORT,
+        json!([
+            {"id": "exp-a", "attributes": {"text": "one", "tier": "x"}},
+            {"id": "exp-b", "attributes": {"text": "two", "tier": "x"}},
+            {"id": "exp-c", "attributes": {"text": "three", "tier": "x"}},
+        ]),
+    )
+    .await;
+
+    let ids_full = export_all_ids(&serve.base_url, NAMESPACE_EXPORT, None).await;
+    for id in &expected {
+        assert!(ids_full.contains(&id.to_string()), "export missing {id}, got {ids_full:?}");
+    }
+    assert_eq!(ids_full.len(), expected.len());
+
+    // Paginate with limit=1 — three pages, same ids.
+    let ids_paged = export_all_ids(&serve.base_url, NAMESPACE_EXPORT, Some(1)).await;
+    assert_eq!(ids_paged, ids_full);
+
+    // POST export with ndjson body
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/namespaces/{NAMESPACE_EXPORT}/export",
+            serve.base_url
+        ))
+        .json(&json!({"format": "ndjson"}))
+        .send()
+        .await
+        .expect("export POST");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let commit_seq = resp
+        .headers()
+        .get("x-openpuffer-wal-commit-seq")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert!(commit_seq > 0);
+    let body = resp.text().await.expect("ndjson body");
+    let lines: Vec<&str> = body.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), expected.len());
+    for line in lines {
+        let row: Value = serde_json::from_str(line).expect("ndjson row");
+        assert!(row["id"].is_string());
+    }
+
+    let meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_EXPORT).await;
+    assert_eq!(meta.wal_commit_seq, commit_seq);
 }

@@ -7,6 +7,8 @@
 //!   GET  /health
 //!   GET  /v1/namespaces
 //!   GET  /v1/namespaces/{name}      — namespace metadata (index cursor, WAL commit, unindexed bytes)
+//!   GET  /v1/namespaces/{name}/export — WAL snapshot export (paginated by `last_id`)
+//!   POST /v1/namespaces/{name}/export — same with JSON body
 //!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
 //!   POST /v2/namespaces/{name}        — write (upsert_rows, schema, deletes, delete_by_filter)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
@@ -23,6 +25,7 @@ pub mod buffer;
 pub mod cache;
 pub mod commit_lock;
 pub mod config;
+pub mod export;
 pub mod filter;
 pub mod index;
 pub mod indexer;

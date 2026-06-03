@@ -10,6 +10,7 @@ use crate::models::Document;
 use crate::namespace::replay_wal_entries;
 use crate::s3_batch::replay_wal_entries_batched;
 use crate::search::{matching_doc_ids_for_filter, QueryConsistency, QueryContext};
+use crate::export::{export_page, ExportPage, DEFAULT_EXPORT_LIMIT};
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
 use crate::warm::{warm_namespace, WarmStats};
@@ -163,6 +164,46 @@ impl Storage {
             .await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
+    }
+
+    /// Load namespace view only (WAL replay / pin) for export — no index segments.
+    pub async fn load_view_snapshot(&self, name: &str) -> Result<NamespaceView> {
+        if !namespace_exists(&self.client, &self.bucket, name).await? {
+            return Err(anyhow!("namespace not found"));
+        }
+
+        let cold_batch = !self.cache.enabled();
+        let mut views = self.views.lock().await;
+        if let Some(view) = views.get_mut(name) {
+            view.catch_up(&self.client, &self.bucket, name).await?;
+            return Ok(view.clone());
+        }
+
+        let (mut view, _) = if cold_batch {
+            NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
+        } else {
+            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0)
+        };
+        view.catch_up(&self.client, &self.bucket, name).await?;
+        views.insert(name.to_string(), view.clone());
+        Ok(view)
+    }
+
+    /// Export one page of documents at a consistent `wal_commit_seq` snapshot.
+    pub async fn export_namespace_page(
+        &self,
+        name: &str,
+        last_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ExportPage> {
+        let view = self.load_view_snapshot(name).await?;
+        let limit = limit.unwrap_or(DEFAULT_EXPORT_LIMIT);
+        Ok(export_page(
+            &view.docs,
+            view.meta.wal_commit_seq,
+            last_id,
+            limit,
+        ))
     }
 
     /// Warm disk cache + pin in-memory view (turbopuffer `hint_cache_warm` analogue).

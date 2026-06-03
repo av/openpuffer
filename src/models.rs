@@ -200,6 +200,35 @@ pub struct QueryResponse {
     pub performance: Option<QueryPerformance>,
 }
 
+/// One exported document row (`GET/POST /v1/namespaces/{name}/export`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportRow {
+    pub id: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub attributes: HashMap<String, Value>,
+}
+
+/// JSON export response (default `format=json`).
+#[derive(Debug, Serialize)]
+pub struct ExportResponse {
+    pub wal_commit_seq: u64,
+    pub rows: Vec<ExportRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_last_id: Option<String>,
+}
+
+/// Optional body for `POST /v1/namespaces/{name}/export`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ExportRequest {
+    #[serde(default)]
+    pub last_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// `json` (default) or `ndjson` (rows only, one JSON object per line).
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
 pub fn namespace_prefix(name: &str) -> String {
     format!("{ROOT_PREFIX}{name}/")
 }
