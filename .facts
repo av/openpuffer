@@ -5,97 +5,142 @@
   tags: [implemented]
 
 # product
+
 - label: Cargo package and binary are named openpuffer
-  command: grep -qE "name = \"openpuffer\"" Cargo.toml && test -f target/release/openpuffer || cargo build --release -q && test -f target/release/openpuffer
+  command: grep -qE 'name = "openpuffer"' Cargo.toml && test -f target/release/openpuffer || cargo build --release -q && test -f target/release/openpuffer
   tags: [implemented]
-- label: core v1 API targets turbopuffer-compatible write and query semantics
-  command: grep -q "turbopuffer-compatible" src/lib.rs
-  tags: [implemented]
-
-# architecture
-- label: release build produces one openpuffer static binary with no sidecar requirement
-  command: cargo build --release -q && test -x target/release/openpuffer
-  tags: [implemented]
-- label: server persists namespace indexes only to S3-compatible object storage not local disk
-  command: grep -q "manifest.json" src/models.rs && grep -q "put_object" src/storage.rs && ! grep -rq "sqlite\\|rocksdb\\|sled" src/
-  tags: [implemented]
-- label: multiple serve instances can read the same bucket without local durable state
-  command: grep -q "stateless" src/lib.rs && grep -q "cache" src/storage.rs
-  tags: [implemented]
-- label: concurrent writes to the same namespace use S3 conditional puts for last-writer-wins serialization
-  command: grep -q "if_match" src/storage.rs && grep -q "if_none_match" src/storage.rs
-  tags: [implemented]
-
-# search
-- label: query accepts rank_by vector and returns top-k by ANN over embedding attributes
-  command: cargo test --lib cosine_identical -q
-  tags: [implemented]
-- label: query accepts rank_by BM25 over attributes with full_text_search schema
-  command: cargo test --lib bm25_matches_keyword -q
-  tags: [implemented]
-- label: query accepts hybrid rank_by combining vector and BM25 in one request
-  command: grep -q "Ranker::Sum" src/search.rs && grep -q "Ranker::Product" src/search.rs
+- label: core API targets turbopuffer-compatible write and query semantics
+  command: grep -q "turbopuffer-compatible" src/lib.rs && test -f docs/ARCHITECTURE.md
   tags: [implemented]
 
 # domain
-- label: a Namespace is an isolated document collection keyed by a name matching turbopuffer rules
-  command: grep -q "a Namespace" .facts
+
+- label: a Namespace is an isolated document collection keyed by name under S3 prefix openpuffer/{name}/
+  command: grep -q 'ROOT_PREFIX' src/models.rs && test -f src/meta.rs && test -f src/namespace.rs
   tags: [implemented]
-- label: a Document is a row with id and attributes including optional vector and text fields
-  command: grep -q "a Document" .facts
+- label: a Document is a row with id and JSON attributes including optional vector and text fields
+  command: grep -q 'struct Document' src/models.rs && grep -q 'attributes' src/models.rs
   tags: [implemented]
-- label: namespace index objects are stored under S3 prefix openpuffer per namespace
-  command: grep -q "openpuffer/" src/models.rs
+- label: durable state is WAL segments meta.json and index segments only with no per-doc docs/{id}.json
+  command: test -f src/wal.rs && grep -q 'docs/{id}.json' docs/ARCHITECTURE.md && grep -q 'assert_wal_layout_after_write' tests/integration_s3.rs
+  tags: [implemented]
+
+# architecture
+
+- label: release build produces one openpuffer static binary with no sidecar requirement
+  command: cargo build --release -q && test -x target/release/openpuffer
+  tags: [implemented]
+- label: server persists all durable namespace state to S3-compatible object storage not embedded databases
+  command: grep -rq 'put_object' src/ && ! grep -rq 'sqlite\|rocksdb\|sled' src/ && grep -q 'wal/' docs/ARCHITECTURE.md
+  tags: [implemented]
+- label: multiple serve instances can read the same bucket with optional local index cache only
+  command: grep -q 'stateless' src/lib.rs && test -f src/cache.rs && test -f src/view_cache.rs
+  tags: [implemented]
+- label: meta.json and indexer commits use S3 conditional PUT If-Match and If-None-Match CAS
+  command: grep -q 'if_match' src/namespace.rs && grep -q 'if_none_match' src/namespace.rs && grep -q 'if_match' src/indexer.rs
+  tags: [implemented]
+- label: writes append bincode WAL files at openpuffer/{ns}/wal/{seq:08}.bin before HTTP ACK
+  command: test -f src/wal.rs && test -f src/buffer.rs && grep -q 'wal/{seq:08}.bin' src/wal.rs
+  tags: [implemented]
+- label: background indexer merges WAL into FTS vector and filter segments under openpuffer/{ns}/index/
+  command: test -f src/indexer.rs && test -f src/index/fts.rs && test -f src/index/vector.rs && test -f src/index/filter.rs
+  tags: [implemented]
+- label: per-namespace commit_lock serializes concurrent WAL appends and meta CAS for one namespace
+  command: test -f src/commit_lock.rs && grep -q 'commit_lock' src/namespace.rs
+  tags: [implemented]
+
+# write
+
+- label: write path group-commits upserts patches and deletes into one WalEntry per flush
+  command: grep -q 'WalEntry' src/wal.rs && grep -q 'group-commit' src/buffer.rs
+  tags: [implemented]
+- label: write accepts patch_rows patch_columns schema and delete_by_filter
+  command: grep -q 'patch_rows' src/models.rs && grep -q 'delete_by_filter' src/models.rs && grep -q 'schema' src/schema.rs
+  tags: [implemented]
+
+# query
+
+- label: query accepts rank_by vector ANN over indexed centroid clusters plus unindexed WAL tail
+  command: cargo test --lib cosine_identical -q && test -f src/index/vector.rs
+  tags: [implemented]
+- label: query accepts rank_by BM25 over FTS inverted index postings
+  command: cargo test --lib bm25_matches_keyword -q
+  tags: [implemented]
+- label: query accepts hybrid rank_by Sum and Product combining vector and BM25
+  command: grep -q 'Ranker::Sum' src/search.rs && grep -q 'Ranker::Product' src/search.rs
+  tags: [implemented]
+- label: query accepts attribute filters intersected before scoring
+  command: test -f src/filter.rs && grep -q 'eval_filter' src/search.rs
+  tags: [implemented]
+- label: query returns performance.candidates_ratio for indexed ANN regression guard
+  command: cargo test --lib indexed_vector_candidates_ratio_under_ten_percent -q
+  tags: [implemented]
+- label: perf test on 5k docs asserts candidates_ratio stays below 12 percent
+  command: cargo test -F perf --test perf_namespace -q
   tags: [implemented]
 
 # stack
+
 - label: implementation language is Rust edition 2021
-  command: grep -q "edition = \"2021\"" Cargo.toml
+  command: grep -q 'edition = "2021"' Cargo.toml
   tags: [implemented]
 
 # cli
+
 - label: openpuffer serve binds HTTP and loads S3 settings from env and flags
   command: cargo build --release -q && target/release/openpuffer --help 2>&1 | grep -q serve
   tags: [implemented]
-- label: serve accepts --s3-endpoint --s3-bucket --s3-region --s3-access-key --s3-secret-key and OPENPUFFER_S3_* env vars
-  command: target/release/openpuffer serve --help 2>&1 | grep -q s3-endpoint && target/release/openpuffer serve --help 2>&1 | grep -q OPENPUFFER_S3
+- label: serve accepts --s3-endpoint --s3-bucket --s3-region --s3-access-key --s3-secret-key --cache-dir and OPENPUFFER_S3_* env vars
+  command: target/release/openpuffer serve --help 2>&1 | grep -q s3-endpoint && target/release/openpuffer serve --help 2>&1 | grep -q cache-dir
   tags: [implemented]
 
 # storage
+
 - label: serve reads S3 endpoint bucket region access key and secret from configuration
-  command: grep -q "OPENPUFFER_S3" src/config.rs && grep -q "s3_endpoint" src/config.rs
+  command: grep -q 'OPENPUFFER_S3' src/config.rs && grep -q 's3_endpoint' src/config.rs
   tags: [implemented]
-- label: per-namespace index segments are written under s3://{bucket}/openpuffer/{namespace}/
-  command: grep -q "openpuffer/" src/models.rs && grep -q "ROOT_PREFIX" src/models.rs
+- label: per-namespace objects live under s3://{bucket}/openpuffer/{namespace}/ with meta wal and index subtrees
+  command: grep -q 'ROOT_PREFIX' src/models.rs && grep -q 'meta.json' src/meta.rs && grep -q 'wal/' src/wal.rs
   tags: [implemented]
 
 # api
+
 - label: GET /health returns 200 when the process is ready
-  command: grep -q "/health" src/api.rs && grep -q "status.*\"ok\"" src/api.rs
+  command: grep -q '/health' src/api.rs && grep -q '"ok"' src/api.rs
   tags: [implemented]
-- label: GET /v1/namespaces lists namespace summaries
-  command: grep -q "/v1/namespaces" src/api.rs
+- label: GET /v1/namespaces and GET /v1/namespaces/{name} expose index_cursor and wal_commit_seq
+  command: grep -q '/v1/namespaces' src/api.rs && grep -q 'index_cursor' src/meta.rs
   tags: [implemented]
-- label: POST /v2/namespaces/{name} accepts upsert_rows upsert_columns and deletes JSON bodies
-  command: grep -q "upsert_rows" src/models.rs && grep -q "write_namespace" src/api.rs
+- label: POST /v2/namespaces/{name} accepts upsert_rows upsert_columns deletes patches and delete_by_filter
+  command: grep -q 'write_namespace' src/api.rs && grep -q 'upsert_rows' src/models.rs
   tags: [implemented]
-- label: POST /v2/namespaces/{name}/query runs vector FTS and hybrid rank_by queries
-  command: grep -q "/query" src/api.rs && grep -q "execute_query" src/search.rs
+- label: POST /v2/namespaces/{name}/query runs vector FTS hybrid and filtered rank_by queries
+  command: grep -q '/query' src/api.rs && grep -q 'execute_query' src/search.rs
+  tags: [implemented]
+- label: POST /v1/namespaces/{name}/warm prefetches index segments and pins NamespaceView
+  command: test -f src/warm.rs && grep -q '/warm' src/api.rs
+  tags: [implemented]
+- label: GET and POST /v1/namespaces/{name}/export paginate WAL snapshot at wal_commit_seq
+  command: test -f src/export.rs && grep -q '/export' src/api.rs
   tags: [implemented]
 - label: DELETE /v2/namespaces/{name} removes a namespace and its S3 prefix objects
-  command: grep -q "delete_namespace" src/api.rs && grep -q "delete_objects" src/storage.rs
-  tags: [implemented]
-- label: v1 core excludes patch_by_filter delete_by_filter branching CMEK and conditional writes
-  command: grep -q "excludes patch" .facts
+  command: grep -q 'delete_namespace' src/api.rs && grep -q 'delete_objects' src/storage.rs
   tags: [implemented]
 
 # tests
-- label: integration test upserts documents then vector FTS and hybrid query against MinIO
-  command: cargo test -F integration --test integration_s3
+
+- label: unit test suite passes without Docker
+  command: cargo test -q
+  tags: [implemented]
+- label: integration test proves meta.json and wal/00000001.bin exist after write with no legacy docs/*.json
+  command: cargo test -F integration --test integration_s3 minio_wal_index_layout -q
+  tags: [implemented]
+- label: integration test proves background indexer writes fts centroids and filter index segments
+  command: cargo test -F integration --test integration_s3 minio_wal_index_layout -q
   tags: [implemented]
 - label: integration test proves data survives serve process restart with only S3 backing
-  command: cargo test -F integration --test integration_s3
+  command: cargo test -F integration --test integration_s3 write_after_restart -q
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
-  command: cargo test -F integration --test integration_s3
+  command: cargo test -F integration --test integration_s3 -q
   tags: [implemented]
