@@ -960,6 +960,20 @@ pub async fn load_vector_index_probed_for_query(
 ) -> Result<(VectorIndex, u32)> {
     let l1_keys = crate::s3_batch::l1_keys_for_query_probe(namespace, meta, field, &l0, query);
     let mut fetched = fetch_index_objects_from_cache(client, bucket, cache, &l1_keys).await?;
+    if let Some(routing_key) = crate::s3_batch::routing_key_for_field(namespace, field, &l0) {
+        if let Some(bytes) = cache.get_bytes(client, bucket, &routing_key).await? {
+            fetched.insert(routing_key, bytes);
+        }
+    }
+    let routing = crate::s3_batch::decode_routing_probed(namespace, field, &l0, &fetched)?;
+    let l2_keys = routing
+        .as_ref()
+        .map(|r| {
+            crate::s3_batch::l2_keys_for_query_probe(namespace, field, &l0, r, query)
+        })
+        .unwrap_or_default();
+    let l2_bytes = fetch_index_objects_from_cache(client, bucket, cache, &l2_keys).await?;
+    fetched.extend(l2_bytes);
     let cluster_keys = crate::s3_batch::cluster_keys_for_query_after_l1(
         namespace, meta, field, &l0, &fetched, query,
     )?;
@@ -1335,7 +1349,7 @@ mod tests {
                 },
             );
         }
-        let probed = fine_ids_for_probed_query(&l0, &l1, &query);
+        let probed = fine_ids_for_probed_query(&l0, &l1, &query, None, &HashMap::new());
         assert!(probed.len() >= 8 && probed.len() <= 64);
         assert!(probed.len() < l0.num_fine_total as usize / 10);
     }

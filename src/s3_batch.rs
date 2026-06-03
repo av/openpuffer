@@ -10,7 +10,8 @@
 use crate::index::filter::FilterSegment;
 use crate::index::fts::{index_fields_from_schema, FtsSegment};
 use crate::index::vector::{
-    CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
+    probe_fine_centroids_parts, CentroidIndexL0, CentroidIndexL1, CentroidIndexL2,
+    CentroidRouting, ClusterSegment, VectorIndex,
 };
 use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_paths, NamespaceMeta};
 use crate::namespace::fetch_meta;
@@ -93,6 +94,8 @@ pub fn plan_cold_query(
             l0,
             l1_loaded,
             query,
+            None,
+            &HashMap::new(),
         ));
     }
     plan.round3_keys.sort();
@@ -134,7 +137,7 @@ pub fn round2_bootstrap_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<Strin
     keys
 }
 
-/// Probed L1 + probed cluster keys for one vector query (round 3).
+/// Probed L1 + optional v3 routing/L2 + probed cluster keys for one vector query (round 3).
 pub fn round3_keys_for_query(
     namespace: &str,
     meta: &NamespaceMeta,
@@ -142,10 +145,18 @@ pub fn round3_keys_for_query(
     l0: &CentroidIndexL0,
     l1_loaded: &HashMap<u32, CentroidIndexL1>,
     query: &[f64],
+    routing: Option<&CentroidRouting>,
+    l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
 ) -> Vec<String> {
     let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query);
+    if l0.has_routing {
+        keys.push(CentroidRouting::key(namespace, field));
+        if let Some(routing) = routing {
+            keys.extend(l2_keys_for_query_probe(namespace, field, l0, routing, query));
+        }
+    }
     keys.extend(cluster_keys_for_query(
-        namespace, meta, field, l0, l1_loaded, query,
+        namespace, meta, field, l0, l1_loaded, query, routing, l2_loaded,
     ));
     keys.sort();
     keys.dedup();
@@ -299,7 +310,7 @@ pub fn cluster_get_upper_bound(l0: &CentroidIndexL0) -> usize {
     coarse + coarse.saturating_mul(fine) + 4
 }
 
-/// Probed cluster object keys given L1 segments already in memory.
+/// Probed cluster object keys given L1 (+ optional v3 routing/L2) already in memory.
 pub fn cluster_keys_for_query(
     namespace: &str,
     meta: &NamespaceMeta,
@@ -307,10 +318,12 @@ pub fn cluster_keys_for_query(
     l0: &CentroidIndexL0,
     l1_loaded: &HashMap<u32, CentroidIndexL1>,
     query: &[f64],
+    routing: Option<&CentroidRouting>,
+    l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
 ) -> Vec<String> {
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let mut keys = Vec::new();
-    for fine_id in fine_ids_for_probed_query(l0, l1_loaded, query) {
+    for fine_id in fine_ids_for_probed_query(l0, l1_loaded, query, routing, l2_loaded) {
         if use_legacy {
             keys.push(ClusterSegment::legacy_key(namespace, fine_id));
         } else {
@@ -320,29 +333,45 @@ pub fn cluster_keys_for_query(
     keys
 }
 
-/// Global fine ids to fetch after probed coarse L1 is decoded.
+/// Global fine ids to fetch after probed L1 and optional v3 routing/L2 are decoded.
 pub fn fine_ids_for_probed_query(
     l0: &CentroidIndexL0,
     l1_loaded: &HashMap<u32, CentroidIndexL1>,
     query: &[f64],
+    routing: Option<&CentroidRouting>,
+    l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
 ) -> Vec<u32> {
-    if query.len() != l0.dimensions as usize {
-        return Vec::new();
+    probe_fine_centroids_parts(l0, l1_loaded, routing, l2_loaded, query)
+}
+
+/// `centroids-routing.bin` key when L0 marks v3 routing.
+pub fn routing_key_for_field(namespace: &str, field: &str, l0: &CentroidIndexL0) -> Option<String> {
+    if l0.has_routing {
+        Some(CentroidRouting::key(namespace, field))
+    } else {
+        None
     }
-    let coarse_m = l0.probe_coarse_count();
-    let mut fine_ids = Vec::new();
-    for coarse_id in l0.nearest_coarse(query, coarse_m) {
-        let Some(l1) = l1_loaded.get(&coarse_id) else {
+}
+
+/// All L2 segment keys for probed coarse cells that have routing splits.
+pub fn l2_keys_for_query_probe(
+    namespace: &str,
+    field: &str,
+    l0: &CentroidIndexL0,
+    routing: &CentroidRouting,
+    query: &[f64],
+) -> Vec<String> {
+    let mut keys = Vec::new();
+    for coarse_id in l0.nearest_coarse(query, l0.probe_coarse_count()) {
+        let l2_count = routing.l2_count_for_coarse(coarse_id);
+        if l2_count <= 1 {
             continue;
-        };
-        let fine_m = l0.probe_fine_count(l1);
-        for local in l1.nearest_fine(query, l0.distance_metric, fine_m) {
-            fine_ids.push(l0.global_fine_id(coarse_id, local));
+        }
+        for l2_id in 0..l2_count {
+            keys.push(CentroidIndexL2::key(namespace, field, coarse_id, l2_id));
         }
     }
-    fine_ids.sort_unstable();
-    fine_ids.dedup();
-    fine_ids
+    keys
 }
 
 /// Keys for round 2 query path: filter + probed L1 + probed clusters only.
@@ -372,18 +401,7 @@ pub fn round2_keys_for_query(
         }
     }
 
-    let mut fine_ids: Vec<u32> = Vec::new();
-    for coarse_id in l0.nearest_coarse(query, coarse_m) {
-        let Some(l1) = l1_loaded.get(&coarse_id) else {
-            continue;
-        };
-        let fine_m = l0.probe_fine_count(l1);
-        for local in l1.nearest_fine(query, l0.distance_metric, fine_m) {
-            fine_ids.push(l0.global_fine_id(coarse_id, local));
-        }
-    }
-    fine_ids.sort_unstable();
-    fine_ids.dedup();
+    let fine_ids = fine_ids_for_probed_query(l0, l1_loaded, query, None, &HashMap::new());
     for fine_id in fine_ids {
         if use_legacy {
             keys.push(ClusterSegment::legacy_key(namespace, fine_id));
@@ -584,8 +602,36 @@ pub async fn fetch_cold_vector_probed(
         fetched.extend(l1_map);
     }
 
-    let cluster_keys =
-        cluster_keys_for_query_after_l1(namespace, meta, field, &l0, &fetched, query)?;
+    let routing_key = routing_key_for_field(namespace, field, &l0);
+    if let Some(ref key) = routing_key {
+        if storage_roundtrips == 0 {
+            storage_roundtrips = 1;
+        }
+        s3_keys_fetched = s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(1));
+        let routing_map = fetch_round(client, bucket, std::slice::from_ref(key)).await?;
+        fetched.extend(routing_map);
+    }
+
+    let routing = decode_routing_probed(namespace, field, &l0, &fetched)?;
+    let l2_keys = routing
+        .as_ref()
+        .map(|r| l2_keys_for_query_probe(namespace, field, &l0, r, query))
+        .unwrap_or_default();
+    if !l2_keys.is_empty() {
+        if storage_roundtrips == 0 {
+            storage_roundtrips = 1;
+        }
+        s3_keys_fetched =
+            s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(l2_keys.len()));
+        let l2_map = fetch_round(client, bucket, &l2_keys).await?;
+        fetched.extend(l2_map);
+    }
+
+    let l1 = decode_l1_probed(namespace, meta, field, &l0, &fetched)?;
+    let l2 = decode_l2_probed(namespace, field, &fetched, &l2_keys)?;
+    let cluster_keys = cluster_keys_for_query(
+        namespace, meta, field, &l0, &l1, query, routing.as_ref(), &l2,
+    );
     if !cluster_keys.is_empty() {
         if storage_roundtrips == 0 {
             storage_roundtrips = 1;
@@ -612,7 +658,15 @@ pub fn assemble_vector_index_probed(
     query: &[f64],
 ) -> Result<(VectorIndex, u32)> {
     let l1 = decode_l1_probed(namespace, meta, field, &l0, fetched)?;
-    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query);
+    let routing = decode_routing_probed(namespace, field, &l0, fetched)?;
+    let l2_key_list = routing
+        .as_ref()
+        .map(|r| {
+            l2_keys_for_query_probe(namespace, field, &l0, r, query)
+        })
+        .unwrap_or_default();
+    let l2 = decode_l2_probed(namespace, field, fetched, &l2_key_list)?;
+    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query, routing.as_ref(), &l2);
     let probed_clusters = fine_ids.len().min(u32::MAX as usize) as u32;
     if probed_clusters > 0 {
         crate::metrics::add_ann_probed_clusters(probed_clusters as u64);
@@ -623,11 +677,44 @@ pub fn assemble_vector_index_probed(
             l0,
             l1,
             clusters,
-            routing: None,
-            l2: HashMap::new(),
+            routing,
+            l2,
         },
         probed_clusters,
     ))
+}
+
+pub(crate) fn decode_routing_probed(
+    namespace: &str,
+    field: &str,
+    l0: &CentroidIndexL0,
+    fetched: &HashMap<String, Vec<u8>>,
+) -> Result<Option<CentroidRouting>> {
+    if !l0.has_routing {
+        return Ok(None);
+    }
+    let key = CentroidRouting::key(namespace, field);
+    let Some(bytes) = fetched.get(&key) else {
+        return Ok(None);
+    };
+    Ok(Some(CentroidRouting::decode(bytes)?))
+}
+
+pub(crate) fn decode_l2_probed(
+    _namespace: &str,
+    _field: &str,
+    fetched: &HashMap<String, Vec<u8>>,
+    keys: &[String],
+) -> Result<HashMap<(u32, u32), CentroidIndexL2>> {
+    let mut l2 = HashMap::new();
+    for key in keys {
+        let Some(bytes) = fetched.get(key) else {
+            continue;
+        };
+        let seg = CentroidIndexL2::decode(bytes)?;
+        l2.insert((seg.coarse_id, seg.l2_id), seg);
+    }
+    Ok(l2)
 }
 
 /// After L1 objects are in `fetched`, return cluster keys still needed for `query`.
@@ -640,7 +727,15 @@ pub fn cluster_keys_for_query_after_l1(
     query: &[f64],
 ) -> Result<Vec<String>> {
     let l1 = decode_l1_probed(namespace, meta, field, l0, fetched)?;
-    Ok(cluster_keys_for_query(namespace, meta, field, l0, &l1, query))
+    let routing = decode_routing_probed(namespace, field, l0, fetched)?;
+    let l2_key_list = routing
+        .as_ref()
+        .map(|r| l2_keys_for_query_probe(namespace, field, l0, r, query))
+        .unwrap_or_default();
+    let l2 = decode_l2_probed(namespace, field, fetched, &l2_key_list)?;
+    Ok(cluster_keys_for_query(
+        namespace, meta, field, l0, &l1, query, routing.as_ref(), &l2,
+    ))
 }
 
 pub(crate) fn decode_l1_probed(
@@ -1207,12 +1302,127 @@ mod tests {
                 },
             );
         }
-        let probed = cluster_keys_for_query("ns", &meta, "emb", &l0, &l1_loaded, &query);
+        let probed = cluster_keys_for_query(
+            "ns", &meta, "emb", &l0, &l1_loaded, &query, None, &HashMap::new(),
+        );
         let full_clusters = (0..l0.num_fine_total)
             .map(|fid| ClusterSegment::key("ns", "emb", fid))
             .count();
         assert!(probed.len() >= 8 && probed.len() <= 64);
         assert!(probed.len() < full_clusters / 10);
+    }
+
+    #[test]
+    fn assemble_probed_v3_includes_routing_and_l2() {
+        use crate::config::AnnBuildConfig;
+        use crate::index::vector::{ANN_VERSION_V3, CentroidIndexL2, CentroidRouting};
+        use crate::meta::DistanceMetric;
+        use crate::models::Document;
+        use serde_json::json;
+
+        let mut docs = Vec::new();
+        const N: usize = 8_000;
+        for i in 0..N {
+            let angle = (i as f64) * 0.02;
+            let id = format!("doc-{i}");
+            docs.push((
+                id.clone(),
+                Document {
+                    id,
+                    attributes: [(
+                        "embedding".into(),
+                        json!([angle.cos(), angle.sin(), 0.1, 0.2]),
+                    )]
+                    .into(),
+                },
+            ));
+        }
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": "[4]f32" }),
+            AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3),
+        )
+        .unwrap()
+        .expect("v3 index");
+        if !index.l0.has_routing {
+            return;
+        }
+        let query = vec![1.0, 0.0, 0.1, 0.2];
+        let namespace = "ns";
+        let field = "embedding";
+        let mut fetched = HashMap::new();
+        for (coarse_id, l1) in &index.l1 {
+            if l0_nearest_coarse_includes(*coarse_id, &index.l0, &query) {
+                fetched.insert(
+                    CentroidIndexL1::key(namespace, field, *coarse_id),
+                    l1.encode().unwrap(),
+                );
+            }
+        }
+        let routing = index.routing.as_ref().expect("routing table");
+        fetched.insert(
+            CentroidRouting::key(namespace, field),
+            routing.encode().unwrap(),
+        );
+        for coarse_id in index.l0.nearest_coarse(&query, index.l0.probe_coarse_count()) {
+            let l2_count = routing.l2_count_for_coarse(coarse_id);
+            for l2_id in 0..l2_count {
+                if l2_count <= 1 {
+                    continue;
+                }
+                if let Some(seg) = index.l2.get(&(coarse_id, l2_id)) {
+                    fetched.insert(
+                        CentroidIndexL2::key(namespace, field, coarse_id, l2_id),
+                        seg.encode().unwrap(),
+                    );
+                }
+            }
+        }
+        let fine_ids = fine_ids_for_probed_query(
+            &index.l0,
+            &index.l1,
+            &query,
+            Some(routing),
+            &index.l2,
+        );
+        for fine_id in &fine_ids {
+            if let Some(cluster) = index.clusters.get(fine_id) {
+                fetched.insert(
+                    ClusterSegment::key(namespace, field, *fine_id),
+                    cluster.encode().unwrap(),
+                );
+            }
+        }
+        let (probed, _) = assemble_vector_index_probed(
+            namespace,
+            &NamespaceMeta::default(),
+            field,
+            index.l0.clone(),
+            &fetched,
+            &query,
+        )
+        .unwrap();
+        assert!(probed.routing.is_some(), "probed assemble must decode routing");
+        assert!(!probed.l2.is_empty(), "probed assemble must decode L2 segments");
+        assert_eq!(
+            fine_ids_for_probed_query(
+                &probed.l0,
+                &probed.l1,
+                &query,
+                probed.routing.as_ref(),
+                &probed.l2,
+            ),
+            index.probe_fine_centroids(&query),
+            "probed fine ids must match full index probe descent"
+        );
+    }
+
+    fn l0_nearest_coarse_includes(coarse_id: u32, l0: &CentroidIndexL0, query: &[f64]) -> bool {
+        l0.nearest_coarse(query, l0.probe_coarse_count())
+            .contains(&coarse_id)
     }
 
     #[test]

@@ -260,6 +260,41 @@ impl CentroidIndexL2 {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         bincode::deserialize(bytes).context("decode CentroidIndexL2")
     }
+
+    /// Top-M fine centroid locals within this L2 partition (higher score is better).
+    pub fn nearest_fine(&self, query: &[f64], metric: DistanceMetric, m: usize) -> Vec<u32> {
+        if self.centroids.is_empty() {
+            return Vec::new();
+        }
+        let m = m.min(self.centroids.len());
+        let mut ranked: Vec<(u32, f64)> = self
+            .centroids
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                (
+                    i as u32,
+                    score_vector(query, c, metric),
+                )
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        ranked.into_iter().take(m).map(|(id, _)| id).collect()
+    }
+}
+
+impl CentroidRouting {
+    /// L2 partition count for `coarse_id` (0 or 1 = no L2 segment).
+    pub fn l2_count_for_coarse(&self, coarse_id: u32) -> u32 {
+        self.l2_counts
+            .get(coarse_id as usize)
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 /// S3 prefix for one vector column's index tree (`index/` or `index/{field}/`).
@@ -349,10 +384,26 @@ impl CentroidIndexL0 {
     }
 
     pub fn probe_fine_count(&self, l1: &CentroidIndexL1) -> usize {
+        self.probe_fine_count_for_num_fine(l1.num_fine)
+    }
+
+    pub fn probe_fine_count_for_num_fine(&self, num_fine: u32) -> usize {
         if self.num_fine_total <= 32 {
-            l1.num_fine as usize
+            num_fine as usize
         } else {
-            self.probe_fine.min(l1.num_fine).max(1) as usize
+            self.probe_fine.min(num_fine).max(1) as usize
+        }
+    }
+
+    /// L2 partitions to probe within one coarse cell that has routing splits.
+    pub fn probe_l2_count(&self, l2_parts: u32) -> usize {
+        if l2_parts <= 1 {
+            return 0;
+        }
+        if self.num_fine_total <= 32 {
+            l2_parts as usize
+        } else {
+            self.probe_fine.min(l2_parts).max(1) as usize
         }
     }
 }
@@ -1081,27 +1132,86 @@ impl VectorIndex {
         }
     }
 
-    /// Global fine centroid ids to probe for a query (two-level descent).
+    /// Global fine centroid ids to probe for a query (L0 → L1, or L0 → L2 → fine when v3 routing is loaded).
     pub fn probe_fine_centroids(&self, query: &[f64]) -> Vec<u32> {
-        if query.len() != self.l0.dimensions as usize {
-            return Vec::new();
-        }
-        let coarse_m = self.l0.probe_coarse_count();
-        let coarse_ids = self.l0.nearest_coarse(query, coarse_m);
-        let mut fine_ids = Vec::new();
-        for coarse_id in coarse_ids {
-            let Some(l1) = self.l1.get(&coarse_id) else {
+        probe_fine_centroids_parts(
+            &self.l0,
+            &self.l1,
+            self.routing.as_ref(),
+            &self.l2,
+            query,
+        )
+    }
+}
+
+/// Shared probe descent for cold/warm probed load and [`VectorIndex::query_ann`].
+pub fn probe_fine_centroids_parts(
+    l0: &CentroidIndexL0,
+    l1: &HashMap<u32, CentroidIndexL1>,
+    routing: Option<&CentroidRouting>,
+    l2: &HashMap<(u32, u32), CentroidIndexL2>,
+    query: &[f64],
+) -> Vec<u32> {
+    if query.len() != l0.dimensions as usize {
+        return Vec::new();
+    }
+    let metric = l0.distance_metric;
+    let coarse_m = l0.probe_coarse_count();
+    let coarse_ids = l0.nearest_coarse(query, coarse_m);
+    let mut fine_ids = Vec::new();
+    for coarse_id in coarse_ids {
+        let l2_parts = routing
+            .map(|r| r.l2_count_for_coarse(coarse_id))
+            .unwrap_or(0);
+        if l2_parts > 1 && !l2.is_empty() {
+            let l2_m = l0.probe_l2_count(l2_parts);
+            let mut l2_ranked: Vec<(u32, f64)> = Vec::new();
+            for l2_id in 0..l2_parts {
+                let Some(seg) = l2.get(&(coarse_id, l2_id)) else {
+                    continue;
+                };
+                if seg.centroids.is_empty() {
+                    continue;
+                }
+                let score = seg
+                    .centroids
+                    .iter()
+                    .map(|c| score_vector(query, c, metric))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                l2_ranked.push((l2_id, score));
+            }
+            if !l2_ranked.is_empty() {
+                l2_ranked.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+                for (l2_id, _) in l2_ranked.into_iter().take(l2_m) {
+                    let Some(seg) = l2.get(&(coarse_id, l2_id)) else {
+                        continue;
+                    };
+                    let fine_m = l0.probe_fine_count_for_num_fine(seg.num_fine);
+                    for local in seg.nearest_fine(query, metric, fine_m) {
+                        fine_ids.push(seg.global_fine_start.saturating_add(local));
+                    }
+                }
                 continue;
-            };
-            let fine_m = self.l0.probe_fine_count(l1);
-            for local in l1.nearest_fine(query, self.l0.distance_metric, fine_m) {
-                fine_ids.push(self.l0.global_fine_id(coarse_id, local));
             }
         }
-        fine_ids.sort_unstable();
-        fine_ids.dedup();
-        fine_ids
+        let Some(l1_seg) = l1.get(&coarse_id) else {
+            continue;
+        };
+        let fine_m = l0.probe_fine_count(l1_seg);
+        for local in l1_seg.nearest_fine(query, metric, fine_m) {
+            fine_ids.push(l0.global_fine_id(coarse_id, local));
+        }
     }
+    fine_ids.sort_unstable();
+    fine_ids.dedup();
+    fine_ids
+}
+
+impl VectorIndex {
 
     pub fn candidate_doc_ids(&self, query: &[f64]) -> HashSet<String> {
         let mut ids = HashSet::new();
@@ -2300,6 +2410,98 @@ mod tests {
         assert!(
             recall >= MIN_RECALL,
             "recall@10 {recall} should be >= {MIN_RECALL} on 100k synthetic (v3)"
+        );
+    }
+
+    #[test]
+    fn v3_probe_descent_uses_l2_routing_when_loaded() {
+        const DIM: usize = 4;
+        const NUM_FINE: u32 = 64;
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let l0 = CentroidIndexL0 {
+            vector_field: "emb".into(),
+            dimensions: DIM as u32,
+            num_coarse: 1,
+            num_fine_total: NUM_FINE,
+            fine_counts: vec![NUM_FINE],
+            centroids: vec![vec![1.0, 0.0, 0.0, 0.0]],
+            probe_coarse: 1,
+            probe_fine: 1,
+            distance_metric: DistanceMetric::CosineDistance,
+            ann_version: ANN_VERSION_V3,
+            has_routing: true,
+            ..Default::default()
+        };
+        let mut l1_centroids = Vec::with_capacity(NUM_FINE as usize);
+        for i in 0..NUM_FINE {
+            if i < NUM_FINE / 2 {
+                l1_centroids.push(vec![0.95, 0.31, (i as f64) * 0.001, 0.0]);
+            } else if i == NUM_FINE / 2 {
+                l1_centroids.push(vec![1.0, 0.0, 0.0, 0.0]);
+            } else {
+                l1_centroids.push(vec![0.5, 0.87, 0.0, (i as f64) * 0.001]);
+            }
+        }
+        let mut l1 = HashMap::new();
+        l1.insert(
+            0,
+            CentroidIndexL1 {
+                segment_id: 1,
+                coarse_id: 0,
+                global_id_start: 0,
+                num_fine: NUM_FINE,
+                centroids: l1_centroids,
+            },
+        );
+        let routing = CentroidRouting {
+            ann_version: ANN_VERSION_V3,
+            segment_id: 1,
+            vector_field: "emb".into(),
+            dimensions: DIM as u32,
+            l2_counts: vec![2],
+        };
+        let mut l2 = HashMap::new();
+        l2.insert(
+            (0, 0),
+            CentroidIndexL2 {
+                segment_id: 1,
+                coarse_id: 0,
+                l2_id: 0,
+                global_fine_start: 0,
+                num_fine: NUM_FINE / 2,
+                centroids: (0..NUM_FINE / 2)
+                    .map(|i| vec![0.95, 0.31, (i as f64) * 0.001, 0.0])
+                    .collect(),
+            },
+        );
+        let mut p1_centroids: Vec<Vec<f64>> = (0..NUM_FINE / 2)
+            .map(|i| vec![0.5, 0.87, 0.0, (i as f64) * 0.001])
+            .collect();
+        p1_centroids[0] = vec![1.0, 0.0, 0.0, 0.0];
+        l2.insert(
+            (0, 1),
+            CentroidIndexL2 {
+                segment_id: 1,
+                coarse_id: 0,
+                l2_id: 1,
+                global_fine_start: NUM_FINE / 2,
+                num_fine: NUM_FINE / 2,
+                centroids: p1_centroids,
+            },
+        );
+        let with_l2 = probe_fine_centroids_parts(&l0, &l1, Some(&routing), &l2, &query);
+        let l1_only = probe_fine_centroids_parts(&l0, &l1, None, &HashMap::new(), &query);
+        let without_l2_segments = probe_fine_centroids_parts(
+            &l0,
+            &l1,
+            Some(&routing),
+            &HashMap::new(),
+            &query,
+        );
+        assert_eq!(without_l2_segments, l1_only, "missing L2 segments falls back to L1");
+        assert!(
+            !with_l2.is_empty(),
+            "loaded L2 routing must produce probed fine ids"
         );
     }
 
