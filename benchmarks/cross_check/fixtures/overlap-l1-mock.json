@@ -1,0 +1,105 @@
+{
+  "benchmark": "id_overlap_spotcheck",
+  "tier": "l1",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+  "mode": "mock",
+  "spot_check": {
+    "count": 10,
+    "top_k": 10,
+    "include_attributes": true,
+    "consistency": "strong",
+    "source": "vector_queries"
+  },
+  "openpuffer_namespace": "bench-large-l1-mock",
+  "turbopuffer_namespace": "bench-tpuf-2026-06-04-l1-mock",
+  "queries": [
+    {
+      "name": "vector-q00",
+      "doc_index": 0,
+      "top_k": 10,
+      "intersection_count": 8,
+      "overlap_at_k": 0.8,
+      "jaccard": 0.6667,
+      "intersection_ids": ["doc-0", "doc-1", "doc-2", "doc-3", "doc-4", "doc-5", "doc-6", "doc-7"]
+    },
+    {
+      "name": "vector-q01",
+      "doc_index": 2000,
+      "top_k": 10,
+      "intersection_count": 7,
+      "overlap_at_k": 0.7,
+      "jaccard": 0.5385
+    },
+    {
+      "name": "vector-q02",
+      "doc_index": 4000,
+      "top_k": 10,
+      "intersection_count": 6,
+      "overlap_at_k": 0.6,
+      "jaccard": 0.4286
+    },
+    {
+      "name": "vector-q03",
+      "doc_index": 6000,
+      "top_k": 10,
+      "intersection_count": 7,
+      "overlap_at_k": 0.7,
+      "jaccard": 0.5385
+    },
+    {
+      "name": "vector-q04",
+      "doc_index": 8000,
+      "top_k": 10,
+      "intersection_count": 5,
+      "overlap_at_k": 0.5,
+      "jaccard": 0.3333
+    },
+    {
+      "name": "vector-q05",
+      "doc_index": 10000,
+      "top_k": 10,
+      "intersection_count": 8,
+      "overlap_at_k": 0.8,
+      "jaccard": 0.6667
+    },
+    {
+      "name": "vector-q06",
+      "doc_index": 12000,
+      "top_k": 10,
+      "intersection_count": 6,
+      "overlap_at_k": 0.6,
+      "jaccard": 0.4286
+    },
+    {
+      "name": "vector-q07",
+      "doc_index": 14000,
+      "top_k": 10,
+      "intersection_count": 7,
+      "overlap_at_k": 0.7,
+      "jaccard": 0.5385
+    },
+    {
+      "name": "vector-q08",
+      "doc_index": 16000,
+      "top_k": 10,
+      "intersection_count": 9,
+      "overlap_at_k": 0.9,
+      "jaccard": 0.8182
+    },
+    {
+      "name": "vector-q09",
+      "doc_index": 18000,
+      "top_k": 10,
+      "intersection_count": 6,
+      "overlap_at_k": 0.6,
+      "jaccard": 0.4286
+    }
+  ],
+  "summary": {
+    "query_count": 10,
+    "mean_overlap_at_k": 0.69,
+    "min_overlap_at_k": 0.5,
+    "max_overlap_at_k": 0.9
+  },
+  "notes": "Offline mock for render-report and pytest; not measured against live engines."
+}

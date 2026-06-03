@@ -38,6 +38,7 @@ DEFAULT_SEED = 42
 DEFAULT_NUM_VECTOR_QUERIES = 50
 DEFAULT_NUM_FILTER_QUERIES = 6
 DEFAULT_NUM_HYBRID_QUERIES = 4
+DEFAULT_SPOT_CHECK_COUNT = 10
 SCHEMA_VERSION = 1
 
 
@@ -375,12 +376,29 @@ def _hybrid_query_specs(cfg: WorkloadConfig, count: int) -> list[dict[str, Any]]
     return out
 
 
+def spot_check_dict(*, count: int = DEFAULT_SPOT_CHECK_COUNT, top_k: int = 10) -> dict[str, Any]:
+    """Phase 3.3 — first N pure vector ANN queries for cross-engine id overlap."""
+    return {
+        "count": count,
+        "top_k": top_k,
+        "include_attributes": True,
+        "consistency": "strong",
+        "source": "vector_queries",
+        "notes": (
+            "Compare id overlap@k between openpuffer and turbopuffer on the same query "
+            "vectors and cosine_distance ANN. Different ANN graphs/probes may reduce "
+            "overlap below k; record intersection@k for the report, not exact rank parity."
+        ),
+    }
+
+
 def queries_dict(
     cfg: WorkloadConfig,
     *,
     num_vector: int = DEFAULT_NUM_VECTOR_QUERIES,
     num_filter: int = DEFAULT_NUM_FILTER_QUERIES,
     num_hybrid: int = DEFAULT_NUM_HYBRID_QUERIES,
+    spot_check_count: int = DEFAULT_SPOT_CHECK_COUNT,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -398,6 +416,7 @@ def queries_dict(
             "runs": 7,
             "primary_query": "vector_queries[0]",
         },
+        "spot_check": spot_check_dict(count=spot_check_count),
     }
 
 

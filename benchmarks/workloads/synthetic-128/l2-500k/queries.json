@@ -8810,5 +8810,13 @@
     "consistency": "strong",
     "runs": 7,
     "primary_query": "vector_queries[0]"
+  },
+  "spot_check": {
+    "count": 10,
+    "top_k": 10,
+    "include_attributes": true,
+    "consistency": "strong",
+    "source": "vector_queries",
+    "notes": "Compare id overlap@k between openpuffer and turbopuffer on the same query vectors and cosine_distance ANN. Different ANN graphs/probes may reduce overlap below k; record intersection@k for the report, not exact rank parity."
   }
 }

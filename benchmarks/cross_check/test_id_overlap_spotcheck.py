@@ -1,0 +1,95 @@
+"""Offline tests for Phase 3.3 id overlap spot-check (no API keys)."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+CROSS_CHECK = Path(__file__).resolve().parent
+WORKLOADS = ROOT / "benchmarks" / "workloads"
+L1_QUERIES = WORKLOADS / "synthetic-128" / "l1-100k" / "queries.json"
+MOCK_FIXTURE = CROSS_CHECK / "fixtures" / "overlap-l1-mock.json"
+RUNNER = CROSS_CHECK / "run_spotcheck.py"
+
+sys.path.insert(0, str(CROSS_CHECK))
+import id_overlap as xcheck  # noqa: E402
+
+
+def test_committed_queries_have_spot_check() -> None:
+    queries = json.loads(L1_QUERIES.read_text())
+    assert queries["spot_check"]["count"] == 10
+    assert queries["spot_check"]["top_k"] == 10
+    specs = xcheck.spot_check_query_specs(queries)
+    assert len(specs) == 10
+    assert specs[0]["name"] == "vector-q00"
+    assert specs[-1]["name"] == "vector-q09"
+
+
+def test_overlap_metrics_symmetric() -> None:
+    a = [f"doc-{i}" for i in range(10)]
+    b = ["doc-0", "doc-1", "doc-2", "doc-99", "doc-100"]
+    m = xcheck.overlap_metrics(a, b, top_k=10)
+    assert m["intersection_count"] == 3
+    assert m["overlap_at_k"] == 0.3
+    assert m["intersection_ids"] == ["doc-0", "doc-1", "doc-2"]
+
+
+def test_openpuffer_body_includes_attributes() -> None:
+    queries = json.loads(L1_QUERIES.read_text())
+    spec = xcheck.spot_check_query_specs(queries)[0]
+    body = xcheck.openpuffer_query_body(
+        spec, top_k=10, include_attributes=True, consistency="strong"
+    )
+    assert body["include_attributes"] is True
+    assert body["top_k"] == 10
+    assert isinstance(body["rank_by"][3], list)
+    assert len(body["rank_by"][3]) == 128
+
+
+def test_mock_fixture_summary() -> None:
+    payload = json.loads(MOCK_FIXTURE.read_text())
+    assert payload["benchmark"] == "id_overlap_spotcheck"
+    assert len(payload["queries"]) == 10
+    assert payload["summary"]["mean_overlap_at_k"] == 0.69
+
+
+def test_run_spotcheck_dry_run() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER), "--tier", "l1", "--dry-run"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "id-overlap spot-check dry-run OK" in proc.stdout
+    assert "vector-q09" in proc.stdout
+
+
+def test_run_spotcheck_mock_writes_json(tmp_path: Path) -> None:
+    out = tmp_path / "id-overlap-l1.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--tier",
+            "l1",
+            "--mock",
+            "--fixture",
+            str(MOCK_FIXTURE),
+            "--output",
+            str(out),
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    written = json.loads(out.read_text())
+    assert written["mode"] == "mock"
+    assert written["summary"]["query_count"] == 10

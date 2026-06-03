@@ -25,6 +25,7 @@ REPORT_DATE="${OPENPUFFER_REPORT_DATE:-$(date -u +%Y-%m-%d)}"
 OUTPUT=""
 OP_JSON=""
 TPUF_JSON=""
+OVERLAP_JSON=""
 FIXTURES_DIR="${OPENPUFFER_REPORT_FIXTURES:-$ROOT/benchmarks/report/fixtures}"
 ALLOW_PARTIAL=0
 
@@ -73,6 +74,11 @@ while [[ $# -gt 0 ]]; do
     --tpuf-json)
       shift
       TPUF_JSON="${1:?path required}"
+      ;;
+    --overlap-json=*) OVERLAP_JSON="${1#*=}" ;;
+    --overlap-json)
+      shift
+      OVERLAP_JSON="${1:?path required}"
       ;;
     -h|--help)
       sed -n '2,16p' "$0"
@@ -158,6 +164,29 @@ resolve_input_json() {
     fallback="$(fixture_path_for_tier "$side" "$tier")"
     if [[ -f "$fallback" ]]; then
       echo "$fallback"
+      return 0
+    fi
+  fi
+  echo ""
+}
+
+resolve_overlap_json() {
+  local tier="$1"
+  if [[ -n "$OVERLAP_JSON" && ( "$tier" == "$TIER" || "$ALL_TIERS" == "1" ) ]]; then
+    if [[ -f "$OVERLAP_JSON" ]]; then
+      echo "$OVERLAP_JSON"
+      return 0
+    fi
+  fi
+  local primary="$ROOT/benchmarks/results/id-overlap-${tier}.json"
+  if [[ -f "$primary" ]]; then
+    echo "$primary"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" && "$tier" == "l1" ]]; then
+    local mock="$ROOT/benchmarks/cross_check/fixtures/overlap-l1-mock.json"
+    if [[ -f "$mock" ]]; then
+      echo "$mock"
       return 0
     fi
   fi
@@ -278,6 +307,7 @@ render_methodology_skeleton() {
 ./scripts/ingest-large.sh --tier ${tier}
 ./scripts/bench-large.sh --tier ${tier}
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier ${tier}
+./scripts/run-id-overlap-spotcheck.sh --tier ${tier}
 ./scripts/render-report.sh --tier ${tier} --date ${REPORT_DATE}
 \`\`\`
 
@@ -362,12 +392,23 @@ EOF
 }
 
 render_correctness_section() {
-  local tier="$1" op_file="$2" tpuf_file="$3"
+  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
   local op_recall tpuf_recall op_gate tpuf_gate
+  local overlap_note overlap_mean overlap_min overlap_qcount overlap_mode
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
   tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
   op_gate="≥0.85 (large-tier gate)"
   tpuf_gate="≥0.85 (tpuf driver gate)"
+
+  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
+    overlap_mean="$(jq_field "$overlap_file" '.summary.mean_overlap_at_k')"
+    overlap_min="$(jq_field "$overlap_file" '.summary.min_overlap_at_k')"
+    overlap_qcount="$(jq_field "$overlap_file" '.summary.query_count')"
+    overlap_mode="$(jq_field "$overlap_file" '.mode')"
+    overlap_note="mean intersection@10 = $(fmt_recall "$overlap_mean") (${overlap_qcount} vector queries, mode=${overlap_mode}; min=$(fmt_recall "$overlap_min"))"
+  else
+    overlap_note="_not run — \`./scripts/run-id-overlap-spotcheck.sh --tier ${tier}\` after ingest_"
+  fi
 
   cat <<EOF
 ## Correctness @ tier ${tier}
@@ -376,9 +417,9 @@ render_correctness_section() {
 |-------|------------|-------------|
 | recall@10 | $(fmt_recall "$op_recall") (${op_gate}) | $(fmt_recall "$tpuf_recall") (${tpuf_gate}) |
 | Index completeness | preferred_ann_version=3, cursor caught up | index.status up-to-date |
-| Spot-check overlap | _TODO: optional id overlap sample between engines_ | |
+| Spot-check overlap (10× ANN top_k=10) | ${overlap_note} | same query vectors |
 
-Both sides use the same \`queries.json\` recall defaults (num=20, top_k=10). Synthetic embeddings may overstate absolute recall; treat as a regression gate, not a product claim.
+Both sides use the same \`queries.json\` recall defaults (num=20, top_k=10). Synthetic embeddings may overstate absolute recall; treat as a regression gate, not a product claim. **Overlap@k** compares result ids only (not rank order); expect divergence from different ANN graphs.
 
 EOF
 }
@@ -468,7 +509,8 @@ EOF
       render_methodology_skeleton "$tier" "$op_path" "$tpuf_path"
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
       render_results_table "$tier" "$op_path" "$tpuf_path"
-      render_correctness_section "$tier" "$op_path" "$tpuf_path"
+      overlap_path="$(resolve_overlap_json "$tier")"
+      render_correctness_section "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       echo ""
     done
     render_static_sections

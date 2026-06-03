@@ -44,6 +44,7 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 | 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
 | 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
 | 3 | tpuf | [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
+| 3b | 3.3 | [`scripts/run-id-overlap-spotcheck.sh`](../scripts/run-id-overlap-spotcheck.sh) `--tier l1` | `benchmarks/results/id-overlap-l1.json` (after both sides indexed) |
 | 4 | report | [`scripts/render-report.sh`](../scripts/render-report.sh) | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
 
 **Fairness:** run the tpuf driver from the **same region** as the openpuffer S3 bucket and tpuf namespace. Record client RTT before interpreting cold p50 deltas ([plan § architecture](PLAN_LARGE_DATASET_BENCHMARK.md#architecture-of-the-evaluation)).
@@ -54,6 +55,8 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 ./scripts/ingest-large.sh --tier l1 --dry-run
 ./scripts/bench-large.sh --tier l1 --dry-run
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
+./scripts/run-id-overlap-spotcheck.sh --tier l1 --dry-run
+./scripts/run-id-overlap-spotcheck.sh --tier l1 --mock
 ./scripts/render-report.sh --dry-run
 ```
 

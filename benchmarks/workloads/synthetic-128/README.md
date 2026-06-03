@@ -31,7 +31,7 @@ python3 benchmarks/workloads/generate_synthetic.py --num-docs 1000000 --output-d
 | File | Purpose |
 |------|---------|
 | `manifest.json` | `seed`, `num_docs`, `dim`, `batch_size`, id/attribute definitions, ingest cadence |
-| `queries.json` | 50 vector + 6 filter + 4 hybrid query specs (precomputed vectors) |
+| `queries.json` | 50 vector + 6 filter + 4 hybrid query specs; `spot_check` (10 ANN queries for Phase 3.3 id overlap) |
 | `batches/batch-*.json` | Optional; `upsert_columns` bodies for curl/SDK ingest |
 
 ## Ingest (openpuffer)

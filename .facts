@@ -441,6 +441,9 @@
 - label: scripts/render-report.sh dry-run merges large-aws and tpuf tier JSON into comparison report skeleton
   command: test -x scripts/render-report.sh && grep -q 'large-aws-' scripts/render-report.sh && grep -q 'tpuf-' scripts/render-report.sh && OPENPUFFER_REPORT_DATE=2099-01-01 ./scripts/render-report.sh --dry-run --output /tmp/openpuffer-render-report-fact-check.md >/dev/null && test -f /tmp/openpuffer-render-report-fact-check.md
   tags: [spec, bench-tpuf, bench-large, implemented]
+- label: Phase 3.3 id overlap spot-check dry-run and pytest pass queries.json spot_check count 10
+  command: test -x scripts/run-id-overlap-spotcheck.sh && test -f benchmarks/cross_check/run_spotcheck.py && ./scripts/run-id-overlap-spotcheck.sh --tier l1 --dry-run >/dev/null && python3 -m pytest benchmarks/cross_check/test_id_overlap_spotcheck.py -q && python3 -c "import json; q=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/queries.json')); assert q['spot_check']['count']==10"
+  tags: [spec, bench-large, bench-tpuf, implemented]
 
 # index/ann
 

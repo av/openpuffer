@@ -239,11 +239,13 @@ On **fully indexed** namespace at comparison tier:
 
 ### 3.3 Result correctness spot-check
 
-For 10 fixed queries from `queries.json`:
+For 10 fixed queries from `queries.json` (`spot_check` block; first `vector_queries`):
 
 1. Export or query `top_k=10` with `include_attributes`.
 2. Compare **id overlap** between systems only where distance metric and ranking are defined identically (pure vector ANN, same query vector).
 3. Document expected divergence (different ANN graphs, probes).
+
+**Automation:** [`benchmarks/cross_check/run_spotcheck.py`](../benchmarks/cross_check/run_spotcheck.py) / [`scripts/run-id-overlap-spotcheck.sh`](../scripts/run-id-overlap-spotcheck.sh) → `benchmarks/results/id-overlap-{tier}.json`. CI-safe: `--dry-run` and `--mock` (no API key). Live run after both namespaces are indexed.
 
 ### 3.4 Load and soak (optional)
 
@@ -493,6 +495,7 @@ A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program �
 - [x] Phase 4/5/6 operator runbook in [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) (metrics matrix, cold protocol, debugging, pass/fail vs tpuf).
 - [x] Harness scripts A1–A5: `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `tpuf_driver/run_benchmark.py`, `render-report.sh`.
 - [x] A6: `.github/workflows/benchmark-large-dispatch.yml` (`workflow_dispatch` tier l1/l2/l3; dry-run + `facts check` bench-large/bench-tpuf).
+- [x] Phase 3.3: id overlap spot-check harness (`benchmarks/cross_check/`, `queries.json` `spot_check`, mock fixture for report).
 - [ ] MinIO: full `cargo test -F bench` + `integration` green on main.
 - [x] Workload manifests committed for L1–L3 (`synthetic-128/{l1-100k,l2-500k,l3-1m}/`; seed 42 in manifest).
 - [ ] openpuffer AWS: ingest + index catch-up + `preferred_ann_version == 3`.
