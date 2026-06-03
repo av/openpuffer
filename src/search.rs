@@ -7,10 +7,11 @@ use crate::index::fts::{bm25_doc_score, extract_index_text, FtsSegment};
 use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, VectorIndex};
 
 use crate::meta::NamespaceMeta;
-use crate::models::{Document, QueryRequest, QueryResponse, QueryRow};
+use crate::models::{Document, QueryPerformance, QueryRequest, QueryResponse, QueryRow};
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 /// How unindexed WAL tail participates in candidate collection and scoring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,13 +64,24 @@ enum CandidateMerge {
     Intersection,
 }
 
+/// Counters for O(n) regression detection (full scan vs indexed candidates).
+#[derive(Debug, Default, Clone, Copy)]
+struct QueryStats {
+    /// Docs scanned in no-index fallback (entire namespace).
+    full_scan_docs: u64,
+    /// Docs in unindexed WAL tail examined for candidates/scoring.
+    tail_docs_examined: u64,
+}
+
 struct QueryPlanner<'a, 'b> {
     ctx: &'a QueryContext<'b>,
     /// Widen indexed candidate pools before final top_k truncation.
     candidate_pool: usize,
+    stats: QueryStats,
 }
 
 pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<QueryResponse> {
+    let started = Instant::now();
     let filter_expr = match req.filters.as_ref() {
         None => None,
         Some(v) if v.is_null() => None,
@@ -89,9 +101,10 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
-    let planner = QueryPlanner {
+    let mut planner = QueryPlanner {
         ctx: &effective_ctx,
         candidate_pool: top_k.saturating_mul(8).max(64),
+        stats: QueryStats::default(),
     };
 
     let mut candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
@@ -139,7 +152,34 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         })
         .collect();
 
-    Ok(QueryResponse { rows })
+    let namespace_size = effective_ctx.docs.len() as u64;
+    let candidate_count = candidates.len() as u64;
+    let scored_count = if candidates.is_empty() {
+        0
+    } else {
+        candidates.len() as u64
+    };
+    let candidates_ratio = if namespace_size == 0 {
+        0.0
+    } else {
+        candidate_count as f64 / namespace_size as f64
+    };
+    let performance = QueryPerformance {
+        approx_namespace_size: namespace_size,
+        candidates: candidate_count,
+        candidates_ratio,
+        scored: scored_count,
+        exhaustive_search_count: planner
+            .stats
+            .full_scan_docs
+            .saturating_add(planner.stats.tail_docs_examined),
+        query_execution_us: started.elapsed().as_micros() as u64,
+    };
+
+    Ok(QueryResponse {
+        rows,
+        performance: Some(performance),
+    })
 }
 
 /// Doc ids matching a filter (indexed segment + strong-consistency WAL tail corrections).
@@ -189,7 +229,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         self.ctx.consistency == QueryConsistency::Strong
     }
 
-    fn for_each_tail<F>(&self, mut f: F)
+    fn for_each_tail<F>(&mut self, mut f: F)
     where
         F: FnMut(&String),
     {
@@ -197,12 +237,17 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
             return;
         }
         for id in self.ctx.tail_doc_ids {
+            self.stats.tail_docs_examined += 1;
             f(id);
         }
     }
 
     /// Collect doc ids that may appear in the final ranking for this ranker subtree.
-    fn collect_candidates(&self, ranker: &Ranker, _merge: CandidateMerge) -> Result<HashSet<String>> {
+    fn collect_candidates(
+        &mut self,
+        ranker: &Ranker,
+        _merge: CandidateMerge,
+    ) -> Result<HashSet<String>> {
         match ranker {
             Ranker::Bm25 { field, query } => self.collect_bm25_candidates(field, query),
             Ranker::Vector { field, query } => self.collect_vector_candidates(field, query),
@@ -215,7 +260,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
     }
 
     fn merge_child_candidates(
-        &self,
+        &mut self,
         subs: &[Ranker],
         merge: CandidateMerge,
     ) -> Result<HashSet<String>> {
@@ -241,7 +286,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
 
 
 
-    fn collect_bm25_candidates(&self, field: &str, query: &str) -> Result<HashSet<String>> {
+    fn collect_bm25_candidates(&mut self, field: &str, query: &str) -> Result<HashSet<String>> {
         let mut ids = HashSet::new();
         if let Some(fts) = self.ctx.fts {
             let _fts_field = if fts.field.is_empty() { field } else { &fts.field };
@@ -275,6 +320,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         });
         if self.ctx.fts.is_none() && ids.is_empty() {
             // No index: fall back to tail-only or full doc map for BM25-only namespaces.
+            self.stats.full_scan_docs += self.ctx.docs.len() as u64;
             for (id, doc) in self.ctx.docs {
                 let text = extract_index_text(doc, field);
                 if bm25_doc_score(&text, query, 1.0, 1) > 0.0 {
@@ -285,7 +331,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         Ok(ids)
     }
 
-    fn collect_vector_candidates(&self, field: &str, query: &[f64]) -> Result<HashSet<String>> {
+    fn collect_vector_candidates(&mut self, field: &str, query: &[f64]) -> Result<HashSet<String>> {
         let mut ids = HashSet::new();
         if let Some(vindex) = self.ctx.vector {
             let _vfield = if vindex.centroids.vector_field.is_empty() {
@@ -318,6 +364,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
             }
         });
         if self.ctx.vector.is_none() && ids.is_empty() {
+            self.stats.full_scan_docs += self.ctx.docs.len() as u64;
             for (id, doc) in self.ctx.docs {
                 if extract_vector(&doc.attributes, field)
                     .map(|v| v.len() == query.len())
@@ -331,7 +378,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
     }
 
     fn score_candidates(
-        &self,
+        &mut self,
         ranker: &Ranker,
         candidates: &HashSet<String>,
     ) -> Result<Vec<(String, f64)>> {
@@ -362,7 +409,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
     }
 
     fn score_composite(
-        &self,
+        &mut self,
         subs: &[Ranker],
         candidates: &HashSet<String>,
         sum: bool,
@@ -883,6 +930,74 @@ mod tests {
         assert!(!resp.rows.is_empty());
         assert!(resp.rows.iter().all(|r| r.id == "pro-close" || r.id == "pro-exact"));
         assert!(!resp.rows.iter().any(|r| r.id == "free-exact"));
+    }
+
+    #[test]
+    fn indexed_vector_candidates_ratio_under_ten_percent() {
+        const N: usize = 5_000;
+        const DIM: usize = 128;
+        let mut map: HashMap<String, Document> = HashMap::new();
+        let mut pairs = Vec::with_capacity(N);
+        for i in 0..N {
+            let id = format!("doc-{i}");
+            let embedding: Vec<f64> = (0..DIM)
+                .map(|d| ((i * DIM + d) as f64 * 0.001).sin())
+                .collect();
+            let doc = Document {
+                id: id.clone(),
+                attributes: [
+                    ("text".into(), json!(format!("document {i}"))),
+                    ("embedding".into(), json!(embedding.clone())),
+                ]
+                .into(),
+            };
+            pairs.push((id, doc.clone()));
+            map.insert(doc.id.clone(), doc);
+        }
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+        )
+        .unwrap()
+        .expect("vector index");
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            dimensions: DIM as u32,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: Some(&vindex),
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", query_vec]),
+            top_k: Some(10),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        let perf = resp.performance.expect("performance stats");
+        assert_eq!(perf.approx_namespace_size, N as u64);
+        assert!(
+            perf.candidates_ratio < 0.12,
+            "indexed ANN must not scan whole namespace: candidates={} ratio={}",
+            perf.candidates,
+            perf.candidates_ratio
+        );
+        assert!(perf.candidates < perf.approx_namespace_size);
+        assert_eq!(perf.exhaustive_search_count, 0);
     }
 
     #[test]

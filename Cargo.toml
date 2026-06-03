@@ -38,6 +38,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 integration = []
+perf = []
+
+[[test]]
+name = "perf_namespace"
+path = "tests/perf_namespace.rs"
+required-features = ["perf"]
 
 [dev-dependencies]
 tempfile = "3"

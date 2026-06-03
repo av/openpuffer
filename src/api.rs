@@ -8,11 +8,12 @@ use crate::search;
 use crate::storage::Storage;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
+use crate::models::QueryPerformance;
 use std::sync::Arc;
 use tracing::error;
 
@@ -252,7 +253,10 @@ async fn query_namespace(
                 consistency: search::QueryConsistency::default(),
             };
             match search::execute_query(&ctx, &body) {
-            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Ok(resp) => {
+                let headers = query_performance_headers(resp.performance.as_ref());
+                (StatusCode::OK, headers, Json(resp)).into_response()
+            }
             Err(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": e.to_string()})),
@@ -289,6 +293,22 @@ async fn delete_namespace(
             storage_error_response(e)
         }
     }
+}
+
+/// `X-Openpuffer-Candidates` and fraction header for indexed-query regression checks.
+fn query_performance_headers(perf: Option<&QueryPerformance>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let Some(perf) = perf else {
+        return headers;
+    };
+    if let Ok(v) = HeaderValue::from_str(&perf.candidates.to_string()) {
+        headers.insert("X-Openpuffer-Candidates", v);
+    }
+    let fraction = format!("{}/{}", perf.candidates, perf.approx_namespace_size);
+    if let Ok(v) = HeaderValue::from_str(&fraction) {
+        headers.insert("X-Openpuffer-Candidates-Fraction", v);
+    }
+    headers
 }
 
 fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {

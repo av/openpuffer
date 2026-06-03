@@ -98,6 +98,20 @@ After warm, queries against the same process reuse the pinned view (no WAL repla
 | `strong` (default) | Indexed segments + exhaustive scoring for doc ids touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`. Queries never block on the background indexer. |
 | `eventual` | Indexed segments only; skip WAL tail scan (faster; very recent writes may be invisible until indexed). |
 
+**Performance observability** (turbopuffer [`performance`](https://turbopuffer.com/docs/query#responsefield-performance) subset):
+
+| Field | Meaning |
+|-------|---------|
+| `approx_namespace_size` | Live doc count in the namespace view |
+| `candidates` | Doc ids after candidate generation (+ filters) |
+| `candidates_ratio` | `candidates / approx_namespace_size` — indexed ANN/FTS should stay ≪ 1 |
+| `exhaustive_search_count` | Docs scanned via full-namespace fallback or unindexed WAL tail |
+| `query_execution_us` | Planner + score time on the server |
+
+HTTP headers: `X-Openpuffer-Candidates`, `X-Openpuffer-Candidates-Fraction` (`candidates/total`).
+
+Regression guard: `cargo test --features perf` runs `tests/perf_namespace.rs` (5k docs, 128-dim ANN) and asserts `candidates_ratio < 0.12` (not O(n); with 8 centroid probes, ~(8/√n) of docs).
+
 ## Background indexer
 
 Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/indexer.rs)):

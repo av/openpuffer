@@ -107,9 +107,28 @@ pub struct QueryRow {
     pub dist: Option<f64>,
 }
 
+/// Query observability (turbopuffer `performance` object subset).
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryPerformance {
+    /// Documents in the namespace view at query time.
+    pub approx_namespace_size: u64,
+    /// Doc ids considered for scoring after candidate generation (and filters).
+    pub candidates: u64,
+    /// `candidates / approx_namespace_size` (0 when namespace empty).
+    pub candidates_ratio: f64,
+    /// Doc ids scored by the ranker.
+    pub scored: u64,
+    /// Docs examined via full-namespace scan or unindexed WAL tail (not index postings).
+    pub exhaustive_search_count: u64,
+    /// Server-side query planner time in microseconds.
+    pub query_execution_us: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct QueryResponse {
     pub rows: Vec<QueryRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performance: Option<QueryPerformance>,
 }
 
 pub fn namespace_prefix(name: &str) -> String {
