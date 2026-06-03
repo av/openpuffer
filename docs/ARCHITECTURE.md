@@ -144,6 +144,7 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
    - **Filter:** load latest filter segment, `apply_delta` (no full WAL replay).
    - **Vector ANN:** load L0/L1 + clusters, `apply_delta` (two-level nearest-centroid assign for new docs); **full k-means rebuild** only when `doc_count > num_fine_total × 4` (see below). Writes `centroids-l0.bin`, `centroids-l1-{coarse}.bin`, `clusters-{fine}.bin`, appends `vector_segment_ids`.
    - CAS-advance `index_cursor` in `meta.json`.
+   - When caught up and `wal_commit_seq > 10`, compact indexed WAL: write `wal/snapshot.bin`, delete `wal/{seq:08}.bin` for `seq <= index_cursor - 3`, set `wal_snapshot_seq` in meta. Cold load replays snapshot + tail WAL only.
 4. On indexer errors: log, re-queue namespace, **retry** on next tick — writes are never blocked.
 
 **Metadata API:** `GET /v1/namespaces/{name}` exposes `index_cursor`, `wal_commit_seq`, `approx_row_count` (view or WAL replay), `unindexed_bytes` (HEAD sum of WAL segments after `index_cursor`), and `index_status` (`catching_up` | `up_to_date`). `GET /v1/namespaces` returns the same per-ns fields except row count.

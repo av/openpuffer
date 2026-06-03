@@ -41,6 +41,7 @@ pub mod view;
 pub mod view_cache;
 pub mod warm;
 pub mod wal;
+pub mod wal_compaction;
 
 pub use api::{router, AppState};
 pub use config::AppConfig;

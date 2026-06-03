@@ -11,7 +11,9 @@ use crate::index::vector::{
     primary_vector_field, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
 };
 use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
-use crate::namespace::{fetch_meta, read_wal_entry, replay_wal_entries};
+use crate::namespace::{
+    docs_at_index_cursor, fetch_meta, read_wal_entry, replay_wal_entries,
+};
 use crate::wal::{collect_index_delta, WalEntry};
 
 use anyhow::{anyhow, Context, Result};
@@ -215,11 +217,25 @@ pub async fn index_wal_range(
         }
 
         match put.send().await {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                drop(_commit);
+                if let Err(e) = crate::wal_compaction::maybe_compact_wal(
+                    client,
+                    bucket,
+                    namespace,
+                    cache,
+                )
+                .await
+                {
+                    tracing::warn!("wal compaction for {namespace}: {e:#}");
+                }
+                return Ok(());
+            }
             Err(e) => {
                 let service = e.into_service_error();
                 let conflict = service.meta().code() == Some("PreconditionFailed");
                 if conflict && attempt + 1 < META_RETRIES {
+                    drop(_commit);
                     tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
                     continue;
                 }
@@ -376,7 +392,7 @@ impl BackgroundIndexer {
             if let Some((meta, _)) =
                 crate::namespace::fetch_meta(&self.client, &self.bucket, &name).await?
             {
-                if needs_indexing(&meta) {
+                if needs_indexing(&meta) || crate::wal_compaction::needs_wal_compaction(&meta) {
                     work.insert(name);
                 }
             }
@@ -384,7 +400,18 @@ impl BackgroundIndexer {
 
         for namespace in work {
             match index_wal_range(&self.client, &self.bucket, &namespace, &self.cache).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let Err(e) = crate::wal_compaction::maybe_compact_wal(
+                        &self.client,
+                        &self.bucket,
+                        &namespace,
+                        &self.cache,
+                    )
+                    .await
+                    {
+                        tracing::warn!("wal compaction for {namespace}: {e:#}");
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         "indexer failed for {namespace} (will retry): {e:#}"
@@ -697,21 +724,6 @@ async fn index_delta_from_wal_entries(
 
     let mut baseline = docs_at_index_cursor(client, bucket, namespace, index_cursor).await?;
     collect_index_delta(&mut baseline, entries)
-}
-
-/// Collect all documents up to `index_cursor` by replaying WAL (for vector rebuild / tests).
-pub async fn docs_at_index_cursor(
-    client: &Client,
-    bucket: &str,
-    namespace: &str,
-    index_cursor: u64,
-) -> Result<HashMap<String, crate::models::Document>> {
-    let mut docs = HashMap::new();
-    if index_cursor > 0 {
-        crate::namespace::replay_wal_range(client, bucket, namespace, &mut docs, 1, index_cursor)
-            .await?;
-    }
-    Ok(docs)
 }
 
 #[cfg(test)]

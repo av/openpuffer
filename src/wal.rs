@@ -104,6 +104,49 @@ pub fn wal_key(namespace: &str, seq: u64) -> String {
     format!("{}{namespace}/wal/{seq:08}.bin", crate::models::ROOT_PREFIX)
 }
 
+/// Durable doc map at a WAL commit point (`wal/snapshot.bin`), written before indexed segments are deleted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WalSnapshot {
+    /// `index_cursor` / `wal_commit_seq` when the snapshot was taken.
+    pub seq: u64,
+    pub docs: Vec<Document>,
+}
+
+impl WalSnapshot {
+    pub fn key(namespace: &str) -> String {
+        format!(
+            "{}{namespace}/wal/snapshot.bin",
+            crate::models::ROOT_PREFIX
+        )
+    }
+
+    pub fn from_docs(seq: u64, docs: &HashMap<String, Document>) -> Self {
+        Self {
+            seq,
+            docs: docs.values().cloned().collect(),
+        }
+    }
+
+    pub fn into_docs(self) -> HashMap<String, Document> {
+        self.docs
+            .into_iter()
+            .map(|d| (d.id.clone(), d))
+            .collect()
+    }
+}
+
+pub fn wal_snapshot_key(namespace: &str) -> String {
+    WalSnapshot::key(namespace)
+}
+
+pub fn encode_snapshot(snapshot: &WalSnapshot) -> Result<Vec<u8>> {
+    serde_json::to_vec(snapshot).context("encode WalSnapshot")
+}
+
+pub fn decode_snapshot(bytes: &[u8]) -> Result<WalSnapshot> {
+    serde_json::from_slice(bytes).context("decode WalSnapshot")
+}
+
 pub fn encode(entry: &WalEntry) -> Result<Vec<u8>> {
     bincode::serialize(entry).context("encode WalEntry")
 }
@@ -186,6 +229,23 @@ mod tests {
             wal_key("my-ns", 42),
             "openpuffer/my-ns/wal/00000042.bin"
         );
+    }
+
+    #[test]
+    fn wal_snapshot_roundtrip() {
+        let mut docs = HashMap::new();
+        docs.insert(
+            "a".into(),
+            Document {
+                id: "a".into(),
+                attributes: [("text".into(), json!("snap"))].into(),
+            },
+        );
+        let snap = WalSnapshot::from_docs(15, &docs);
+        let bytes = encode_snapshot(&snap).unwrap();
+        let back = decode_snapshot(&bytes).unwrap();
+        assert_eq!(back.seq, 15);
+        assert_eq!(back.into_docs().get("a").unwrap().attributes["text"], json!("snap"));
     }
 
     #[test]

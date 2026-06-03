@@ -6,7 +6,10 @@ use crate::meta::{
 };
 use serde_json::Value;
 use crate::models::Document;
-use crate::wal::{apply_entry, decode, encode, wal_key, WalEntry};
+use crate::wal::{
+    apply_entry, decode, decode_snapshot, encode, wal_key, WalEntry, WalSnapshot,
+};
+use crate::wal_compaction::wal_replay_from;
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
@@ -49,6 +52,85 @@ pub async fn replay_wal_entries(
         entries.push(read_wal_entry(client, bucket, namespace, seq).await?);
     }
     Ok(entries)
+}
+
+/// Load `wal/snapshot.bin` if present.
+pub async fn read_wal_snapshot(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+) -> Result<Option<WalSnapshot>> {
+    let key = WalSnapshot::key(namespace);
+    let Some(bytes) = get_object_bytes_optional(client, bucket, &key).await? else {
+        return Ok(None);
+    };
+    Ok(Some(decode_snapshot(&bytes)?))
+}
+
+/// Reconstruct the document map at `meta.wal_commit_seq` (snapshot baseline + WAL tail).
+pub async fn load_docs_at_wal_commit(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> Result<(HashMap<String, Document>, u64)> {
+    let mut docs = HashMap::new();
+    let mut last_applied = 0u64;
+
+    if let Some(snap) = read_wal_snapshot(client, bucket, namespace).await? {
+        last_applied = snap.seq;
+        docs = snap.into_docs();
+    }
+
+    if let Some(from) = wal_replay_from(last_applied, meta.wal_commit_seq) {
+        replay_wal_range(
+            client,
+            bucket,
+            namespace,
+            &mut docs,
+            from,
+            meta.wal_commit_seq,
+        )
+        .await?;
+        last_applied = meta.wal_commit_seq;
+    }
+
+    Ok((docs, last_applied))
+}
+
+/// Collect all documents up to `index_cursor` (snapshot baseline + WAL replay).
+pub async fn docs_at_index_cursor(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    index_cursor: u64,
+) -> Result<HashMap<String, Document>> {
+    if index_cursor == 0 {
+        return Ok(HashMap::new());
+    }
+
+    let mut docs = HashMap::new();
+    let mut replay_from = 1u64;
+
+    if let Some(snap) = read_wal_snapshot(client, bucket, namespace).await? {
+        if snap.seq <= index_cursor {
+            replay_from = snap.seq.saturating_add(1);
+            docs = snap.into_docs();
+        }
+    }
+
+    if replay_from <= index_cursor {
+        replay_wal_range(
+            client,
+            bucket,
+            namespace,
+            &mut docs,
+            replay_from,
+            index_cursor,
+        )
+        .await?;
+    }
+    Ok(docs)
 }
 
 /// Replay WAL segments `from_seq..=to_seq` into `docs`.

@@ -214,6 +214,19 @@ impl SegmentCache {
         }
     }
 
+    /// Drop one cached object (e.g. after WAL segment delete).
+    pub fn invalidate_key(&self, bucket: &str, s3_key: &str) {
+        let Some(root) = self.root.as_ref() else {
+            return;
+        };
+        let path = root.join(bucket).join(s3_key);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::debug!("invalidate cache key {path:?}: {e}");
+            }
+        }
+    }
+
     /// Drop cached index segments for a namespace (after copy/delete).
     pub fn invalidate_namespace(&self, bucket: &str, namespace: &str) {
         let Some(root) = self.root.as_ref() else {

@@ -34,6 +34,7 @@ const NAMESPACE_COPY_SRC: &str = "itest-copy-src";
 const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
+const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const STRESS_DOCS: usize = 10_000;
 const STRESS_BATCH: usize = 2_000;
 const STRESS_DIM: usize = 128;
@@ -1654,5 +1655,167 @@ async fn ten_thousand_docs_indexed_query() {
     assert!(
         test_started.elapsed() < Duration::from_secs(120),
         "test exceeded 120s wall clock"
+    );
+}
+
+/// Fifteen WAL commits → indexer catches up → compaction deletes indexed segments; cold query still works.
+#[tokio::test]
+async fn wal_compaction_after_full_index_query_still_works() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let mut serve = ServeHandle::spawn_with_options(
+        &endpoint,
+        &listen,
+        None,
+        Some(1),
+        Some(50),
+    );
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_WAL_COMPACT,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [{
+                "id": "compact-0",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "wal compact unique zero"
+                }
+            }]
+        }),
+    )
+    .await;
+
+    for i in 1..15 {
+        upsert_batch(
+            &serve.base_url,
+            NAMESPACE_WAL_COMPACT,
+            json!([{
+                "id": format!("compact-{i}"),
+                "attributes": {
+                    "embedding": [0.1 * i as f64, 0.2, 0.3],
+                    "text": format!("wal compact unique term {i}")
+                }
+            }]),
+        )
+        .await;
+    }
+
+    wait_until_indexed_ns(
+        &serve.base_url,
+        NAMESPACE_WAL_COMPACT,
+        Duration::from_secs(90),
+    )
+    .await;
+
+    let snapshot_key = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/snapshot.bin");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_WAL_COMPACT).await;
+    loop {
+        if meta.wal_snapshot_seq > 0 && s3_object_exists(&s3, BUCKET, &snapshot_key).await {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
+            let wal_keys = list_keys_with_prefix(&s3, BUCKET, &wal_prefix).await;
+            let mut missing = Vec::new();
+            for seq in 1..=meta.wal_commit_seq {
+                let key = format!("{wal_prefix}{seq:08}.bin");
+                if !s3_object_exists(&s3, BUCKET, &key).await {
+                    missing.push(seq);
+                }
+            }
+            panic!(
+                "wal compaction did not finish within 30s, meta={meta:?} wal_keys={wal_keys:?} missing_seqs={missing:?}"
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+        meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_WAL_COMPACT).await;
+    }
+
+    assert!(
+        meta.wal_commit_seq >= 15,
+        "expected >=15 wal commits, meta={meta:?}"
+    );
+    assert_eq!(meta.index_cursor, meta.wal_commit_seq);
+    assert!(
+        meta.wal_snapshot_seq > 0,
+        "wal_snapshot_seq should be set after compaction, meta={meta:?}"
+    );
+
+    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
+    let wal_keys = list_keys_with_prefix(&s3, BUCKET, &wal_prefix).await;
+    assert!(
+        wal_keys.iter().any(|k| k == &snapshot_key),
+        "expected wal/snapshot.bin, keys={wal_keys:?}"
+    );
+
+    let first_wal = format!("{wal_prefix}00000001.bin");
+    assert!(
+        !s3_object_exists(&s3, BUCKET, &first_wal).await,
+        "indexed wal segment 00000001.bin should be deleted after compaction"
+    );
+
+    let segment_wals: Vec<_> = wal_keys
+        .iter()
+        .filter(|k| {
+            k.starts_with(&wal_prefix)
+                && k.ends_with(".bin")
+                && !k.ends_with("snapshot.bin")
+        })
+        .collect();
+    assert!(
+        segment_wals.len() <= 3,
+        "expected at most 3 retained wal segments, got {segment_wals:?}"
+    );
+
+    serve.stop();
+    let serve2 = ServeHandle::spawn_with_options(
+        &endpoint,
+        &listen,
+        None,
+        Some(1),
+        Some(50),
+    );
+    serve2.wait_ready().await;
+
+    let fts_ids = query_ids_ns(
+        &serve2.base_url,
+        NAMESPACE_WAL_COMPACT,
+        json!(["BM25", "text", "compact unique"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.iter().any(|id| id.starts_with("compact-")),
+        "FTS after wal compaction + cold restart, ids={fts_ids:?}"
+    );
+
+    let vector_ids = query_ids_ns(
+        &serve2.base_url,
+        NAMESPACE_WAL_COMPACT,
+        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert!(
+        vector_ids.contains(&"compact-0".to_string()),
+        "vector query after compaction, ids={vector_ids:?}"
     );
 }

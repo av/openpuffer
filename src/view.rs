@@ -5,9 +5,10 @@
 
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
-use crate::namespace::{fetch_meta, replay_wal_range};
+use crate::namespace::{fetch_meta, load_docs_at_wal_commit, replay_wal_range};
+use crate::wal_compaction::wal_replay_from;
 use crate::s3_batch;
-use crate::wal::{apply_entry, decode, WalEntry};
+use crate::wal::{apply_entry, decode, decode_snapshot, WalEntry};
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
@@ -59,16 +60,21 @@ impl NamespaceView {
             return Ok(false);
         }
 
-        let from = self.last_applied_wal_seq.saturating_add(1);
-        replay_wal_range(
-            client,
-            bucket,
-            namespace,
-            &mut self.docs,
-            from,
-            meta.wal_commit_seq,
-        )
-        .await?;
+        let from = self
+            .last_applied_wal_seq
+            .max(meta.wal_snapshot_seq)
+            .saturating_add(1);
+        if from <= meta.wal_commit_seq {
+            replay_wal_range(
+                client,
+                bucket,
+                namespace,
+                &mut self.docs,
+                from,
+                meta.wal_commit_seq,
+            )
+            .await?;
+        }
 
         self.last_applied_wal_seq = meta.wal_commit_seq;
         self.meta = meta;
@@ -81,11 +87,8 @@ impl NamespaceView {
         let Some((meta, etag)) = fetch_meta(client, bucket, namespace).await? else {
             return Ok(Self::empty());
         };
-        let mut docs = HashMap::new();
-        let last = meta.wal_commit_seq;
-        if last > 0 {
-            replay_wal_range(client, bucket, namespace, &mut docs, 1, last).await?;
-        }
+        let (docs, last) =
+            load_docs_at_wal_commit(client, bucket, namespace, &meta).await?;
         Ok(Self {
             docs,
             meta,
@@ -106,11 +109,19 @@ impl NamespaceView {
             return Ok((Self::empty(), 0));
         }
         let mut docs = HashMap::new();
+        let mut last_applied = 0u64;
+        if let Some(snap_bytes) = wal_bytes.get(&0) {
+            let snap = decode_snapshot(snap_bytes)?;
+            last_applied = snap.seq;
+            docs = snap.into_docs();
+        }
         let last = meta.wal_commit_seq;
-        for seq in 1..=last {
-            if let Some(bytes) = wal_bytes.get(&seq) {
-                let entry = decode(bytes)?;
-                apply_entry(&mut docs, &entry)?;
+        if let Some(replay_from) = wal_replay_from(last_applied, last) {
+            for seq in replay_from..=last {
+                if let Some(bytes) = wal_bytes.get(&seq) {
+                    let entry = decode(bytes)?;
+                    apply_entry(&mut docs, &entry)?;
+                }
             }
         }
         Ok((

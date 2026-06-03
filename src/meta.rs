@@ -46,6 +46,9 @@ pub struct NamespaceMeta {
     pub dimensions: u32,
     /// Last committed WAL file sequence (`wal/{seq:08}.bin`).
     pub wal_commit_seq: u64,
+    /// WAL seq materialized in `wal/snapshot.bin` after compaction (0 = none).
+    #[serde(default)]
+    pub wal_snapshot_seq: u64,
     #[serde(default)]
     pub schema: Value,
     #[serde(default)]
@@ -65,6 +68,7 @@ impl Default for NamespaceMeta {
             vector_field: String::new(),
             dimensions: 0,
             wal_commit_seq: 0,
+            wal_snapshot_seq: 0,
             schema: Value::Object(serde_json::Map::new()),
             distance_metric: DistanceMetric::default(),
         }
@@ -132,6 +136,7 @@ mod tests {
             vector_field: "embedding".into(),
             dimensions: 128,
             wal_commit_seq: 10,
+            wal_snapshot_seq: 0,
             schema: serde_json::json!({"embedding": {"type": "[]f32"}}),
             distance_metric: DistanceMetric::EuclideanSquared,
         };

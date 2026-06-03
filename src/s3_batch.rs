@@ -252,18 +252,37 @@ pub async fn cold_load_meta_and_wal(
     };
     let mut storage_roundtrips = 1u32;
 
-    if meta.wal_commit_seq == 0 {
+    let mut fetch_keys = Vec::new();
+    if meta.wal_snapshot_seq > 0 {
+        fetch_keys.push(crate::wal::WalSnapshot::key(namespace));
+    }
+
+    let replay_from = if meta.wal_snapshot_seq > 0 {
+        crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
+            .unwrap_or(1)
+    } else {
+        1
+    };
+
+    if meta.wal_commit_seq > 0 {
+        for seq in replay_from..=meta.wal_commit_seq {
+            fetch_keys.push(crate::wal::wal_key(namespace, seq));
+        }
+    }
+
+    if fetch_keys.is_empty() {
         return Ok((meta, etag, HashMap::new(), storage_roundtrips));
     }
 
-    let wal_keys: Vec<String> = (1..=meta.wal_commit_seq)
-        .map(|seq| crate::wal::wal_key(namespace, seq))
-        .collect();
-    let wal_map_raw = fetch_round(client, bucket, &wal_keys).await?;
+    let wal_map_raw = fetch_round(client, bucket, &fetch_keys).await?;
     storage_roundtrips += 1;
 
     let mut wal_by_seq = HashMap::new();
-    for seq in 1..=meta.wal_commit_seq {
+    let snap_key = crate::wal::WalSnapshot::key(namespace);
+    if let Some(bytes) = wal_map_raw.get(&snap_key) {
+        wal_by_seq.insert(0, bytes.clone());
+    }
+    for seq in replay_from..=meta.wal_commit_seq {
         let key = crate::wal::wal_key(namespace, seq);
         if let Some(bytes) = wal_map_raw.get(&key) {
             wal_by_seq.insert(seq, bytes.clone());
