@@ -59,7 +59,7 @@ const NAMESPACE_BB3_BRANCH_DEST: &str = "itest-bb3-branch-patch";
 const NAMESPACE_BB3_F16_HYBRID: &str = "itest-bb3-f16-hybrid";
 const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
-const NAMESPACE_TWO_VEC: &str = "itest-two-vector-cols";
+const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -3452,9 +3452,9 @@ async fn copy_from_namespace_hybrid_filter_query_cross_feature() {
     );
 }
 
-/// Two vector columns: separate centroid trees on S3; `rank_by` selects field.
+/// Two vector columns: separate `index/{field}/centroids-l0.bin` on MinIO; ANN per field.
 #[tokio::test]
-async fn two_vector_columns_query_each_field() {
+async fn s3_two_vector_fields_separate_index_paths() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());
     let serve = ServeHandle::spawn(&fixture, &listen);
@@ -3462,72 +3462,115 @@ async fn two_vector_columns_query_each_field() {
 
     write_batch(
         &serve.base_url,
-        NAMESPACE_TWO_VEC,
+        NAMESPACE_S3_TWO_VEC,
         json!({
             "schema": {
-                "emb_a": "[2]f32",
-                "emb_b": "[2]f32"
+                "embedding_a": "[4]f32",
+                "embedding_b": "[4]f32"
             },
             "upsert_rows": [
                 {
-                    "id": "near-a",
+                    "id": "doc-a",
                     "attributes": {
-                        "emb_a": [1.0, 0.0],
-                        "emb_b": [0.0, 1.0]
+                        "embedding_a": [1.0, 0.0, 0.0, 0.0],
+                        "embedding_b": [0.0, 1.0, 0.0, 0.0]
                     }
                 },
                 {
-                    "id": "near-b",
+                    "id": "doc-b",
                     "attributes": {
-                        "emb_a": [0.0, 1.0],
-                        "emb_b": [1.0, 0.0]
+                        "embedding_a": [0.0, 1.0, 0.0, 0.0],
+                        "embedding_b": [1.0, 0.0, 0.0, 0.0]
                     }
                 }
             ]
         }),
     )
     .await;
-    wait_until_indexed(&serve.base_url, NAMESPACE_TWO_VEC, Duration::from_secs(60)).await;
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_S3_TWO_VEC,
+        Duration::from_secs(60),
+    )
+    .await;
 
-    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_TWO_VEC).await;
-    assert!(
-        meta.vector_fields.len() >= 2
-            || (meta.vector_field.len() > 0 && meta.dimensions > 0),
-        "meta should record vector index: {:?}",
-        meta.vector_fields
+    let meta =
+        fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_S3_TWO_VEC).await;
+    assert_meta_vector_fields(
+        &meta,
+        &[("embedding_a", 4), ("embedding_b", 4)],
     );
+    assert_eq!(meta.vector_field.as_str(), "embedding_a");
+    assert_eq!(meta.dimensions, 4);
 
-    let l0_a = format!("{ROOT_PREFIX}{NAMESPACE_TWO_VEC}/index/emb_a/centroids-l0.bin");
-    let l0_b = format!("{ROOT_PREFIX}{NAMESPACE_TWO_VEC}/index/emb_b/centroids-l0.bin");
-    let size_a = object_size(&fixture.client, &fixture.bucket, &l0_a).await;
-    let size_b = object_size(&fixture.client, &fixture.bucket, &l0_b).await;
-    assert!(size_a > 0, "emb_a centroids-l0 must exist on MinIO");
-    assert!(size_b > 0, "emb_b centroids-l0 must exist on MinIO");
+    assert_centroids_l0_for_field(
+        &fixture.client,
+        &fixture.bucket,
+        NAMESPACE_S3_TWO_VEC,
+        "embedding_a",
+    )
+    .await;
+    assert_centroids_l0_for_field(
+        &fixture.client,
+        &fixture.bucket,
+        NAMESPACE_S3_TWO_VEC,
+        "embedding_b",
+    )
+    .await;
+
+    let keys = list_namespace_keys(&fixture.client, &fixture.bucket, NAMESPACE_S3_TWO_VEC).await;
+    let l0_a = centroids_l0_s3_key(NAMESPACE_S3_TWO_VEC, "embedding_a");
+    let l0_b = centroids_l0_s3_key(NAMESPACE_S3_TWO_VEC, "embedding_b");
+    assert!(
+        keys.iter().any(|k| k == &l0_a),
+        "S3 list must include {l0_a}, keys={keys:?}"
+    );
+    assert!(
+        keys.iter().any(|k| k == &l0_b),
+        "S3 list must include {l0_b}, keys={keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| {
+            k.ends_with("centroids-l0.bin")
+                && !k.contains("/index/embedding_a/")
+                && !k.contains("/index/embedding_b/")
+        }),
+        "legacy flat centroids-l0 must not appear when two fields indexed, keys={keys:?}"
+    );
 
     let ids_a = query_ids_ns(
         &serve.base_url,
-        NAMESPACE_TWO_VEC,
-        json!(["vector", "ANN", "emb_a", [1.0, 0.0]]),
+        NAMESPACE_S3_TWO_VEC,
+        json!(["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]]),
         None,
     )
     .await;
-    assert_eq!(ids_a.first().map(String::as_str), Some("near-a"));
+    assert_eq!(
+        ids_a.first().map(String::as_str),
+        Some("doc-a"),
+        "ANN on embedding_a should rank doc-a first, got {ids_a:?}"
+    );
 
     let ids_b = query_ids_ns(
         &serve.base_url,
-        NAMESPACE_TWO_VEC,
-        json!(["vector", "ANN", "emb_b", [1.0, 0.0]]),
+        NAMESPACE_S3_TWO_VEC,
+        json!(["vector", "ANN", "embedding_b", [1.0, 0.0, 0.0, 0.0]]),
         None,
     )
     .await;
-    assert_eq!(ids_b.first().map(String::as_str), Some("near-b"));
+    assert_eq!(
+        ids_b.first().map(String::as_str),
+        Some("doc-b"),
+        "ANN on embedding_b should rank doc-b first, got {ids_b:?}"
+    );
 
     let bad_resp = reqwest::Client::new()
         .post(format!(
             "{}/v2/namespaces/{}",
-            serve.base_url, NAMESPACE_TWO_VEC
+            serve.base_url,
+            namespace_path_segment(NAMESPACE_S3_TWO_VEC)
         ))
-        .json(&json!({ "schema": { "emb_c": "[2]f32" } }))
+        .json(&json!({ "schema": { "embedding_c": "[4]f32" } }))
         .send()
         .await
         .expect("schema write");

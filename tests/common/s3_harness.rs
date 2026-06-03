@@ -211,6 +211,60 @@ pub fn index_has_centroids_l0(keys: &[String]) -> bool {
     keys.iter().any(|k| k.ends_with("centroids-l0.bin"))
 }
 
+/// Full S3 key for per-column L0 centroids (`openpuffer/{ns}/index/{field}/centroids-l0.bin`).
+pub fn centroids_l0_s3_key(namespace: &str, field: &str) -> String {
+    CentroidIndexL0::key(namespace, field)
+}
+
+/// Assert non-empty `centroids-l0.bin` exists for a named vector column.
+pub async fn assert_centroids_l0_for_field(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    field: &str,
+) {
+    let key = centroids_l0_s3_key(namespace, field);
+    assert_key_exists(client, bucket, &key).await;
+    assert!(
+        object_size(client, bucket, &key).await > 0,
+        "centroids-l0 for field {field} must be non-empty at {key}"
+    );
+}
+
+/// Assert `meta.json` on S3 records indexed vector columns (names + dimensions).
+pub fn assert_meta_vector_fields(meta: &NamespaceMeta, expected: &[(&str, u32)]) {
+    assert_eq!(
+        meta.vector_fields.len(),
+        expected.len(),
+        "vector_fields in meta.json: {:?}",
+        meta.vector_fields
+    );
+    for (name, dims) in expected {
+        let cfg = meta
+            .vector_fields
+            .iter()
+            .find(|f| f.name == *name)
+            .unwrap_or_else(|| panic!("meta.vector_fields missing {name:?}"));
+        assert_eq!(
+            cfg.dimensions, *dims,
+            "dimensions for {name} in meta"
+        );
+        assert!(
+            cfg.segment_id > 0 || meta.index_cursor > 0,
+            "field {name} should be indexed (segment_id={}, index_cursor={})",
+            cfg.segment_id,
+            meta.index_cursor
+        );
+    }
+    for name in expected.iter().map(|(n, _)| *n) {
+        assert!(
+            meta.schema.get(name).is_some(),
+            "meta.schema must declare vector field {name}: {:?}",
+            meta.schema
+        );
+    }
+}
+
 pub async fn list_namespace_keys(client: &Client, bucket: &str, namespace: &str) -> Vec<String> {
     let prefix = format!("{ROOT_PREFIX}{namespace}/");
     list_keys_with_prefix(client, bucket, &prefix).await
