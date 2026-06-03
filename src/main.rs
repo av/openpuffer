@@ -26,7 +26,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let storage = Storage::new(client, config.bucket.clone());
 
     let state = AppState {
-        storage,
+        storage: storage.clone(),
         config: config.clone(),
     };
 
@@ -37,6 +37,17 @@ async fn serve(args: ServeArgs) -> Result<()> {
         bucket = %config.bucket,
         "openpuffer serve listening (stateless, S3-compatible storage)"
     );
+
+    let storage_for_shutdown = storage.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("shutting down: flushing write buffers");
+            if let Err(e) = storage_for_shutdown.flush_writes().await {
+                tracing::error!("flush write buffers on shutdown: {e:#}");
+            }
+        }
+    });
+
     axum::serve(listener, app).await?;
     Ok(())
 }

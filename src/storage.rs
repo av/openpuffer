@@ -1,11 +1,11 @@
+use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::models::Document;
-use crate::namespace::{self, LoadedNamespaceData};
+use crate::view::NamespaceView;
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::types::ObjectIdentifier;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// Classify common S3 API failures for HTTP mapping.
@@ -23,14 +23,8 @@ pub fn s3_error_hint(err: &anyhow::Error) -> Option<&'static str> {
 pub struct Storage {
     client: Client,
     bucket: String,
-    cache: Arc<RwLock<HashMap<String, CachedNamespace>>>,
-    cache_ttl: Duration,
-}
-
-struct CachedNamespace {
-    loaded_at: Instant,
-    docs: HashMap<String, Document>,
-    meta_etag: Option<String>,
+    write_buffer: WriteBufferManager,
+    views: Arc<RwLock<HashMap<String, NamespaceView>>>,
 }
 
 pub struct LoadedNamespace {
@@ -40,11 +34,13 @@ pub struct LoadedNamespace {
 
 impl Storage {
     pub fn new(client: Client, bucket: String) -> Arc<Self> {
+        let write_buffer =
+            WriteBufferManager::new(client.clone(), bucket.clone(), WriteBufferConfig::default());
         Arc::new(Self {
             client,
             bucket,
-            cache: Arc::new(RwLock::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(30),
+            write_buffer,
+            views: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -83,63 +79,61 @@ impl Storage {
         Ok(namespaces)
     }
 
+    /// Load namespace for query: cached [`NamespaceView`] with incremental WAL tail apply.
     pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
-        {
-            let cache = self.cache.read().await;
-            if let Some(entry) = cache.get(name) {
-                if entry.loaded_at.elapsed() < self.cache_ttl {
-                    return Ok(LoadedNamespace {
-                        docs: entry.docs.clone(),
-                        meta_etag: entry.meta_etag.clone(),
-                    });
-                }
-            }
+        let mut views = self.views.write().await;
+        if let Some(view) = views.get_mut(name) {
+            view.catch_up(&self.client, &self.bucket, name).await?;
+            return Ok(LoadedNamespace {
+                docs: view.docs.clone(),
+                meta_etag: view.meta_etag.clone(),
+            });
         }
 
-        let loaded = self.load_namespace_from_s3(name).await?;
-        let mut cache = self.cache.write().await;
-        cache.insert(
-            name.to_string(),
-            CachedNamespace {
-                loaded_at: Instant::now(),
-                docs: loaded.docs.clone(),
-                meta_etag: loaded.meta_etag.clone(),
-            },
-        );
+        let mut view = NamespaceView::load(&self.client, &self.bucket, name).await?;
+        view.catch_up(&self.client, &self.bucket, name).await?;
+        let loaded = LoadedNamespace {
+            docs: view.docs.clone(),
+            meta_etag: view.meta_etag.clone(),
+        };
+        views.insert(name.to_string(), view);
         Ok(loaded)
     }
 
     pub fn invalidate_cache(&self, name: &str) {
         let name = name.to_string();
-        let cache = self.cache.clone();
+        let views = self.views.clone();
         tokio::spawn(async move {
-            cache.write().await.remove(&name);
+            views.write().await.remove(&name);
         });
     }
 
-    async fn load_namespace_from_s3(&self, name: &str) -> Result<LoadedNamespace> {
-        let LoadedNamespaceData { docs, meta_etag } =
-            namespace::load_namespace(&self.client, &self.bucket, name).await?;
-        Ok(LoadedNamespace { docs, meta_etag })
-    }
-
-    /// Durably append upserts/deletes via WAL + meta CAS (no per-doc JSON writes).
+    /// Durably append via group-commit buffer; ACK after WAL + meta CAS on S3.
     pub async fn write_documents(
         &self,
         namespace: &str,
         upserts: Vec<Document>,
         deletes: Vec<String>,
     ) -> Result<()> {
-        namespace::append_wal(
-            &self.client,
-            &self.bucket,
-            namespace,
-            upserts,
-            deletes,
-        )
-        .await?;
-        self.cache.write().await.remove(namespace);
+        let committed = self
+            .write_buffer
+            .write(namespace, upserts, deletes)
+            .await?;
+
+        let mut views = self.views.write().await;
+        if let Some(view) = views.get_mut(namespace) {
+            view.apply_committed(committed.seq, &committed.entry)?;
+        } else {
+            // Cold cache: load from S3 (flush already committed `seq` on object storage).
+            let view = NamespaceView::load(&self.client, &self.bucket, namespace).await?;
+            views.insert(namespace.to_string(), view);
+        }
         Ok(())
+    }
+
+    /// Flush all pending write buffers (graceful shutdown).
+    pub async fn flush_writes(&self) -> Result<()> {
+        self.write_buffer.flush_all().await
     }
 
     pub async fn delete_namespace(&self, name: &str) -> Result<()> {
@@ -200,7 +194,7 @@ impl Storage {
                 .context("delete namespace objects")?;
         }
 
-        self.cache.write().await.remove(name);
+        self.views.write().await.remove(name);
         Ok(())
     }
 }

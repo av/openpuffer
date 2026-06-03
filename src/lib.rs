@@ -16,12 +16,15 @@
 //!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY
 
 pub mod api;
+pub mod buffer;
 pub mod config;
+pub mod index;
 pub mod meta;
 pub mod models;
 pub mod namespace;
 pub mod search;
 pub mod storage;
+pub mod view;
 pub mod wal;
 
 pub use api::{router, AppState};

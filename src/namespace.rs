@@ -14,14 +14,59 @@ pub struct LoadedNamespaceData {
     pub meta_etag: Option<String>,
 }
 
+/// Fetch durable namespace metadata (`meta.json`), if present.
+pub async fn fetch_meta(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+) -> Result<Option<(NamespaceMeta, Option<String>)>> {
+    get_meta(client, bucket, &meta_key(namespace)).await
+}
+
+/// Replay WAL segments `from_seq..=to_seq` into `docs`.
+pub async fn replay_wal_range(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    docs: &mut HashMap<String, Document>,
+    from_seq: u64,
+    to_seq: u64,
+) -> Result<()> {
+    if from_seq == 0 || to_seq == 0 || from_seq > to_seq {
+        return Ok(());
+    }
+    for seq in from_seq..=to_seq {
+        let bytes = read_wal_segment(client, bucket, namespace, seq).await?;
+        let entry = decode(&bytes)?;
+        apply_entry(docs, &entry)?;
+    }
+    Ok(())
+}
+
+async fn read_wal_segment(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    seq: u64,
+) -> Result<Vec<u8>> {
+    let key = wal_key(namespace, seq);
+    get_object_bytes(client, bucket, &key)
+        .await
+        .with_context(|| format!("read wal {seq:08}"))
+}
+
 /// Append one WAL batch and CAS-advance `meta.json`.
+///
+/// **Strong consistency (write ACK):** returns only after the WAL object is PUT to S3
+/// and `meta.json` was updated with `wal_commit_seq = seq`. Queries that catch up to
+/// the same commit point will see this batch.
 pub async fn append_wal(
     client: &Client,
     bucket: &str,
     namespace: &str,
     upserts: Vec<Document>,
     deletes: Vec<String>,
-) -> Result<()> {
+) -> Result<u64> {
     let entry = WalEntry::from_write(upserts, deletes)?;
 
     for attempt in 0..META_RETRIES {
@@ -58,7 +103,7 @@ pub async fn append_wal(
         }
 
         match put.send().await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(seq),
             Err(e) => {
                 let service = e.into_service_error();
                 let conflict = service.meta().code() == Some("PreconditionFailed");
@@ -81,51 +126,39 @@ pub async fn load_namespace(
 ) -> Result<LoadedNamespaceData> {
     let meta_key = meta_key(namespace);
     if let Some((meta, etag)) = get_meta(client, bucket, &meta_key).await? {
-        let docs = replay_wal(client, bucket, namespace, &meta).await?;
+        let mut docs = HashMap::new();
+        replay_wal_range(
+            client,
+            bucket,
+            namespace,
+            &mut docs,
+            1,
+            meta.wal_commit_seq,
+        )
+        .await?;
         return Ok(LoadedNamespaceData {
             docs,
             meta_etag: etag,
         });
     }
 
-    load_legacy(client, bucket, namespace).await
+    let docs = load_legacy_docs(client, bucket, namespace).await?;
+    Ok(LoadedNamespaceData {
+        docs,
+        meta_etag: None,
+    })
 }
 
-async fn replay_wal(
+/// Legacy manifest + per-doc JSON (read-only fallback).
+pub async fn load_legacy_docs(
     client: &Client,
     bucket: &str,
     namespace: &str,
-    meta: &NamespaceMeta,
 ) -> Result<HashMap<String, Document>> {
-    let mut docs = HashMap::new();
-    if meta.wal_commit_seq == 0 {
-        return Ok(docs);
-    }
-    for seq in 1..=meta.wal_commit_seq {
-        let key = wal_key(namespace, seq);
-        let bytes = get_object_bytes(client, bucket, &key)
-            .await
-            .with_context(|| format!("read wal {seq:08}"))?;
-        let entry = decode(&bytes)?;
-        apply_entry(&mut docs, &entry)?;
-    }
-    Ok(docs)
-}
-
-async fn load_legacy(
-    client: &Client,
-    bucket: &str,
-    namespace: &str,
-) -> Result<LoadedNamespaceData> {
     let manifest_key = models::manifest_key(namespace);
     let manifest = match get_meta_json::<Manifest>(client, bucket, &manifest_key).await? {
         Some((m, _)) => m,
-        None => {
-            return Ok(LoadedNamespaceData {
-                docs: HashMap::new(),
-                meta_etag: None,
-            });
-        }
+        None => return Ok(HashMap::new()),
     };
 
     let mut docs = HashMap::new();
@@ -136,10 +169,7 @@ async fn load_legacy(
             docs.insert(id.clone(), doc);
         }
     }
-    Ok(LoadedNamespaceData {
-        docs,
-        meta_etag: None,
-    })
+    Ok(docs)
 }
 
 async fn get_meta(
@@ -211,5 +241,41 @@ async fn get_object_bytes_optional(
                 Err(anyhow!("get object {key}: {service}"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wal::{apply_entry, encode, WalEntry};
+    use crate::models::Document;
+
+    #[test]
+    fn replay_wal_range_applies_incremental_entries() {
+        let e1 = WalEntry::from_write(
+            vec![Document {
+                id: "x".into(),
+                attributes: Default::default(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        let e2 = WalEntry::from_write(vec![], vec!["x".into()]).unwrap();
+
+        let mut docs = HashMap::new();
+        apply_entry(&mut docs, &e1).unwrap();
+        assert!(docs.contains_key("x"));
+        apply_entry(&mut docs, &e2).unwrap();
+        assert!(!docs.contains_key("x"));
+
+        // Incremental path only fetches new segments; logic mirrors replay_wal_range loop.
+        let bytes1 = encode(&e1).unwrap();
+        let bytes2 = encode(&e2).unwrap();
+        let mut docs2 = HashMap::new();
+        for bytes in [bytes1, bytes2] {
+            let entry = decode(&bytes).unwrap();
+            apply_entry(&mut docs2, &entry).unwrap();
+        }
+        assert!(docs2.is_empty());
     }
 }

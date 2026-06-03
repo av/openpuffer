@@ -35,18 +35,18 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 ## Write path
 
 1. API accepts turbopuffer-shaped JSON (`upsert_rows`, `upsert_columns`, `deletes`).
-2. Build a `WalEntry` batch (upserts + deletes).
-3. Assign `seq = wal_commit_seq + 1`.
-4. **PUT** `wal/{seq:08}.bin` (bincode payload) — durable before ACK.
-5. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
-
-v1 commits one WAL file per HTTP write (group commit ~1/s is a later optimization).
+2. Enqueue in per-namespace **write buffer** (`buffer.rs`): group commit by time (default 1s) or batch size.
+3. Flush builds one `WalEntry` batch (upserts + deletes).
+4. Assign `seq = wal_commit_seq + 1`.
+5. **PUT** `wal/{seq:08}.bin` (bincode payload) — durable before ACK.
+6. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
+7. HTTP ACK only after steps 5–6 succeed (**strong consistency**).
 
 ## Read path (current vs target)
 
-**Iteration 1 (implemented):** load `meta.json`, replay WAL entries `1..=wal_commit_seq` into an in-memory `HashMap` for query (exhaustive scan). No per-doc JSON writes.
+**Iteration 2 (implemented):** in-process [`NamespaceView`](../src/view.rs) caches `docs` + `last_applied_wal_seq`. Queries call `catch_up()` to fetch only `wal/{seq}.bin` for `seq > last_applied_wal_seq` instead of replaying `1..=N` every time. Legacy namespaces still load `manifest.json` + `docs/`.
 
-**Target (iter 2+):**
+**Target (iter 3+):**
 
 1. Load `meta.json` + relevant `index/` segments.
 2. Search indexed data (ANN + BM25 + filters).
