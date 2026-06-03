@@ -3584,6 +3584,21 @@ async fn s3_two_vector_fields_separate_index_paths() {
     );
 }
 
+/// Assert turbopuffer-style API error body: `{"error": "...", "status": "error"}`.
+fn assert_api_error_shape(body: &Value) {
+    assert_eq!(
+        body["status"].as_str(),
+        Some("error"),
+        "expected status=error, got {body:?}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "expected non-empty error message, got {body:?}"
+    );
+}
+
 /// POST write and return HTTP status + JSON body (for limit violation tests).
 ///
 /// Namespace names are percent-encoded in the path so invalid names like `bad/name`
@@ -3627,6 +3642,7 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "invalid namespace: {body:?}");
+    assert_api_error_shape(&body);
     assert!(
         body["error"]
             .as_str()
@@ -3648,6 +3664,7 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "upsert batch: {body:?}");
+    assert_api_error_shape(&body);
     assert!(
         body["error"].as_str().unwrap_or("").contains("maximum"),
         "expected upsert row limit error, got {body:?}"
@@ -3687,6 +3704,7 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "delete_by_filter cap: {body:?}");
+    assert_api_error_shape(&body);
     assert!(
         body["error"].as_str().unwrap_or("").contains("filter matched"),
         "expected filter batch error, got {body:?}"

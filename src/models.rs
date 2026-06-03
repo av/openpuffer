@@ -319,6 +319,22 @@ pub struct ExportRequest {
     pub format: Option<String>,
 }
 
+/// turbopuffer-style API error body: `{"error": "...", "status": "error"}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApiErrorResponse {
+    pub error: String,
+    pub status: String,
+}
+
+impl ApiErrorResponse {
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            status: "error".to_string(),
+        }
+    }
+}
+
 pub fn namespace_prefix(name: &str) -> String {
     format!("{ROOT_PREFIX}{name}/")
 }
@@ -345,6 +361,14 @@ mod tests {
         };
         assert_eq!(stats.rows_affected(), 6);
         assert_eq!(stats.billable_logical_bytes_written(), 384);
+    }
+
+    #[test]
+    fn api_error_response_serializes_turbopuffer_shape() {
+        let body = ApiErrorResponse::new("namespace name invalid");
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["error"], "namespace name invalid");
     }
 
     #[test]
