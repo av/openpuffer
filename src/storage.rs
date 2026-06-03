@@ -194,8 +194,19 @@ impl Storage {
         let skip_wal_tail = consistency == QueryConsistency::Eventual;
         let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(name) {
-            if consistency == QueryConsistency::Strong {
-                view.catch_up(&self.client, &self.bucket, name).await?;
+            match consistency {
+                QueryConsistency::Strong => {
+                    view.catch_up(&self.client, &self.bucket, name).await?;
+                }
+                QueryConsistency::Eventual => {
+                    // Refresh index segment pointers without WAL replay (sub-10ms warm path).
+                    if let Ok(Some((meta, etag))) =
+                        crate::namespace::fetch_meta(&self.client, &self.bucket, name).await
+                    {
+                        view.meta = meta;
+                        view.meta_etag = etag;
+                    }
+                }
             }
             return self
                 .loaded_from_view(name, view, cold_batch, 0, skip_wal_tail)
@@ -330,15 +341,24 @@ impl Storage {
         let tail_doc_ids = if skip_wal_tail {
             HashSet::new()
         } else if view.meta.index_cursor < view.meta.wal_commit_seq {
-            let from = view.meta.index_cursor.saturating_add(1);
             let to = view.meta.wal_commit_seq;
-            let entries = if cold_batch {
-                storage_roundtrips += 1;
-                replay_wal_entries_batched(&self.client, &self.bucket, name, from, to).await?
+            let from = if view.meta.wal_snapshot_seq > 0 {
+                crate::wal_compaction::wal_replay_from(view.meta.wal_snapshot_seq, to)
+                    .unwrap_or(view.meta.index_cursor.saturating_add(1))
             } else {
-                replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
+                view.meta.index_cursor.saturating_add(1)
             };
-            wal_touched_doc_ids(&entries)
+            if from > to {
+                HashSet::new()
+            } else {
+                let entries = if cold_batch {
+                    storage_roundtrips += 1;
+                    replay_wal_entries_batched(&self.client, &self.bucket, name, from, to).await?
+                } else {
+                    replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
+                };
+                wal_touched_doc_ids(&entries)
+            }
         } else {
             HashSet::new()
         };

@@ -48,6 +48,16 @@ const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
 const NAMESPACE_S3_COPY_KEYS_SRC: &str = "itest-s3-copy-keys-src";
 const NAMESPACE_S3_COPY_KEYS_DEST: &str = "itest-s3-copy-keys-dest";
+const NAMESPACE_S3_UPSERT_COND: &str = "itest-s3-upsert-cond";
+const NAMESPACE_S3_PATCH_FILTER_WAL: &str = "itest-s3-patch-filter-wal";
+const NAMESPACE_S3_BRANCH_SRC: &str = "itest-s3-branch-src";
+const NAMESPACE_S3_BRANCH_DEST: &str = "itest-s3-branch-dest";
+const NAMESPACE_BB3_COMPACT_EV: &str = "itest-bb3-compact-ev";
+const NAMESPACE_BB3_BRANCH_SRC: &str = "itest-bb3-branch-src";
+const NAMESPACE_BB3_BRANCH_DEST: &str = "itest-bb3-branch-patch";
+const NAMESPACE_BB3_F16_HYBRID: &str = "itest-bb3-f16-hybrid";
+const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
+const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -2047,6 +2057,227 @@ async fn s3_two_level_centroids_exist_on_backend() {
     );
 }
 
+/// `upsert_condition` skips existing ids before WAL flush; second S3 WAL segment contains only new doc.
+#[tokio::test]
+async fn s3_upsert_condition_writes_single_wal_entry_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let ns = NAMESPACE_S3_UPSERT_COND;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({
+            "upsert_rows": [{
+                "id": "doc-a",
+                "attributes": { "name": "original", "text": "s3 upsert cond alpha" }
+            }]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let http = reqwest::Client::new();
+    let resp = http
+        .post(format!("{}/v2/namespaces/{ns}", serve.base_url))
+        .json(&json!({
+            "upsert_condition": ["id", "Eq", null],
+            "upsert_rows": [
+                { "id": "doc-a", "attributes": { "name": "should-not-apply" } },
+                { "id": "doc-b", "attributes": { "name": "inserted", "text": "s3 upsert cond bravo" } }
+            ]
+        }))
+        .send()
+        .await
+        .expect("conditional upsert");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("write json");
+    assert_eq!(body["rows_upserted"].as_u64(), Some(1), "body={body}");
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let wal_keys = list_wal_keys(&fixture.client, &fixture.bucket, ns).await;
+    let seqs = wal_segment_seqs(&wal_keys);
+    assert_eq!(seqs, vec![1, 2], "minimal WAL commits: keys={wal_keys:?}");
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(meta.wal_commit_seq, 2);
+    assert_eq!(seqs.len(), meta.wal_commit_seq as usize);
+
+    let first =
+        decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, ns, 1).await;
+    assert_eq!(wal_upsert_ids(&first), vec!["doc-a".to_string()]);
+
+    let second =
+        decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, ns, 2).await;
+    assert_eq!(
+        wal_upsert_ids(&second),
+        vec!["doc-b".to_string()],
+        "conditional write must skip doc-a in WAL batch: entry={second:?}"
+    );
+    assert!(
+        second.deletes.is_empty() && second.patches.is_empty(),
+        "second WAL entry should be upsert-only: {second:?}"
+    );
+}
+
+/// `patch_by_filter` persists matching doc patches in S3 WAL bincode.
+#[tokio::test]
+async fn s3_patch_by_filter_persists_in_wal_bin() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let ns = NAMESPACE_S3_PATCH_FILTER_WAL;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({
+            "schema": {
+                "text": {"type": "string", "full_text_search": true},
+                "tier": {"type": "string", "filterable": true},
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "doc-a",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "alpha bravo",
+                        "tier": "pro"
+                    }
+                },
+                {
+                    "id": "doc-b",
+                    "attributes": {
+                        "embedding": [0.0, 1.0, 0.0],
+                        "text": "charlie delta",
+                        "tier": "free"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v2/namespaces/{ns}", serve.base_url))
+        .json(&json!({
+            "patch_by_filter": {
+                "filters": ["tier", "Eq", "free"],
+                "patch": { "tier": "upgraded", "text": "charlie patched unique" }
+            }
+        }))
+        .send()
+        .await
+        .expect("patch_by_filter");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("write json");
+    assert_eq!(body["rows_patched"].as_u64(), Some(1));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    let seq = meta.wal_commit_seq;
+    assert!(seq >= 2, "patch must commit a new WAL segment, meta={meta:?}");
+
+    let entry = decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, ns, seq).await;
+    assert_eq!(wal_patch_ids(&entry), vec!["doc-b".to_string()]);
+    assert!(entry.upserts.is_empty(), "patch_by_filter WAL should not upsert: {entry:?}");
+
+    let patches = entry.patch_documents().expect("decode WalPatch rows");
+    let doc_b = patches
+        .iter()
+        .find(|p| p.id == "doc-b")
+        .expect("doc-b patch in WAL");
+    assert_eq!(
+        doc_b.attributes.get("tier").and_then(|v| v.as_str()),
+        Some("upgraded")
+    );
+    assert_eq!(
+        doc_b.attributes.get("text").and_then(|v| v.as_str()),
+        Some("charlie patched unique")
+    );
+}
+
+/// `branch_from_namespace` server-side copy: dest prefix has same object count as source.
+#[tokio::test]
+async fn s3_branch_from_namespace_clones_prefix() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let src = NAMESPACE_S3_BRANCH_SRC;
+    let dest = NAMESPACE_S3_BRANCH_DEST;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        src,
+        json!([
+            {
+                "id": "branch-key-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "branch key parity alpha",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "branch-key-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "branch key parity bravo",
+                    "tier": "free"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, src, Duration::from_secs(60)).await;
+    assert_index_objects(&fixture.client, &fixture.bucket, src).await;
+
+    write_batch(
+        &serve.base_url,
+        dest,
+        json!({"branch_from_namespace": src}),
+    )
+    .await;
+
+    let src_prefix = format!("{ROOT_PREFIX}{src}/");
+    let dest_prefix = format!("{ROOT_PREFIX}{dest}/");
+    let src_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &src_prefix).await;
+    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+
+    assert_eq!(
+        src_keys.len(),
+        dest_keys.len(),
+        "branch must duplicate every source key (src={src_keys:?} dest={dest_keys:?})"
+    );
+    assert!(!src_keys.is_empty(), "source must have S3 objects before branch");
+
+    for key in &src_keys {
+        let suffix = key
+            .strip_prefix(&src_prefix)
+            .expect("source key under namespace prefix");
+        let expected_dest = format!("{dest_prefix}{suffix}");
+        assert!(
+            dest_keys.contains(&expected_dest),
+            "dest missing branch copy of {key} (expected {expected_dest})"
+        );
+    }
+
+    let src_meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, src).await;
+    let dest_meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, dest).await;
+    assert_eq!(
+        dest_meta.wal_commit_seq, src_meta.wal_commit_seq,
+        "branch dest should inherit WAL commit seq from source"
+    );
+}
+
 /// Base64 vector upsert (turbopuffer f32 LE) round-trips through `include_vectors` query options.
 #[tokio::test]
 async fn base64_vector_upsert_query_include_vectors_roundtrip() {
@@ -2769,6 +3000,394 @@ async fn s3_copy_from_namespace_duplicates_all_keys() {
     assert!(
         dest_meta.fts_segment_ids.len() >= 1 && dest_meta.filter_segment_ids.len() >= 1,
         "copied meta should retain index segment chains: {dest_meta:?}"
+    );
+}
+
+/// WAL compaction + warm + eventual query: indexed docs visible, zero S3 GETs, tail doc hidden.
+#[tokio::test]
+async fn wal_compaction_warm_eventual_query_cross_feature() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(1),
+        Some(50),
+    );
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_COMPACT_EV,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [{
+                "id": "compact-ev-0",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "compaction eventual warm unique zero"
+                }
+            }]
+        }),
+    )
+    .await;
+
+    for i in 1..15 {
+        upsert_batch(
+            &serve.base_url,
+            NAMESPACE_BB3_COMPACT_EV,
+            json!([{
+                "id": format!("compact-ev-{i}"),
+                "attributes": {
+                    "embedding": [0.1 * i as f64, 0.2, 0.3],
+                    "text": format!("compaction eventual warm unique term {i}")
+                }
+            }]),
+        )
+        .await;
+    }
+
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_BB3_COMPACT_EV,
+        Duration::from_secs(90),
+    )
+    .await;
+
+    let snapshot_key = format!("{ROOT_PREFIX}{NAMESPACE_BB3_COMPACT_EV}/wal/snapshot.bin");
+    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_BB3_COMPACT_EV}/wal/");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_BB3_COMPACT_EV).await;
+        let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+        let segment_wals: Vec<_> = wal_keys
+            .iter()
+            .filter(|k| k.ends_with(".bin") && !k.ends_with("snapshot.bin"))
+            .collect();
+        if meta.wal_snapshot_seq > 0
+            && s3_object_exists(&fixture.client, &fixture.bucket, &snapshot_key).await
+            && segment_wals.len() <= 3
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("wal compaction did not finish: meta={meta:?}");
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let client = reqwest::Client::new();
+    let warm_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{NAMESPACE_BB3_COMPACT_EV}/warm",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("warm");
+    assert_eq!(warm_resp.status(), StatusCode::OK);
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_COMPACT_EV,
+        json!([{
+            "id": "compact-ev-unindexed",
+            "attributes": {
+                "embedding": [0.0, 1.0, 0.0],
+                "text": "compaction eventual unindexed tail only"
+            }
+        }]),
+    )
+    .await;
+
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let resp = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_COMPACT_EV,
+        json!({
+            "rank_by": ["BM25", "text", "compaction eventual warm"],
+            "top_k": 5,
+            "consistency": "eventual"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = resp["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.iter().any(|id| id.starts_with("compact-ev-") && id != "compact-ev-unindexed"),
+        "eventual after compaction+warm must return indexed docs, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"compact-ev-unindexed".to_string()),
+        "eventual must not see unindexed tail doc, got {ids:?}"
+    );
+
+    let stats_resp = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("stats");
+    let stats: Value = stats_resp.json().await.expect("stats json");
+    assert_eq!(
+        stats["s3_get_count"].as_u64(),
+        Some(0),
+        "compaction + warm + eventual query should not S3 GetObject"
+    );
+}
+
+/// branch_from_namespace + patch_by_filter: branch patches via filter index; source unchanged.
+#[tokio::test]
+async fn branch_patch_by_filter_cross_feature() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_BRANCH_SRC,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "tier": { "type": "string", "filterable": true },
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "branch-a",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "branch alpha source",
+                        "tier": "pro"
+                    }
+                },
+                {
+                    "id": "branch-b",
+                    "attributes": {
+                        "embedding": [0.0, 1.0, 0.0],
+                        "text": "branch bravo source",
+                        "tier": "free"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_BB3_BRANCH_SRC, Duration::from_secs(60)).await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_BRANCH_DEST,
+        json!({"branch_from_namespace": NAMESPACE_BB3_BRANCH_SRC}),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let patch_resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_BB3_BRANCH_DEST
+        ))
+        .json(&json!({
+            "patch_by_filter": {
+                "filters": ["tier", "Eq", "free"],
+                "patch": { "tier": "upgraded", "text": "branch bravo patched on dest" }
+            }
+        }))
+        .send()
+        .await
+        .expect("patch_by_filter on branch");
+    assert_eq!(patch_resp.status(), StatusCode::OK);
+    let patch_body: Value = patch_resp.json().await.expect("patch json");
+    assert_eq!(patch_body["rows_patched"].as_u64(), Some(1));
+
+    sleep(Duration::from_millis(1500)).await;
+
+    let branch_hits = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_BRANCH_DEST,
+        json!(["BM25", "text", "patched"]),
+        Some(json!(["tier", "Eq", "upgraded"])),
+    )
+    .await;
+    assert!(
+        branch_hits.contains(&"branch-b".to_string()),
+        "branch should see patched doc-b, got {branch_hits:?}"
+    );
+
+    let src_free = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_BRANCH_SRC,
+        json!(["BM25", "text", "bravo"]),
+        Some(json!(["tier", "Eq", "free"])),
+    )
+    .await;
+    assert!(
+        src_free.contains(&"branch-b".to_string()),
+        "source must still have free-tier branch-b, got {src_free:?}"
+    );
+
+    let src_upgraded = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_BRANCH_SRC,
+        json!(["BM25", "text", "patched"]),
+        None,
+    )
+    .await;
+    assert!(
+        src_upgraded.is_empty(),
+        "source must not see branch patch text, got {src_upgraded:?}"
+    );
+}
+
+/// [N]f16 schema + hybrid Sum rank_by returns doc matching both vector and BM25 signals.
+#[tokio::test]
+async fn f16_schema_hybrid_sum_query_cross_feature() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_F16_HYBRID,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "embedding": "[3]f16"
+            },
+            "upsert_rows": [
+                {
+                    "id": "f16-hybrid-a",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "f16 hybrid alpha stressterm"
+                    }
+                },
+                {
+                    "id": "f16-hybrid-b",
+                    "attributes": {
+                        "embedding": [0.0, 1.0, 0.0],
+                        "text": "f16 hybrid bravo other"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_BB3_F16_HYBRID, Duration::from_secs(60)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_BB3_F16_HYBRID).await;
+    assert!(
+        meta.schema.to_string().contains("f16"),
+        "schema should record f16 vector: {}",
+        meta.schema
+    );
+
+    let hybrid_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_F16_HYBRID,
+        json!([
+            "Sum",
+            ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            ["BM25", "text", "alpha stressterm"]
+        ]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        hybrid_ids.first().map(String::as_str),
+        Some("f16-hybrid-a"),
+        "f16 hybrid Sum should rank alpha+vector doc first, got {hybrid_ids:?}"
+    );
+}
+
+/// copy_from_namespace + hybrid query with filter on destination namespace.
+#[tokio::test]
+async fn copy_from_namespace_hybrid_filter_query_cross_feature() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_COPY_QUERY_SRC,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "tier": { "type": "string", "filterable": true },
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "copy-hybrid-a",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "copy hybrid alpha stressterm",
+                        "tier": "pro"
+                    }
+                },
+                {
+                    "id": "copy-hybrid-b",
+                    "attributes": {
+                        "embedding": [0.9, 0.1, 0.0],
+                        "text": "copy hybrid alpha stressterm",
+                        "tier": "free"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_BB3_COPY_QUERY_SRC,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BB3_COPY_QUERY_DEST,
+        json!({"copy_from_namespace": NAMESPACE_BB3_COPY_QUERY_SRC}),
+    )
+    .await;
+
+    let hybrid_pro = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BB3_COPY_QUERY_DEST,
+        json!([
+            "Sum",
+            ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            ["BM25", "text", "alpha stressterm"]
+        ]),
+        Some(json!(["tier", "Eq", "pro"])),
+    )
+    .await;
+    assert_eq!(
+        hybrid_pro.first().map(String::as_str),
+        Some("copy-hybrid-a"),
+        "copied dest hybrid+filter should return pro-tier top hit, got {hybrid_pro:?}"
+    );
+    assert!(
+        !hybrid_pro.contains(&"copy-hybrid-b".to_string()),
+        "filter tier=pro must exclude free-tier doc on dest, got {hybrid_pro:?}"
     );
 }
 

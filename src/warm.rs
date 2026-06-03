@@ -8,7 +8,8 @@ use crate::meta::meta_key;
 use crate::namespace::fetch_meta;
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
-use crate::wal::wal_key;
+use crate::wal::{wal_key, WalSnapshot};
+use crate::wal_compaction::wal_replay_from;
 use anyhow::{anyhow, Result};
 use aws_sdk_s3::Client;
 use std::sync::Arc;
@@ -47,16 +48,29 @@ pub fn index_keys_for_warm(namespace: &str, meta: &crate::meta::NamespaceMeta) -
     keys
 }
 
-/// WAL segment keys to warm (recent tail, capped).
-pub fn wal_keys_for_warm(namespace: &str, wal_commit_seq: u64) -> Vec<String> {
-    if wal_commit_seq == 0 {
+/// WAL keys to warm: snapshot (if compacted) + retained tail segments only (not deleted history).
+pub fn wal_keys_for_warm(namespace: &str, meta: &crate::meta::NamespaceMeta) -> Vec<String> {
+    if meta.wal_commit_seq == 0 {
         return Vec::new();
     }
-    let span = wal_commit_seq.min(WAL_WARM_MAX_SEGMENTS);
-    let from = wal_commit_seq.saturating_sub(span - 1).max(1);
-    (from..=wal_commit_seq)
-        .map(|seq| wal_key(namespace, seq))
-        .collect()
+    let mut keys = Vec::new();
+    if meta.wal_snapshot_seq > 0 {
+        keys.push(WalSnapshot::key(namespace));
+    }
+    let replay_from = if meta.wal_snapshot_seq > 0 {
+        wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
+    } else if meta.wal_commit_seq > 0 {
+        Some(1)
+    } else {
+        None
+    };
+    let Some(from) = replay_from else {
+        return keys;
+    };
+    let span = (meta.wal_commit_seq - from + 1).min(WAL_WARM_MAX_SEGMENTS);
+    let start = meta.wal_commit_seq.saturating_sub(span - 1).max(from);
+    keys.extend((start..=meta.wal_commit_seq).map(|seq| wal_key(namespace, seq)));
+    keys
 }
 
 /// Prefetch namespace artifacts into disk cache and pin [`NamespaceView`] in `view_cache`.
@@ -109,7 +123,7 @@ pub async fn warm_namespace(
         }
     }
 
-    let wal_keys = wal_keys_for_warm(namespace, meta.wal_commit_seq);
+    let wal_keys = wal_keys_for_warm(namespace, &meta);
     let wal_segments = wal_keys.len() as u32;
     for key in &wal_keys {
         let _ = cache.get_bytes(client, bucket, key).await?;
@@ -143,7 +157,11 @@ mod tests {
 
     #[test]
     fn wal_keys_caps_recent_tail() {
-        let keys = wal_keys_for_warm("ns", 200);
+        let meta = NamespaceMeta {
+            wal_commit_seq: 200,
+            ..Default::default()
+        };
+        let keys = wal_keys_for_warm("ns", &meta);
         assert_eq!(keys.len(), WAL_WARM_MAX_SEGMENTS as usize);
         assert!(keys.first().unwrap().contains("00000073"));
         assert!(keys.last().unwrap().contains("00000200"));
@@ -151,7 +169,33 @@ mod tests {
 
     #[test]
     fn wal_keys_empty_when_no_commit() {
-        assert!(wal_keys_for_warm("ns", 0).is_empty());
+        assert!(wal_keys_for_warm("ns", &NamespaceMeta::default()).is_empty());
+    }
+
+    #[test]
+    fn wal_keys_after_compaction_omit_deleted_segments() {
+        let meta = NamespaceMeta {
+            wal_commit_seq: 15,
+            wal_snapshot_seq: 15,
+            ..Default::default()
+        };
+        let keys = wal_keys_for_warm("ns", &meta);
+        assert_eq!(keys.len(), 1);
+        assert!(keys[0].ends_with("snapshot.bin"));
+    }
+
+    #[test]
+    fn wal_keys_after_compaction_includes_tail() {
+        let meta = NamespaceMeta {
+            wal_commit_seq: 18,
+            wal_snapshot_seq: 15,
+            ..Default::default()
+        };
+        let keys = wal_keys_for_warm("ns", &meta);
+        assert!(keys.iter().any(|k| k.ends_with("snapshot.bin")));
+        assert!(keys.iter().any(|k| k.ends_with("00000016.bin")));
+        assert!(keys.iter().any(|k| k.ends_with("00000018.bin")));
+        assert!(!keys.iter().any(|k| k.ends_with("00000001.bin")));
     }
 
     #[test]

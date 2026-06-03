@@ -230,6 +230,32 @@ pub fn wal_upsert_ids(entry: &WalEntry) -> Vec<String> {
     entry.upserts.iter().map(|u| u.id.clone()).collect()
 }
 
+pub fn wal_patch_ids(entry: &WalEntry) -> Vec<String> {
+    entry.patches.iter().map(|p| p.id.clone()).collect()
+}
+
+/// Sorted WAL segment sequence numbers from `wal/{seq:08}.bin` keys (excludes `snapshot.bin`).
+pub fn wal_segment_seqs(keys: &[String]) -> Vec<u64> {
+    let mut seqs: Vec<u64> = keys
+        .iter()
+        .filter_map(|k| {
+            let name = k.rsplit('/').next()?;
+            let stem = name.strip_suffix(".bin")?;
+            if stem == "snapshot" {
+                return None;
+            }
+            stem.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    seqs
+}
+
+pub async fn list_wal_keys(client: &Client, bucket: &str, namespace: &str) -> Vec<String> {
+    let wal_prefix = format!("{ROOT_PREFIX}{namespace}/wal/");
+    list_keys_with_prefix(client, bucket, &wal_prefix).await
+}
+
 pub async fn assert_wal_layout_after_write(
     client: &Client,
     bucket: &str,

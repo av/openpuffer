@@ -246,6 +246,18 @@
 - label: integration test base64_vector_upsert_query_include_vectors_roundtrip decodes write and encodes query
   command: cargo test -F integration --test integration_s3 base64_vector_upsert_query_include_vectors -q
   tags: [implemented]
+- label: integration test wal_compaction_warm_eventual_query_cross_feature compaction warm eventual zero S3 GETs
+  command: cargo test -F integration --test integration_s3 wal_compaction_warm_eventual -q
+  tags: [implemented]
+- label: integration test branch_patch_by_filter_cross_feature branch COW plus patch_by_filter isolation
+  command: cargo test -F integration --test integration_s3 branch_patch_by_filter_cross -q
+  tags: [implemented]
+- label: integration test f16_schema_hybrid_sum_query_cross_feature f16 ANN plus BM25 hybrid Sum
+  command: cargo test -F integration --test integration_s3 f16_schema_hybrid_sum -q
+  tags: [implemented]
+- label: integration test copy_from_namespace_hybrid_filter_query_cross_feature copy dest hybrid filtered query
+  command: cargo test -F integration --test integration_s3 copy_from_namespace_hybrid_filter -q
+  tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
   tags: [implemented]
