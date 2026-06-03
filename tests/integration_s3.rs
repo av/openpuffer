@@ -1875,13 +1875,14 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
     let batch = STRESS_BATCH;
 
     let fixture = S3Fixture::from_testcontainers().await;
-    let cache_dir = tempfile::tempdir().expect("cache tempdir");
     let listen_port = free_port();
     let listen = format!("127.0.0.1:{listen_port}");
+    // Empty `--cache-dir` disables segment cache so strong cold queries report `storage_roundtrips`
+    // (matches bench_cold G2 gate and PLAN §4.2 cold protocol).
     let mut serve = ServeHandle::spawn_with_options(
         &fixture,
         &listen,
-        Some(cache_dir.path().to_path_buf()),
+        Some(PathBuf::from("")),
         Some(10_000),
         None,
     );

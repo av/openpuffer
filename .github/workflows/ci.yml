@@ -59,6 +59,30 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: cargo test -F integration
 
+  g2-minio-correctness:
+    name: G2 MinIO correctness gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: g2-minio
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build openpuffer (release, integration + bench)
+        run: cargo build --release --features integration,bench
+
+      - name: G2 MinIO preflight (scripts/run-minio-correctness-gates.sh)
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: ./scripts/run-minio-correctness-gates.sh
+
   bench-10k:
     name: bench 10k (MinIO cold gates)
     runs-on: ubuntu-latest

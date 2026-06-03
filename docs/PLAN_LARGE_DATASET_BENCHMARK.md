@@ -489,6 +489,7 @@ A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program �
 ## Verification checklist (program complete)
 
 - [x] MinIO G2 subset: `cargo test --test synthetic_workload_gate` + `synthetic_128_g2_correctness_gates_on_minio` + `bench_cold_10k_synthetic_128_workload_gate` (see [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh)).
+- [x] MinIO G2 CI: `.github/workflows/ci.yml` job `g2-minio-correctness` runs `scripts/run-minio-correctness-gates.sh` on push/PR.
 - [x] Phase 4/5/6 operator runbook in [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) (metrics matrix, cold protocol, debugging, pass/fail vs tpuf).
 - [x] Harness scripts A1–A5: `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `tpuf_driver/run_benchmark.py`, `render-report.sh`.
 - [x] A6: `.github/workflows/benchmark-large-dispatch.yml` (`workflow_dispatch` tier l1/l2/l3; dry-run + `facts check` bench-large/bench-tpuf).

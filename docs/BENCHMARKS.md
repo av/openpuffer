@@ -18,6 +18,8 @@ Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN
 ./scripts/run-minio-correctness-gates.sh
 ```
 
+**CI:** On every push/PR, job `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the same script (requires Docker for MinIO testcontainers).
+
 **Full MinIO preflight** (plan §2.3 — longer):
 
 ```bash
