@@ -50,6 +50,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 integration = []
+large_stress = ["integration"]
 perf = []
 metrics = ["dep:prometheus"]
 
@@ -61,6 +62,11 @@ optional = true
 name = "perf_namespace"
 path = "tests/perf_namespace.rs"
 required-features = ["perf"]
+
+[[test]]
+name = "stress_50k"
+path = "tests/stress_50k.rs"
+required-features = ["large_stress"]
 
 [dev-dependencies]
 tempfile = "3"

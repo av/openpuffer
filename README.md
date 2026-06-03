@@ -148,6 +148,15 @@ cargo test -F integration               # MinIO testcontainers (WAL, index, rest
 cargo test -F perf                      # 5k-doc ANN candidate_ratio regression
 ```
 
+**Optional 50k namespace stress** (Docker, not in default CI — `#[ignore]`):
+
+```bash
+cargo build --release --features large_stress
+cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
+```
+
+Upserts **50k** docs in **5×10k** `upsert_columns` batches with **~1.1s** spacing (WAL rate limit), waits for `index_cursor == wal_commit_seq` (300s wall timeout), warms the namespace, and asserts indexed ANN `candidates_ratio < 0.2`. **Use `--release`** — debug builds may not index 50k within 300s. On a typical dev machine (release): **~40–45s** total (writes ~11s, index+query ~39s, 5 WAL commits); debug can take **6+ minutes**.
+
 **S3 integration (requires Docker):**
 
 ```bash
