@@ -402,6 +402,9 @@
 - label: CentroidIndexL0 ann_version 3 segments roundtrip and v2 segments still load
   command: grep -q 'fn ann_version_v3_roundtrip' src/index/vector.rs && grep -q 'fn ann_version_v2_legacy_segment_still_loads' src/index/vector.rs && cargo test --lib ann_version -q
   tags: [spec, ann, implemented]
+- label: SPFresh incremental maintenance four 5k waves 20k docs no cluster over 512 recall at least 0.80
+  command: grep -q 'fn spfresh_incremental_four_waves_20k_without_forced_rebuild' src/index/vector.rs && cargo test --lib spfresh_incremental_four_waves_20k_without_forced_rebuild -q
+  tags: [spec, ann, implemented]
 - label: POST /v1/namespaces/{name}/recall returns JSON with numeric avg_recall avg_ann_count avg_exhaustive_count
   command: grep -q 'fn recall_http_response_shape_on_minio' tests/integration_s3.rs && cargo test -F integration recall_http_response_shape_on_minio -q --test integration_s3
   tags: [spec, ann]

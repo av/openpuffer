@@ -62,8 +62,17 @@ pub fn ann_version_from_env() -> u8 {
 /// k-means iterations when building.
 const KMEANS_ITERS: usize = 10;
 
-/// Re-run full hierarchy when doc count exceeds `num_fine_total * REBUILD_DOC_MULTIPLIER`.
+/// Legacy doc-count rebuild hint (superseded by incremental maintenance + scheduled rebuild).
 pub const REBUILD_DOC_MULTIPLIER: usize = 4;
+
+/// Split a cluster when it exceeds this many members (SPFresh incremental maintenance).
+pub const MAX_CLUSTER_MEMBERS: usize = 512;
+
+/// Merge clusters with at most this many members into the nearest sibling fine centroid.
+pub const MERGE_CLUSTER_MAX_MEMBERS: usize = 2;
+
+/// Full hierarchy rebuild after this many maintenance passes (scheduled, not doc-count-only).
+pub const REBUILD_SCHEDULED_MAINTENANCE_PASSES: u32 = 256;
 
 /// One document vector stored in a cluster segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -125,6 +134,9 @@ pub struct CentroidIndexL0 {
     /// When true, `centroids-routing.bin` and optional `centroids-l2-*.bin` exist for this field.
     #[serde(default)]
     pub has_routing: bool,
+    /// Incremental maintenance passes since last full rebuild (drives scheduled rebuild).
+    #[serde(default)]
+    pub maintenance_passes: u32,
 }
 
 fn default_ann_version() -> u8 {
@@ -164,6 +176,7 @@ impl From<CentroidIndexL0Legacy> for CentroidIndexL0 {
             centroids: legacy.centroids,
             ann_version: ANN_VERSION_V2,
             has_routing: false,
+            maintenance_passes: 0,
         }
     }
 }
@@ -184,6 +197,7 @@ impl Default for CentroidIndexL0 {
             centroids: Vec::new(),
             ann_version: ANN_VERSION_V2,
             has_routing: false,
+            maintenance_passes: 0,
         }
     }
 }
@@ -623,6 +637,7 @@ impl VectorIndex {
                 ANN_VERSION_V2
             },
             has_routing,
+            maintenance_passes: 0,
         };
 
         Ok(Some(VectorIndex {
@@ -638,13 +653,29 @@ impl VectorIndex {
         self.clusters.values().map(|c| c.members.len()).sum()
     }
 
+    /// Largest cluster size (for maintenance / spec tests).
+    pub fn max_cluster_members(&self) -> usize {
+        self.clusters
+            .values()
+            .map(|c| c.members.len())
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn needs_full_rebuild(&self) -> bool {
         let n = self.doc_count();
         let k = self.l0.num_fine_total as usize;
         if k == 0 || n == 0 {
             return true;
         }
-        n > k.saturating_mul(REBUILD_DOC_MULTIPLIER)
+        if self.l0.maintenance_passes >= REBUILD_SCHEDULED_MAINTENANCE_PASSES {
+            return true;
+        }
+        // Fallback when incremental maintenance cannot add fine centroids (all coarse cells full).
+        let hierarchy_full = self.l0.fine_counts.iter().all(|&c| {
+            c as usize >= self.max_fine_per_coarse()
+        });
+        hierarchy_full && n > k.saturating_mul(REBUILD_DOC_MULTIPLIER)
     }
 
     pub fn apply_delta(
@@ -670,36 +701,375 @@ impl VectorIndex {
             if vec.len() != dim {
                 continue;
             }
-            let coarse = self
-                .l0
-                .nearest_coarse(&vec, 1)
+            self.assign_doc_to_nearest(id.clone(), &vec)?;
+        }
+        self.run_incremental_maintenance()?;
+        Ok(())
+    }
+
+    fn assign_doc_to_nearest(&mut self, doc_id: String, vec: &[f64]) -> Result<()> {
+        let coarse = self
+            .l0
+            .nearest_coarse(vec, 1)
+            .first()
+            .copied()
+            .unwrap_or(0);
+        let l1 = self
+            .l1
+            .get(&coarse)
+            .ok_or_else(|| anyhow::anyhow!("missing L1 segment for coarse {coarse}"))?;
+        let local_fine = l1
+            .nearest_fine(vec, self.l0.distance_metric, 1)
+            .first()
+            .copied()
+            .unwrap_or(0);
+        let fine_id = self.l0.global_fine_id(coarse, local_fine);
+        let element = self.l0.vector_element;
+        self.clusters
+            .entry(fine_id)
+            .or_insert_with(|| ClusterSegment {
+                segment_id: self.l0.segment_id,
+                centroid_id: fine_id,
+                members: Vec::new(),
+            })
+            .members
+            .push(ClusterMember::from_values(doc_id, vec, element));
+        Ok(())
+    }
+
+    /// SPFresh-style incremental pass: split/merge/reassign clusters; refresh centroids.
+    pub fn run_incremental_maintenance(&mut self) -> Result<()> {
+        if self.l0.num_fine_total == 0 || self.l0.centroids.is_empty() {
+            return Ok(());
+        }
+        self.l0.maintenance_passes = self.l0.maintenance_passes.saturating_add(1);
+        self.prune_empty_clusters();
+        self.split_oversized_clusters()?;
+        self.merge_tiny_clusters();
+        self.reassign_drifted_members();
+        self.refresh_fine_centroids();
+        self.prune_empty_clusters();
+        Ok(())
+    }
+
+    fn max_fine_per_coarse(&self) -> usize {
+        if self.l0.is_v3() {
+            MAX_FINE_PER_COARSE_V3
+        } else {
+            MAX_FINE_PER_COARSE
+        }
+    }
+
+    fn coarse_local_from_global(&self, fine_id: u32) -> Option<(u32, u32)> {
+        let mut offset = 0u32;
+        for (coarse_id, &count) in self.l0.fine_counts.iter().enumerate() {
+            if fine_id < offset.saturating_add(count) {
+                return Some((coarse_id as u32, fine_id - offset));
+            }
+            offset = offset.saturating_add(count);
+        }
+        None
+    }
+
+    fn prune_empty_clusters(&mut self) {
+        self.clusters.retain(|_, c| !c.members.is_empty());
+    }
+
+    fn split_oversized_clusters(&mut self) -> Result<()> {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        let element = self.l0.vector_element;
+        let oversized: Vec<u32> = self
+            .clusters
+            .iter()
+            .filter(|(_, c)| c.members.len() > MAX_CLUSTER_MEMBERS)
+            .map(|(id, _)| *id)
+            .collect();
+        for fine_id in oversized {
+            let Some((coarse_id, local_fine)) = self.coarse_local_from_global(fine_id) else {
+                continue;
+            };
+            let members = self
+                .clusters
+                .get(&fine_id)
+                .map(|c| c.members.clone())
+                .unwrap_or_default();
+            if members.len() <= MAX_CLUSTER_MEMBERS {
+                continue;
+            }
+            let pairs = members_as_pairs(&members, dim, element);
+            let sub_centroids = kmeans_centroids(&pairs, 2, dim, metric);
+            if sub_centroids.len() < 2 {
+                continue;
+            }
+            let assign = assign_to_centroids(&pairs, &sub_centroids, metric);
+            let mut buckets: [Vec<ClusterMember>; 2] = [Vec::new(), Vec::new()];
+            for m in members {
+                let sub = assign
+                    .get(&m.doc_id)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(1) as usize;
+                buckets[sub].push(m);
+            }
+            if buckets[0].is_empty() || buckets[1].is_empty() {
+                continue;
+            }
+            if self.can_add_fine_centroid(coarse_id) {
+                let new_local = self.append_fine_centroid(coarse_id, sub_centroids[1].clone())?;
+                let new_global = self.l0.global_fine_id(coarse_id, new_local);
+                if let Some(l1) = self.l1.get_mut(&coarse_id) {
+                    if (local_fine as usize) < l1.centroids.len() {
+                        l1.centroids[local_fine as usize] = sub_centroids[0].clone();
+                    }
+                }
+                if let Some(cluster) = self.clusters.get_mut(&fine_id) {
+                    cluster.members = buckets[0].clone();
+                    cluster.centroid_id = fine_id;
+                }
+                self.clusters.insert(
+                    new_global,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: new_global,
+                        members: buckets[1].clone(),
+                    },
+                );
+            } else {
+                self.redistribute_to_existing_fines(coarse_id, fine_id, &buckets[0], &buckets[1])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn can_add_fine_centroid(&self, coarse_id: u32) -> bool {
+        let max = self.max_fine_per_coarse();
+        self.l0
+            .fine_counts
+            .get(coarse_id as usize)
+            .map(|&c| c as usize)
+            .unwrap_or(0)
+            < max
+    }
+
+    /// Append a fine centroid at the end of `coarse_id`; shifts global ids for later coarse cells.
+    fn append_fine_centroid(&mut self, coarse_id: u32, centroid: Vec<f64>) -> Result<u32> {
+        let l1 = self
+            .l1
+            .get_mut(&coarse_id)
+            .ok_or_else(|| anyhow::anyhow!("missing L1 for coarse {coarse_id}"))?;
+        let new_local = l1.num_fine;
+        l1.centroids.push(centroid);
+        l1.num_fine = l1.centroids.len() as u32;
+
+        let pivot = self.l0.global_id_start(coarse_id) + new_local;
+        let mut old_ids: Vec<u32> = self
+            .clusters
+            .keys()
+            .copied()
+            .filter(|fid| *fid >= pivot)
+            .collect();
+        old_ids.sort_unstable_by(|a, b| b.cmp(a));
+        let mut moved = Vec::new();
+        for old_id in old_ids {
+            if let Some(mut seg) = self.clusters.remove(&old_id) {
+                let new_id = old_id + 1;
+                seg.centroid_id = new_id;
+                moved.push((new_id, seg));
+            }
+        }
+        for (new_id, seg) in moved {
+            self.clusters.insert(new_id, seg);
+        }
+
+        let idx = coarse_id as usize;
+        if idx < self.l0.fine_counts.len() {
+            self.l0.fine_counts[idx] += 1;
+        }
+        self.l0.num_fine_total += 1;
+        for c in (coarse_id + 1)..self.l0.num_coarse {
+            if let Some(l1) = self.l1.get_mut(&c) {
+                l1.global_id_start += 1;
+            }
+        }
+        Ok(new_local)
+    }
+
+    fn redistribute_to_existing_fines(
+        &mut self,
+        coarse_id: u32,
+        source_fine: u32,
+        bucket0: &[ClusterMember],
+        bucket1: &[ClusterMember],
+    ) -> Result<()> {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        let l1 = self
+            .l1
+            .get(&coarse_id)
+            .ok_or_else(|| anyhow::anyhow!("missing L1 for coarse {coarse_id}"))?;
+        let mut target_local = 0u32;
+        let mut best_score = f64::NEG_INFINITY;
+        for local in 0..l1.num_fine {
+            let global = self.l0.global_fine_id(coarse_id, local);
+            if global == source_fine {
+                continue;
+            }
+            if let Some(c) = l1.centroids.get(local as usize) {
+                let probe = member_as_f64(&bucket1[0], dim);
+                let s = score_vector(&probe, c, metric);
+                if s > best_score {
+                    best_score = s;
+                    target_local = local;
+                }
+            }
+        }
+        let target_global = self.l0.global_fine_id(coarse_id, target_local);
+        if let Some(cluster) = self.clusters.get_mut(&source_fine) {
+            cluster.members = bucket0.to_vec();
+        }
+        self.clusters
+            .entry(target_global)
+            .or_insert_with(|| ClusterSegment {
+                segment_id: self.l0.segment_id,
+                centroid_id: target_global,
+                members: Vec::new(),
+            })
+            .members
+            .extend_from_slice(bucket1);
+        Ok(())
+    }
+
+    fn merge_tiny_clusters(&mut self) {
+        let tiny: Vec<u32> = self
+            .clusters
+            .iter()
+            .filter(|(_, c)| {
+                let n = c.members.len();
+                n > 0 && n <= MERGE_CLUSTER_MAX_MEMBERS
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for fine_id in tiny {
+            let Some((coarse_id, _local)) = self.coarse_local_from_global(fine_id) else {
+                continue;
+            };
+            let members = self
+                .clusters
+                .remove(&fine_id)
+                .map(|c| c.members)
+                .unwrap_or_default();
+            if members.is_empty() {
+                continue;
+            }
+            let dim = self.l0.dimensions as usize;
+            let metric = self.l0.distance_metric;
+            let sample = member_as_f64(&members[0], dim);
+            let l1 = match self.l1.get(&coarse_id) {
+                Some(l) => l,
+                None => continue,
+            };
+            let target_local = l1
+                .nearest_fine(&sample, metric, 1)
                 .first()
                 .copied()
                 .unwrap_or(0);
-            let l1 = self.l1.get(&coarse).ok_or_else(|| {
-                anyhow::anyhow!("missing L1 segment for coarse {coarse}")
-            })?;
-            let local_fine = l1
-                .nearest_fine(&vec, self.l0.distance_metric, 1)
-                .first()
-                .copied()
-                .unwrap_or(0);
-            let fine_id = self.l0.global_fine_id(coarse, local_fine);
+            let target_global = self.l0.global_fine_id(coarse_id, target_local);
+            if target_global == fine_id {
+                self.clusters.insert(
+                    fine_id,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: fine_id,
+                        members,
+                    },
+                );
+                continue;
+            }
             self.clusters
-                .entry(fine_id)
+                .entry(target_global)
                 .or_insert_with(|| ClusterSegment {
                     segment_id: self.l0.segment_id,
-                    centroid_id: fine_id,
+                    centroid_id: target_global,
                     members: Vec::new(),
                 })
                 .members
-                .push(ClusterMember::from_values(
-                    id.clone(),
-                    &vec,
-                    self.l0.vector_element,
-                ));
+                .extend(members);
         }
-        Ok(())
+    }
+
+    fn reassign_drifted_members(&mut self) {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        let mut moves: Vec<(String, u32)> = Vec::new();
+        for (fine_id, cluster) in &self.clusters {
+            let Some((coarse_id, current_local)) = self.coarse_local_from_global(*fine_id) else {
+                continue;
+            };
+            let l1 = match self.l1.get(&coarse_id) {
+                Some(l) => l,
+                None => continue,
+            };
+            for m in &cluster.members {
+                let v = member_as_f64(m, dim);
+                let best_local = l1
+                    .nearest_fine(&v, metric, 1)
+                    .first()
+                    .copied()
+                    .unwrap_or(current_local);
+                if best_local != current_local {
+                    let dest = self.l0.global_fine_id(coarse_id, best_local);
+                    moves.push((m.doc_id.clone(), dest));
+                }
+            }
+        }
+        for (doc_id, dest) in moves {
+            let mut member = None;
+            for cluster in self.clusters.values_mut() {
+                if let Some(pos) = cluster.members.iter().position(|m| m.doc_id == doc_id) {
+                    member = Some(cluster.members.remove(pos));
+                    break;
+                }
+            }
+            if let Some(m) = member {
+                self.clusters
+                    .entry(dest)
+                    .or_insert_with(|| ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: dest,
+                        members: Vec::new(),
+                    })
+                    .members
+                    .push(m);
+            }
+        }
+    }
+
+    fn refresh_fine_centroids(&mut self) {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        for (coarse_id, l1) in self.l1.iter_mut() {
+            for local in 0..l1.num_fine {
+                let global = self.l0.global_fine_id(*coarse_id, local);
+                let Some(cluster) = self.clusters.get(&global) else {
+                    continue;
+                };
+                if cluster.members.is_empty() {
+                    continue;
+                }
+                let pairs = members_as_pairs(
+                    &cluster.members,
+                    dim,
+                    self.l0.vector_element,
+                );
+                let centroids = kmeans_centroids(&pairs, 1, dim, metric);
+                if let Some(c) = centroids.into_iter().next() {
+                    if (local as usize) < l1.centroids.len() {
+                        l1.centroids[local as usize] = c;
+                    }
+                }
+            }
+        }
     }
 
     fn remove_doc(&mut self, doc_id: &str) {
@@ -1197,6 +1567,27 @@ pub fn primary_vector_field(schema: &Value, sample: Option<&Document>) -> Option
     None
 }
 
+fn member_as_f64(m: &ClusterMember, dim: usize) -> Vec<f64> {
+    if let Some(ref bytes) = m.vector_f16 {
+        return f16_le_bytes_to_f32_vec(bytes, dim)
+            .into_iter()
+            .map(|x| x as f64)
+            .collect();
+    }
+    m.vector.clone()
+}
+
+fn members_as_pairs(
+    members: &[ClusterMember],
+    dim: usize,
+    _element: VectorElement,
+) -> Vec<(String, Vec<f64>)> {
+    members
+        .iter()
+        .map(|m| (m.doc_id.clone(), member_as_f64(m, dim)))
+        .collect()
+}
+
 /// Brute-force top-k for recall tests.
 pub fn brute_force_top_k(
     docs: &[(String, Vec<f64>)],
@@ -1337,10 +1728,12 @@ mod tests {
             centroids: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
             ann_version: ANN_VERSION_V2,
             has_routing: false,
+            maintenance_passes: 7,
         };
         let bytes = idx.encode().unwrap();
         let back = CentroidIndexL0::decode(&bytes).unwrap();
         assert_eq!(back.segment_id, 3);
+        assert_eq!(back.maintenance_passes, 7);
         assert_eq!(back.fine_counts, vec![2, 2]);
         assert_eq!(back.ann_version, ANN_VERSION_V2);
     }
@@ -1469,33 +1862,131 @@ mod tests {
     }
 
     #[test]
-    fn needs_full_rebuild_when_docs_exceed_multiplier() {
-        let mut docs = Vec::new();
-        for i in 0..25 {
-            docs.push(vec_doc(
-                &format!("d{i}"),
-                vec![(i as f64) * 0.1, 1.0 - (i as f64) * 0.1],
-            ));
-        }
-        let index = VectorIndex::build(
+    fn needs_full_rebuild_on_scheduled_maintenance_passes() {
+        let docs = vec![
+            vec_doc("a", vec![1.0, 0.0]),
+            vec_doc("b", vec![0.0, 1.0]),
+        ];
+        let mut index = VectorIndex::build(
             1,
             "embedding",
             DistanceMetric::CosineDistance,
             &docs,
-            &json!({ "embedding": "[4]f32" }),
+            &json!({ "embedding": "[2]f32" }),
             AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index");
-        let k = index.l0.num_fine_total as usize;
-        assert!(
-            index.doc_count() > k.saturating_mul(REBUILD_DOC_MULTIPLIER),
-            "test setup: doc_count {} should exceed {} * {}",
-            index.doc_count(),
-            k,
-            REBUILD_DOC_MULTIPLIER
-        );
+        assert!(!index.needs_full_rebuild());
+        index.l0.maintenance_passes = REBUILD_SCHEDULED_MAINTENANCE_PASSES;
         assert!(index.needs_full_rebuild());
+    }
+
+    fn synthetic_wave_docs(start: usize, count: usize, dim: usize) -> Vec<(String, Document)> {
+        let mut docs = Vec::with_capacity(count);
+        for i in 0..count {
+            let idx = start + i;
+            let mut v = vec![0.0f64; dim];
+            for d in 0..dim {
+                let seed = (idx as u64)
+                    .wrapping_mul(1_103_515_245)
+                    .wrapping_add(d as u64);
+                v[d] = ((seed % 10_000) as f64) / 10_000.0;
+            }
+            let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for x in &mut v {
+                    *x /= norm;
+                }
+            }
+            docs.push(vec_doc(&format!("doc-{idx}"), v));
+        }
+        docs
+    }
+
+    fn recall_at_10(index: &VectorIndex, vectors: &[(String, Vec<f64>)], queries: usize) -> f64 {
+        const TOP_K: usize = 10;
+        let metric = index.l0.distance_metric;
+        let n = vectors.len();
+        let mut recall_sum = 0.0f64;
+        for q in 0..queries {
+            let query = vectors[q * (n / queries)].1.clone();
+            let brute = brute_force_top_k(vectors, &query, metric, TOP_K);
+            let ann = index.query_ann(&query, TOP_K);
+            let ann_set: HashSet<_> = ann.into_iter().map(|(id, _)| id).collect();
+            let hits = brute.iter().filter(|id| ann_set.contains(*id)).count();
+            recall_sum += hits as f64 / TOP_K as f64;
+        }
+        recall_sum / queries as f64
+    }
+
+    #[test]
+    fn spfresh_incremental_four_waves_20k_without_forced_rebuild() {
+        const DIM: usize = 32;
+        const WAVE: usize = 5000;
+        const WAVES: usize = 4;
+        const TOP_K: usize = 10;
+        const QUERIES: usize = 20;
+        const MIN_RECALL: f64 = 0.80;
+
+        let wave0 = synthetic_wave_docs(0, WAVE, DIM);
+        let mut vectors: Vec<(String, Vec<f64>)> = wave0
+            .iter()
+            .map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            })
+            .collect();
+
+        let mut index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &wave0,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("initial index");
+
+        for wave in 1..WAVES {
+            let start = wave * WAVE;
+            let batch = synthetic_wave_docs(start, WAVE, DIM);
+            for (id, v) in batch.iter().map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            }) {
+                vectors.push((id, v));
+            }
+            index
+                .apply_delta(&batch, &[])
+                .expect("apply_delta wave");
+            assert!(
+                !index.needs_full_rebuild(),
+                "wave {wave}: should not force full rebuild (passes={})",
+                index.l0.maintenance_passes
+            );
+            assert!(
+                index.max_cluster_members() <= MAX_CLUSTER_MEMBERS,
+                "wave {wave}: cluster size {} exceeds {}",
+                index.max_cluster_members(),
+                MAX_CLUSTER_MEMBERS
+            );
+            let recall = recall_at_10(&index, &vectors, QUERIES);
+            assert!(
+                recall >= MIN_RECALL,
+                "wave {wave}: recall@10 {recall} below {MIN_RECALL}"
+            );
+        }
+
+        assert_eq!(index.doc_count(), WAVE * WAVES);
+        let recall_final = recall_at_10(&index, &vectors, QUERIES);
+        assert!(recall_final >= MIN_RECALL);
+        let _ = TOP_K;
     }
 
     #[test]
