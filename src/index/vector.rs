@@ -7,7 +7,8 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::AnnBuildConfig;
+use crate::config::{AnnBuildConfig, AnnProbeConfig};
+use crate::meta::NamespaceMeta;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
 use crate::schema::{vector_element_for_field, VectorElement};
@@ -334,6 +335,30 @@ impl CentroidIndexL0 {
 
     pub fn is_v3(&self) -> bool {
         self.ann_version >= ANN_VERSION_V3
+    }
+
+    /// Align decoded L0 with namespace [`NamespaceMeta::preferred_ann_version`] and optional
+    /// serve-time [`AnnBuildConfig`] (probe widths from `serve` / indexer when provided).
+    pub fn align_with_namespace_meta(
+        mut self,
+        meta: &NamespaceMeta,
+        build: Option<AnnBuildConfig>,
+    ) -> Self {
+        if meta.preferred_ann_version < ANN_VERSION_V3 {
+            return self;
+        }
+        self.ann_version = self.ann_version.max(ANN_VERSION_V3);
+        self.has_routing = true;
+        let probes = build
+            .map(|b| b.probes)
+            .unwrap_or_else(AnnProbeConfig::default);
+        if build.is_some() || self.probe_coarse == 0 {
+            self.probe_coarse = probes.coarse;
+        }
+        if build.is_some() || self.probe_fine == 0 {
+            self.probe_fine = probes.fine;
+        }
+        self
     }
 
     pub fn global_id_start(&self, coarse_id: u32) -> u32 {
@@ -2063,6 +2088,42 @@ mod tests {
         assert_eq!(back.ann_version, ANN_VERSION_V2);
         assert!(!back.has_routing);
         assert_eq!(back.num_coarse, 4);
+    }
+
+    #[test]
+    fn meta_preferred_ann_version_3_loads_l0_with_ann_version_3() {
+        use crate::meta::NamespaceMeta;
+
+        let legacy = CentroidIndexL0Legacy {
+            segment_id: 9,
+            vector_field: "emb".into(),
+            dimensions: 4,
+            num_coarse: 4,
+            num_fine_total: 16,
+            probe_coarse: 4,
+            probe_fine: 2,
+            distance_metric: DistanceMetric::CosineDistance,
+            vector_element: VectorElement::F32,
+            fine_counts: vec![4, 4, 4, 4],
+            centroids: vec![
+                vec![1.0, 0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        let bytes = bincode::serialize(&legacy).unwrap();
+        let l0 = CentroidIndexL0::decode(&bytes).unwrap();
+        assert_eq!(l0.ann_version, ANN_VERSION_V2);
+
+        let mut meta = NamespaceMeta::default();
+        meta.preferred_ann_version = ANN_VERSION_V3;
+        let build = AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3);
+        let aligned = l0.align_with_namespace_meta(&meta, Some(build));
+        assert_eq!(aligned.ann_version, ANN_VERSION_V3);
+        assert!(aligned.has_routing);
+        assert_eq!(aligned.probe_coarse, build.probes.coarse);
+        assert_eq!(aligned.probe_fine, build.probes.fine);
     }
 
     #[test]

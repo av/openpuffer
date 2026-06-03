@@ -143,6 +143,7 @@ pub async fn index_wal_range(
                 &meta,
                 &vfield_name,
                 cache,
+                ann_build,
             )
             .await?
             .unwrap_or_default();
@@ -906,14 +907,23 @@ pub async fn load_vector_l0_for_query(
     namespace: &str,
     meta: &NamespaceMeta,
     cache: &Arc<SegmentCache>,
+    ann_build: AnnBuildConfig,
 ) -> Result<HashMap<String, CentroidIndexL0>> {
     let mut out = HashMap::new();
     for cfg in crate::meta::effective_vector_fields(meta) {
         if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
             continue;
         }
-        if let Some(l0) =
-            load_vector_l0_for_field(client, bucket, namespace, meta, &cfg.name, cache).await?
+        if let Some(l0) = load_vector_l0_for_field(
+            client,
+            bucket,
+            namespace,
+            meta,
+            &cfg.name,
+            cache,
+            ann_build,
+        )
+        .await?
         {
             if l0.num_fine_total > 0 {
                 out.insert(cfg.name.clone(), l0);
@@ -930,6 +940,7 @@ async fn load_vector_l0_for_field(
     meta: &NamespaceMeta,
     field: &str,
     cache: &Arc<SegmentCache>,
+    ann_build: AnnBuildConfig,
 ) -> Result<Option<CentroidIndexL0>> {
     let cfg = crate::meta::effective_vector_fields(meta)
         .into_iter()
@@ -955,7 +966,8 @@ async fn load_vector_l0_for_field(
     let Some(l0_bytes) = l0_bytes else {
         return Ok(None);
     };
-    Ok(Some(CentroidIndexL0::decode(&l0_bytes)?))
+    let l0 = CentroidIndexL0::decode(&l0_bytes)?;
+    Ok(Some(l0.align_with_namespace_meta(meta, Some(ann_build))))
 }
 
 /// Probed L1 + cluster load via segment cache (warm query path; mirrors [`crate::s3_batch::fetch_cold_vector_probed`]).
@@ -1017,8 +1029,18 @@ pub async fn load_vector_index_full_for_field(
     meta: &NamespaceMeta,
     field: &str,
     cache: &Arc<SegmentCache>,
+    ann_build: AnnBuildConfig,
 ) -> Result<Option<VectorIndex>> {
-    let Some(l0) = load_vector_l0_for_field(client, bucket, namespace, meta, field, cache).await?
+    let Some(l0) = load_vector_l0_for_field(
+        client,
+        bucket,
+        namespace,
+        meta,
+        field,
+        cache,
+        ann_build,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -1086,11 +1108,18 @@ pub async fn load_vector_indexes_full_for_eval(
     namespace: &str,
     meta: &NamespaceMeta,
     cache: &Arc<SegmentCache>,
+    ann_build: AnnBuildConfig,
 ) -> Result<HashMap<String, VectorIndex>> {
     let mut out = HashMap::new();
     for cfg in crate::meta::effective_vector_fields(meta) {
         if let Some(idx) = load_vector_index_full_for_field(
-            client, bucket, namespace, meta, &cfg.name, cache,
+            client,
+            bucket,
+            namespace,
+            meta,
+            &cfg.name,
+            cache,
+            ann_build,
         )
         .await?
         {

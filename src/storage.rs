@@ -46,6 +46,7 @@ pub struct Storage {
     cache: Arc<SegmentCache>,
     write_buffer: WriteBufferManager,
     background_indexer: Arc<BackgroundIndexer>,
+    ann_build: AnnBuildConfig,
     views: Arc<Mutex<ViewCache>>,
     limits: LimitsConfig,
     namespace_list_cache: StdMutex<NamespaceListCache>,
@@ -97,6 +98,7 @@ impl Storage {
             cache,
             write_buffer,
             background_indexer,
+            ann_build,
             views: Arc::new(Mutex::new(ViewCache::new(max_pinned_namespaces))),
             limits,
             namespace_list_cache: StdMutex::new(NamespaceListCache::new(
@@ -399,6 +401,7 @@ impl Storage {
                 name,
                 &view.meta,
                 &self.cache,
+                self.ann_build,
             )
             .await?;
             let filter_index = crate::indexer::load_filter_segment_for_query(
@@ -554,6 +557,7 @@ impl Storage {
             name,
             &loaded.meta,
             &self.cache,
+            self.ann_build,
         )
         .await?;
         for (field, idx) in indexes {

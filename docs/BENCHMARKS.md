@@ -130,12 +130,38 @@ Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**r
 
 **Measured @ 50k (MinIO testcontainers, release, 2026-06-03):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `index_object_count` **175**, `ann_version` **3** (strong cold, empty `--cache-dir`). Gates also require `candidates_ratio` < 0.20 and `storage_roundtrips` ≤ 4.
 
+## 1M ingest cadence
+
+Operational ingest for the manual AWS gate (from [PLAN risks](PLAN_SPFRESH_AND_COLD_1M.md#risks-and-mitigations): stay under the per-namespace WAL commit rate).
+
+| Step | Setting | Notes |
+|------|---------|--------|
+| **Batch size** | **10,000** rows per `POST /v2/namespaces/{name}` | Same as 50k stress (`OPENPUFFER_MAX_UPSERT_ROWS`); **100** commits for 1M docs |
+| **Commit spacing** | **~1.1s** between batches | Matches README 50k stress; targets **~1 WAL commit/s** (see `OPENPUFFER_WRITE_MAX_DELAY_MS` in [ARCHITECTURE.md](ARCHITECTURE.md#limits)) |
+| **ANN build** | `OPENPUFFER_ANN_VERSION=3` on `serve` before/during ingest | Indexer sets `preferred_ann_version == 3` in meta after first v3 index commit |
+| **Index catch-up** | Poll `GET /v1/namespaces/{name}` until `index_cursor == wal_commit_seq` | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh): **2s** interval, default **7200s** timeout (`OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC`); also require `preferred_ann_version == 3` before cold queries |
+| **Optional** | `block_until_indexed: true` on last batch | Blocks up to **30s** per write; not practical for 1M — use meta polling instead |
+
+Example ingest loop (128-dim `f32`, columnar `upsert_columns`):
+
+```bash
+BATCH=10000
+for start in $(seq 0 $BATCH 999000); do
+  curl -sf -X POST "$BASE/v2/namespaces/$NS" -H 'Content-Type: application/json' \
+    -d "$(jq -n --argjson start "$start" '{ upsert_columns: { id: [...], embedding: [...] } }')"
+  sleep 1.1
+done
+# Then poll until index_cursor catches wal_commit_seq (bench-1m.sh does this).
+```
+
+At ~1 commit/s, ingest is **~17–20 min**; indexing lag depends on cluster size — plan **1–2 h** wall time before `bench-1m.sh` on a single namespace.
+
 ## 1M manual (AWS, v0.3)
 
 **Prerequisites**
 
 1. AWS S3 bucket in the target region; IAM user or role with read/write on the bucket.
-2. **Ingest out of band:** 1M × 128-dim `f32` via `upsert_columns` batches (~1 WAL commit/s — see README 50k stress notes, scaled up). Index with **`OPENPUFFER_ANN_VERSION=3`** (or `serve --ann-version 3`) so namespace meta has **`preferred_ann_version == 3`** and **`index_cursor == wal_commit_seq`** before benchmarking.
+2. **Ingest out of band:** follow [1M ingest cadence](#1m-ingest-cadence) above. Index with **`OPENPUFFER_ANN_VERSION=3`** (or `serve --ann-version 3`) so namespace meta has **`preferred_ann_version == 3`** and **`index_cursor == wal_commit_seq`** before benchmarking.
 3. Tools on the runner: `bash`, `curl`, `jq`, `python3`, `cargo` (script builds release `openpuffer`). Optional: `aws` CLI for `index_object_count` / `index_keys_total` in the JSON artifact.
 4. Do **not** use MinIO timings for the p50 SLO; AWS WAN latency is the gate.
 

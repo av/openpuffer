@@ -1063,6 +1063,7 @@ fn decode_l0_by_field_from_fetched(
         };
         if let Ok(l0) = CentroidIndexL0::decode(bytes) {
             if l0.num_fine_total > 0 {
+                let l0 = l0.align_with_namespace_meta(meta, None);
                 l0_by_field.insert(cfg.name.clone(), l0);
             }
         }
