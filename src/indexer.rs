@@ -5,11 +5,12 @@
 //! strong consistency via indexed segments + unindexed WAL tail scan.
 
 use crate::cache::SegmentCache;
-use crate::config::AnnProbeConfig;
+use crate::config::AnnBuildConfig;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{
-    vector_fields_to_index, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
+    vector_fields_to_index, CentroidIndexL0, CentroidIndexL1, CentroidIndexL2, CentroidRouting,
+    ClusterSegment, VectorIndex,
 };
 use crate::meta::{
     meta_key, push_segment_id, sync_legacy_vector_fields, vector_index_uses_legacy_paths,
@@ -37,7 +38,7 @@ pub async fn index_wal_range(
     bucket: &str,
     namespace: &str,
     cache: &Arc<SegmentCache>,
-    ann_probes: AnnProbeConfig,
+    ann_build: AnnBuildConfig,
     max_segments: Option<u64>,
 ) -> Result<()> {
     for attempt in 0..META_RETRIES {
@@ -154,7 +155,7 @@ pub async fn index_wal_range(
                     meta.distance_metric,
                     &pairs,
                     &meta.schema,
-                    ann_probes,
+                    ann_build,
                 )? {
                     vindex = built;
                 }
@@ -170,7 +171,7 @@ pub async fn index_wal_range(
                         meta.distance_metric,
                         &pairs,
                         &meta.schema,
-                        ann_probes,
+                        ann_build,
                     )? {
                         vindex = built;
                     }
@@ -336,6 +337,34 @@ async fn write_vector_index(
             .with_context(|| format!("put cluster {fine_id:08}"))?;
         cache.populate_after_put(bucket, &key, &body, resp.e_tag());
     }
+
+    if let Some(ref routing) = vindex.routing {
+        let key = CentroidRouting::key(namespace, field);
+        let body = routing.encode()?;
+        let resp = client
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(ByteStream::from(body.clone()))
+            .send()
+            .await
+            .context("put centroids-routing.bin")?;
+        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+    }
+
+    for ((coarse_id, l2_id), l2) in &vindex.l2 {
+        let key = CentroidIndexL2::key(namespace, field, *coarse_id, *l2_id);
+        let body = l2.encode()?;
+        let resp = client
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(ByteStream::from(body.clone()))
+            .send()
+            .await
+            .with_context(|| format!("put centroids-l2-{coarse_id:08}-{l2_id:08}"))?;
+        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+    }
     Ok(())
 }
 
@@ -444,7 +473,7 @@ pub struct BackgroundIndexer {
     client: Client,
     bucket: String,
     cache: Arc<SegmentCache>,
-    ann_probes: AnnProbeConfig,
+    ann_build: AnnBuildConfig,
     /// Round-robin queue; reprioritized by lag at the start of each tick.
     queue: Mutex<VecDeque<String>>,
     /// Names currently in `queue` (dedupe for `wake`).
@@ -457,13 +486,13 @@ impl BackgroundIndexer {
         client: Client,
         bucket: String,
         cache: Arc<SegmentCache>,
-        ann_probes: AnnProbeConfig,
+        ann_build: AnnBuildConfig,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             client,
             bucket,
             cache,
-            ann_probes,
+            ann_build,
             queue: Mutex::new(VecDeque::new()),
             queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),
@@ -615,7 +644,7 @@ impl BackgroundIndexer {
             &self.bucket,
             namespace,
             &self.cache,
-            self.ann_probes,
+            self.ann_build,
             Some(max_segments.max(1)),
         );
         let index_result = match time_limit {
@@ -950,7 +979,13 @@ pub async fn load_vector_index_for_field(
         clusters.insert(fine_id, seg);
     }
 
-    Ok(Some(VectorIndex { l0, l1, clusters }))
+    Ok(Some(VectorIndex {
+        l0,
+        l1,
+        clusters,
+        routing: None,
+        l2: HashMap::new(),
+    }))
 }
 
 /// Load all indexed vector columns for queries.
@@ -1205,7 +1240,7 @@ mod tests {
             ),
             bucket: "test".into(),
             cache: SegmentCache::disabled(),
-            ann_probes: AnnProbeConfig::default(),
+            ann_build: AnnBuildConfig::default(),
             queue: Mutex::new(VecDeque::new()),
             queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),

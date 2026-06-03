@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::buffer::WriteBufferConfig;
-use crate::index::vector::{DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE};
+use crate::index::vector::{
+    ann_version_from_env, ANN_VERSION_V2, DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE,
+};
 use crate::limits::{DEFAULT_MAX_FILTER_BATCH_ROWS, DEFAULT_MAX_UPSERT_ROWS};
 use crate::wal::WalCorruptPolicy;
 
@@ -75,6 +77,10 @@ pub struct ServeArgs {
     #[arg(long, env = "OPENPUFFER_ANN_FINE_PROBE", default_value_t = DEFAULT_PROBE_FINE)]
     pub ann_fine_probe: u32,
 
+    /// ANN index layout version written at index build (`2` default, `3` for scalable hierarchy).
+    #[arg(long, env = "OPENPUFFER_ANN_VERSION", default_value_t = ANN_VERSION_V2)]
+    pub ann_version: u8,
+
     /// WAL replay on corrupt segment: `fail` (default) aborts load; `skip` logs and continues.
     #[arg(long, env = "OPENPUFFER_WAL_CORRUPT_POLICY", default_value = "fail")]
     pub wal_corrupt_policy: String,
@@ -93,6 +99,36 @@ impl Default for AnnProbeConfig {
             coarse: DEFAULT_PROBE_COARSE,
             fine: DEFAULT_PROBE_FINE,
         }
+    }
+}
+
+/// ANN probe widths + on-disk layout version for vector index builds.
+#[derive(Debug, Clone, Copy)]
+pub struct AnnBuildConfig {
+    pub probes: AnnProbeConfig,
+    pub ann_version: u8,
+}
+
+impl Default for AnnBuildConfig {
+    fn default() -> Self {
+        Self {
+            probes: AnnProbeConfig::default(),
+            ann_version: ann_version_from_env(),
+        }
+    }
+}
+
+impl AnnBuildConfig {
+    pub fn from_probes(probes: AnnProbeConfig) -> Self {
+        Self {
+            probes,
+            ann_version: ann_version_from_env(),
+        }
+    }
+
+    pub fn with_ann_version(mut self, ann_version: u8) -> Self {
+        self.ann_version = ann_version;
+        self
     }
 }
 
@@ -120,6 +156,7 @@ pub struct AppConfig {
     pub write_buffer: WriteBufferConfig,
     pub limits: LimitsConfig,
     pub ann_probes: AnnProbeConfig,
+    pub ann_build: AnnBuildConfig,
     pub wal_corrupt_policy: WalCorruptPolicy,
 }
 
@@ -170,6 +207,11 @@ impl ServeArgs {
                 coarse: self.ann_coarse_probe.max(1),
                 fine: self.ann_fine_probe.max(1),
             },
+            ann_build: AnnBuildConfig::from_probes(AnnProbeConfig {
+                coarse: self.ann_coarse_probe.max(1),
+                fine: self.ann_fine_probe.max(1),
+            })
+            .with_ann_version(self.ann_version),
             wal_corrupt_policy: WalCorruptPolicy::from_env_str(&self.wal_corrupt_policy),
         }
     }

@@ -7,7 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::AnnProbeConfig;
+use crate::config::AnnBuildConfig;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
 use crate::schema::{vector_element_for_field, VectorElement};
@@ -23,11 +23,41 @@ pub const DEFAULT_PROBE_COARSE: u32 = 4;
 /// Fine centroids to probe per selected coarse cell.
 pub const DEFAULT_PROBE_FINE: u32 = 2;
 
-/// Max coarse centroids (level 0).
+/// On-disk ANN layout version (v2 = legacy two-level cap at 16 coarse).
+pub const ANN_VERSION_V2: u8 = 2;
+
+/// SPFresh-style v3: scalable coarse count, optional L2 routing splits.
+pub const ANN_VERSION_V3: u8 = 3;
+
+/// Max coarse centroids for v2 builds (level 0).
 pub const MAX_COARSE_CENTROIDS: usize = 16;
 
-/// Max fine centroids per coarse cell.
+/// Max coarse centroids for v3 builds.
+pub const MAX_COARSE_CENTROIDS_V3: usize = 256;
+
+/// Max fine centroids per coarse cell (v2).
 const MAX_FINE_PER_COARSE: usize = 256;
+
+/// Max fine centroids per coarse cell (v3); keeps index object count bounded at 100k scale.
+const MAX_FINE_PER_COARSE_V3: usize = 8;
+
+/// When a coarse cell would exceed this many fine centroids, v3 emits L2 routing splits.
+pub const L2_SPLIT_FINE_THRESHOLD: u32 = 32;
+
+/// Target docs per coarse bucket when sizing v3 hierarchy.
+const V3_TARGET_DOCS_PER_COARSE: usize = 500;
+
+/// Resolve ANN layout version from `OPENPUFFER_ANN_VERSION` (only `3` selects v3).
+pub fn ann_version_from_env() -> u8 {
+    match std::env::var("OPENPUFFER_ANN_VERSION")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("3") => ANN_VERSION_V3,
+        _ => ANN_VERSION_V2,
+    }
+}
 
 /// k-means iterations when building.
 const KMEANS_ITERS: usize = 10;
@@ -89,6 +119,53 @@ pub struct CentroidIndexL0 {
     /// Fine centroid count per coarse bucket (defines global fine id offsets).
     pub fine_counts: Vec<u32>,
     pub centroids: Vec<Vec<f64>>,
+    /// Layout version: `ANN_VERSION_V2` (default) or `ANN_VERSION_V3`. Appended for dual-read.
+    #[serde(default = "default_ann_version")]
+    pub ann_version: u8,
+    /// When true, `centroids-routing.bin` and optional `centroids-l2-*.bin` exist for this field.
+    #[serde(default)]
+    pub has_routing: bool,
+}
+
+fn default_ann_version() -> u8 {
+    ANN_VERSION_V2
+}
+
+/// Pre–v3 on-disk L0 (no trailing `ann_version` / `has_routing` fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CentroidIndexL0Legacy {
+    pub segment_id: u64,
+    pub vector_field: String,
+    pub dimensions: u32,
+    pub num_coarse: u32,
+    pub num_fine_total: u32,
+    pub probe_coarse: u32,
+    pub probe_fine: u32,
+    pub distance_metric: DistanceMetric,
+    #[serde(default)]
+    pub vector_element: VectorElement,
+    pub fine_counts: Vec<u32>,
+    pub centroids: Vec<Vec<f64>>,
+}
+
+impl From<CentroidIndexL0Legacy> for CentroidIndexL0 {
+    fn from(legacy: CentroidIndexL0Legacy) -> Self {
+        Self {
+            segment_id: legacy.segment_id,
+            vector_field: legacy.vector_field,
+            dimensions: legacy.dimensions,
+            num_coarse: legacy.num_coarse,
+            num_fine_total: legacy.num_fine_total,
+            probe_coarse: legacy.probe_coarse,
+            probe_fine: legacy.probe_fine,
+            distance_metric: legacy.distance_metric,
+            vector_element: legacy.vector_element,
+            fine_counts: legacy.fine_counts,
+            centroids: legacy.centroids,
+            ann_version: ANN_VERSION_V2,
+            has_routing: false,
+        }
+    }
 }
 
 impl Default for CentroidIndexL0 {
@@ -105,7 +182,66 @@ impl Default for CentroidIndexL0 {
             vector_element: VectorElement::default(),
             fine_counts: Vec::new(),
             centroids: Vec::new(),
+            ann_version: ANN_VERSION_V2,
+            has_routing: false,
         }
+    }
+}
+
+/// Optional v3 routing table (`centroids-routing.bin`): L2 split counts per coarse cell.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentroidRouting {
+    pub ann_version: u8,
+    pub segment_id: u64,
+    pub vector_field: String,
+    pub dimensions: u32,
+    /// L2 partition count per coarse id (0 or 1 = no L2 object for that coarse).
+    pub l2_counts: Vec<u32>,
+}
+
+impl CentroidRouting {
+    pub fn key(namespace: &str, field: &str) -> String {
+        format!(
+            "{}centroids-routing.bin",
+            vector_index_prefix(namespace, field)
+        )
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        bincode::serialize(self).context("encode CentroidRouting")
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        bincode::deserialize(bytes).context("decode CentroidRouting")
+    }
+}
+
+/// Level-2 routing within one coarse cell (`centroids-l2-{coarse_id:08}-{l2_id:08}.bin`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentroidIndexL2 {
+    pub segment_id: u64,
+    pub coarse_id: u32,
+    pub l2_id: u32,
+    /// Global fine id of the first centroid in this L2 partition.
+    pub global_fine_start: u32,
+    pub num_fine: u32,
+    pub centroids: Vec<Vec<f64>>,
+}
+
+impl CentroidIndexL2 {
+    pub fn key(namespace: &str, field: &str, coarse_id: u32, l2_id: u32) -> String {
+        format!(
+            "{}centroids-l2-{coarse_id:08}-{l2_id:08}.bin",
+            vector_index_prefix(namespace, field)
+        )
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        bincode::serialize(self).context("encode CentroidIndexL2")
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        bincode::deserialize(bytes).context("decode CentroidIndexL2")
     }
 }
 
@@ -136,7 +272,16 @@ impl CentroidIndexL0 {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context("decode CentroidIndexL0")
+        if let Ok(l0) = bincode::deserialize::<Self>(bytes) {
+            return Ok(l0);
+        }
+        let legacy: CentroidIndexL0Legacy =
+            bincode::deserialize(bytes).context("decode CentroidIndexL0 legacy v2")?;
+        Ok(legacy.into())
+    }
+
+    pub fn is_v3(&self) -> bool {
+        self.ann_version >= ANN_VERSION_V3
     }
 
     pub fn global_id_start(&self, coarse_id: u32) -> u32 {
@@ -316,12 +461,16 @@ impl ClusterSegment {
     }
 }
 
-/// In-memory vector index (L0 + L1 segments + cluster segments).
+/// In-memory vector index (L0 + L1 segments + cluster segments; v3 may add routing + L2).
 #[derive(Debug, Clone, Default)]
 pub struct VectorIndex {
     pub l0: CentroidIndexL0,
     pub l1: HashMap<u32, CentroidIndexL1>,
     pub clusters: HashMap<u32, ClusterSegment>,
+    /// Present when `l0.has_routing` (v3 optional L2 splits).
+    pub routing: Option<CentroidRouting>,
+    /// `(coarse_id, l2_id)` → L2 routing segment.
+    pub l2: HashMap<(u32, u32), CentroidIndexL2>,
 }
 
 impl VectorIndex {
@@ -331,8 +480,10 @@ impl VectorIndex {
         metric: DistanceMetric,
         docs: &[(String, Document)],
         schema: &Value,
-        probes: AnnProbeConfig,
+        build: AnnBuildConfig,
     ) -> Result<Option<Self>> {
+        let ann_version = build.ann_version;
+        let probes = build.probes;
         let vector_element = vector_element_for_field(schema, field);
         let mut pairs: Vec<(String, Vec<f64>)> = Vec::new();
         let mut dimensions = 0u32;
@@ -356,7 +507,7 @@ impl VectorIndex {
             return Ok(None);
         }
 
-        let k_coarse = num_coarse(pairs.len());
+        let k_coarse = num_coarse_for_version(pairs.len(), ann_version);
         let coarse_vecs = kmeans_centroids(&pairs, k_coarse, dimensions as usize, metric);
         let coarse_assign = assign_to_centroids(&pairs, &coarse_vecs, metric);
 
@@ -368,12 +519,15 @@ impl VectorIndex {
 
         let mut l1_map: HashMap<u32, CentroidIndexL1> = HashMap::new();
         let mut clusters: HashMap<u32, ClusterSegment> = HashMap::new();
+        let mut l2_map: HashMap<(u32, u32), CentroidIndexL2> = HashMap::new();
+        let mut l2_counts: Vec<u32> = vec![0; k_coarse];
         let mut fine_counts: Vec<u32> = vec![0; k_coarse];
         let mut global_start = 0u32;
+        let use_v3 = ann_version >= ANN_VERSION_V3;
 
         for coarse_id in 0..k_coarse as u32 {
             let cell_docs = by_coarse.remove(&coarse_id).unwrap_or_default();
-            let k_fine = num_fine(cell_docs.len());
+            let k_fine = num_fine_for_version(cell_docs.len(), ann_version);
             fine_counts[coarse_id as usize] = k_fine as u32;
 
             let fine_vecs = if cell_docs.is_empty() {
@@ -391,9 +545,34 @@ impl VectorIndex {
                     coarse_id,
                     global_id_start: global_start,
                     num_fine: fine_vecs.len() as u32,
-                    centroids: fine_vecs,
+                    centroids: fine_vecs.clone(),
                 },
             );
+
+            if use_v3 && k_fine as u32 > L2_SPLIT_FINE_THRESHOLD {
+                let l2_parts = k_fine.div_ceil(L2_SPLIT_FINE_THRESHOLD as usize) as u32;
+                l2_counts[coarse_id as usize] = l2_parts;
+                let chunk = (k_fine as u32).div_ceil(l2_parts).max(1) as usize;
+                for l2_id in 0..l2_parts {
+                    let start = (l2_id as usize).saturating_mul(chunk);
+                    let end = ((l2_id + 1) as usize).saturating_mul(chunk).min(k_fine);
+                    let slice = fine_vecs[start..end].to_vec();
+                    if slice.is_empty() {
+                        continue;
+                    }
+                    l2_map.insert(
+                        (coarse_id, l2_id),
+                        CentroidIndexL2 {
+                            segment_id,
+                            coarse_id,
+                            l2_id,
+                            global_fine_start: global_start + start as u32,
+                            num_fine: slice.len() as u32,
+                            centroids: slice,
+                        },
+                    );
+                }
+            }
 
             for (doc_id, vec) in cell_docs {
                 let local_fine = fine_assign.get(&doc_id).copied().unwrap_or(0);
@@ -413,6 +592,19 @@ impl VectorIndex {
         }
 
         let num_fine_total = global_start;
+        let has_routing = use_v3 && l2_counts.iter().any(|&c| c > 1);
+        let routing = if has_routing {
+            Some(CentroidRouting {
+                ann_version: ANN_VERSION_V3,
+                segment_id,
+                vector_field: field.to_string(),
+                dimensions,
+                l2_counts: l2_counts.clone(),
+            })
+        } else {
+            None
+        };
+
         let l0 = CentroidIndexL0 {
             segment_id,
             vector_field: field.to_string(),
@@ -425,12 +617,20 @@ impl VectorIndex {
             vector_element,
             fine_counts,
             centroids: coarse_vecs,
+            ann_version: if use_v3 {
+                ANN_VERSION_V3
+            } else {
+                ANN_VERSION_V2
+            },
+            has_routing,
         };
 
         Ok(Some(VectorIndex {
             l0,
             l1: l1_map,
             clusters,
+            routing,
+            l2: l2_map,
         }))
     }
 
@@ -597,6 +797,28 @@ impl VectorIndex {
             .map(|fid| ClusterSegment::key(namespace, field, fid))
             .collect()
     }
+
+    /// S3 keys for optional v3 routing + L2 segments.
+    pub fn all_v3_aux_keys(&self, namespace: &str) -> Vec<String> {
+        let field = &self.l0.vector_field;
+        let mut keys = Vec::new();
+        if self.l0.has_routing {
+            keys.push(CentroidRouting::key(namespace, field));
+        }
+        for ((coarse_id, l2_id), _) in &self.l2 {
+            keys.push(CentroidIndexL2::key(namespace, field, *coarse_id, *l2_id));
+        }
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// L1 + cluster + optional v3 aux object count (for benchmark/spec caps).
+    pub fn index_object_count(&self) -> usize {
+        self.l0.num_coarse as usize
+            + self.l0.num_fine_total as usize
+            + self.all_v3_aux_keys("").len()
+    }
 }
 
 /// Vector field names to build ANN indexes for (schema order, max 2).
@@ -626,10 +848,27 @@ pub fn vector_fields_to_index(
     fields
 }
 
-fn num_coarse(n: usize) -> usize {
+fn num_coarse_for_version(n: usize, ann_version: u8) -> usize {
     if n == 0 {
         return 0;
     }
+    if ann_version >= ANN_VERSION_V3 {
+        return num_coarse_v3(n);
+    }
+    num_coarse_v2(n)
+}
+
+fn num_fine_for_version(n: usize, ann_version: u8) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if ann_version >= ANN_VERSION_V3 {
+        return num_fine_v3(n);
+    }
+    num_fine_v2(n)
+}
+
+fn num_coarse_v2(n: usize) -> usize {
     if n <= 32 {
         return 1;
     }
@@ -638,12 +877,28 @@ fn num_coarse(n: usize) -> usize {
     k.clamp(1, n).min(MAX_COARSE_CENTROIDS)
 }
 
-fn num_fine(n: usize) -> usize {
+fn num_coarse_v3(n: usize) -> usize {
+    if n <= 32 {
+        return 1;
+    }
+    let k = (n / V3_TARGET_DOCS_PER_COARSE).max(8);
+    k.clamp(8, n).min(MAX_COARSE_CENTROIDS_V3)
+}
+
+fn num_fine_v2(n: usize) -> usize {
     if n == 0 {
         return 0;
     }
     let sqrt_k = (n as f64).sqrt().ceil() as usize;
     sqrt_k.clamp(1, n).min(MAX_FINE_PER_COARSE)
+}
+
+fn num_fine_v3(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let sqrt_k = (n as f64).sqrt().ceil() as usize;
+    sqrt_k.clamp(1, n).min(MAX_FINE_PER_COARSE_V3)
 }
 
 /// Squared distance from a point to a centroid (for k-means++ weighting).
@@ -997,7 +1252,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({}),
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index built");
@@ -1041,7 +1296,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": format!("[{DIM}]f32") }),
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index built");
@@ -1080,11 +1335,114 @@ mod tests {
             vector_element: VectorElement::F32,
             fine_counts: vec![2, 2],
             centroids: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            ann_version: ANN_VERSION_V2,
+            has_routing: false,
         };
         let bytes = idx.encode().unwrap();
         let back = CentroidIndexL0::decode(&bytes).unwrap();
         assert_eq!(back.segment_id, 3);
         assert_eq!(back.fine_counts, vec![2, 2]);
+        assert_eq!(back.ann_version, ANN_VERSION_V2);
+    }
+
+    #[test]
+    fn ann_version_v3_roundtrip() {
+        let mut docs = Vec::new();
+        for i in 0..20_000 {
+            let angle = (i as f64) * 0.01;
+            docs.push(vec_doc(
+                &format!("doc-{i}"),
+                vec![angle.cos(), angle.sin(), 0.1, 0.2],
+            ));
+        }
+        let build = AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3);
+        let index = VectorIndex::build(
+            42,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": "[4]f32" }),
+            build,
+        )
+        .unwrap()
+        .expect("v3 index");
+
+        assert_eq!(index.l0.ann_version, ANN_VERSION_V3);
+        let v2 = VectorIndex::build(
+            42,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": "[4]f32" }),
+            AnnBuildConfig::default().with_ann_version(ANN_VERSION_V2),
+        )
+        .unwrap()
+        .expect("v2 index");
+        assert!(
+            index.l0.num_coarse > v2.l0.num_coarse,
+            "v3 coarse {} should exceed v2 {} at 20k docs",
+            index.l0.num_coarse,
+            v2.l0.num_coarse
+        );
+
+        let l0_bytes = index.l0.encode().unwrap();
+        let l0_back = CentroidIndexL0::decode(&l0_bytes).unwrap();
+        assert_eq!(l0_back.ann_version, ANN_VERSION_V3);
+        assert_eq!(l0_back.has_routing, index.l0.has_routing);
+
+        if let Some(ref routing) = index.routing {
+            let r_bytes = routing.encode().unwrap();
+            let r_back = CentroidRouting::decode(&r_bytes).unwrap();
+            assert_eq!(r_back.ann_version, ANN_VERSION_V3);
+            assert_eq!(r_back.l2_counts, routing.l2_counts);
+        }
+
+        for ((coarse_id, l2_id), l2) in &index.l2 {
+            let bytes = l2.encode().unwrap();
+            let back = CentroidIndexL2::decode(&bytes).unwrap();
+            assert_eq!(back.coarse_id, *coarse_id);
+            assert_eq!(back.l2_id, *l2_id);
+            assert_eq!(back.num_fine, l2.num_fine);
+        }
+
+        for l1 in index.l1.values() {
+            let bytes = l1.encode().unwrap();
+            let back = CentroidIndexL1::decode(&bytes).unwrap();
+            assert_eq!(back.num_fine, l1.num_fine);
+        }
+
+        for cluster in index.clusters.values() {
+            let bytes = cluster.encode().unwrap();
+            let back = ClusterSegment::decode(&bytes).unwrap();
+            assert_eq!(back.members.len(), cluster.members.len());
+        }
+    }
+
+    #[test]
+    fn ann_version_v2_legacy_segment_still_loads() {
+        let legacy = CentroidIndexL0Legacy {
+            segment_id: 9,
+            vector_field: "emb".into(),
+            dimensions: 4,
+            num_coarse: 4,
+            num_fine_total: 16,
+            probe_coarse: 4,
+            probe_fine: 2,
+            distance_metric: DistanceMetric::CosineDistance,
+            vector_element: VectorElement::F32,
+            fine_counts: vec![4, 4, 4, 4],
+            centroids: vec![
+                vec![1.0, 0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        let bytes = bincode::serialize(&legacy).unwrap();
+        let back = CentroidIndexL0::decode(&bytes).unwrap();
+        assert_eq!(back.ann_version, ANN_VERSION_V2);
+        assert!(!back.has_routing);
+        assert_eq!(back.num_coarse, 4);
     }
 
     #[test]
@@ -1099,7 +1457,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": "[2]f32" }),
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1125,7 +1483,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": "[4]f32" }),
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1175,7 +1533,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &schema,
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1213,7 +1571,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &schema,
-            AnnProbeConfig::default(),
+            AnnBuildConfig::default(),
         )
         .unwrap()
         .expect("index");

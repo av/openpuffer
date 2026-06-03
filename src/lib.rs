@@ -21,6 +21,7 @@
 //!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY,
 //!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
 //!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
+//!      OPENPUFFER_ANN_VERSION (`2` default, `3` for scalable index layout at build)
 //!      OPENPUFFER_FTS_STEM (optional Porter stemming for FTS; default off)
 //!      OPENPUFFER_WAL_CORRUPT_POLICY (`fail` | `skip` on corrupt WAL replay)
 
@@ -53,4 +54,4 @@ pub mod wal;
 pub mod wal_compaction;
 
 pub use api::{router, AppState};
-pub use config::{AnnProbeConfig, AppConfig};
+pub use config::{AnnBuildConfig, AnnProbeConfig, AppConfig};

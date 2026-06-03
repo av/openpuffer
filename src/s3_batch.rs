@@ -539,6 +539,8 @@ pub async fn fetch_cold_vector_probed(
             l0,
             l1,
             clusters,
+            routing: None,
+            l2: HashMap::new(),
         },
         storage_roundtrips,
     ))
@@ -838,7 +840,13 @@ fn decode_vector_from_rounds(
         clusters.insert(fine_id, seg);
     }
 
-    Ok(Some(VectorIndex { l0, l1, clusters }))
+    Ok(Some(VectorIndex {
+        l0,
+        l1,
+        clusters,
+        routing: None,
+        l2: HashMap::new(),
+    }))
 }
 
 #[cfg(test)]

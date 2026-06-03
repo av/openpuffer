@@ -1,5 +1,5 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
-use crate::config::{AnnProbeConfig, LimitsConfig};
+use crate::config::{AnnBuildConfig, LimitsConfig};
 use crate::limits::cap_filter_batch;
 use crate::cache::SegmentCache;
 use crate::filter::{parse_filter, should_apply_delete, should_apply_patch, should_apply_upsert};
@@ -73,13 +73,13 @@ impl Storage {
         max_pinned_namespaces: usize,
         write_buffer_config: WriteBufferConfig,
         limits: LimitsConfig,
-        ann_probes: AnnProbeConfig,
+        ann_build: AnnBuildConfig,
     ) -> Arc<Self> {
         let background_indexer = BackgroundIndexer::spawn(
             client.clone(),
             bucket.clone(),
             Arc::clone(&cache),
-            ann_probes,
+            ann_build,
         );
         let write_buffer = WriteBufferManager::new(
             client.clone(),
