@@ -53,6 +53,9 @@ jobs:
       - name: bench-large dry-run
         run: ./scripts/bench-large.sh --tier ${{ inputs.tier }} --dry-run
 
+      - name: id-overlap spotcheck dry-run (Phase 3.3)
+        run: ./scripts/run-id-overlap-spotcheck.sh --tier ${{ inputs.tier }} --dry-run
+
       - name: run-tpuf-large-benchmark dry-run
         run: ./scripts/run-tpuf-large-benchmark.sh --tier ${{ inputs.tier }} --dry-run --skip-g2
 

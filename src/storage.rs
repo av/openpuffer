@@ -171,6 +171,7 @@ impl Storage {
             approx_row_count,
             unindexed_bytes,
             index_status: IndexStatus::from_meta(meta.index_cursor, meta.wal_commit_seq),
+            preferred_ann_version: meta.preferred_ann_version,
         })
     }
 

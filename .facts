@@ -426,6 +426,18 @@
 - label: run-minio-large-schema-example.sh targets schema example JSON with environment minio not large-aws-l1.json
   command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh
   tags: [spec, bench-large, implemented]
+- label: MinIO L1 schema example bench and ingest JSON committed with environment minio and preferred_ann_version 3
+  command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['preferred_ann_version']==3 and i['preferred_ann_version']==3 and b['index_cursor_eq_wal_commit_seq']"
+  tags: [spec, bench-large, implemented]
+- label: GET v1 namespace metadata exposes preferred_ann_version for large-tier index gates
+  command: grep -q 'preferred_ann_version' src/models.rs && grep -q 'preferred_ann_version: meta.preferred_ann_version' src/storage.rs
+  tags: [spec, bench-large, implemented]
+- label: G5 dry-run exemplar report BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md labeled NOT MEASURED
+  command: test -f docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md && grep -q 'NOT MEASURED' docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md
+  tags: [spec, bench-tpuf, bench-large, implemented]
+- label: benchmark-large-dispatch workflow runs id-overlap spotcheck dry-run
+  command: grep -q 'run-id-overlap-spotcheck.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q '\-\-dry-run' .github/workflows/benchmark-large-dispatch.yml
+  tags: [spec, bench-large, implemented]
 - label: large-aws bench JSON fixture cold_large_l1 records tier workload_dir recall_at_10 p50 storage_roundtrips preferred_ann_version index_cursor_eq_wal_commit_seq
   command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and all(k in d for k in ('workload_dir','recall_at_10','p50_query_latency_ms','storage_roundtrips','preferred_ann_version','index_cursor_eq_wal_commit_seq','cold_query_runs')) and d['cold_query_runs']==7"
   tags: [spec, bench-large, implemented]

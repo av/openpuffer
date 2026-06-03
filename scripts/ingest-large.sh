@@ -393,7 +393,7 @@ trap cleanup EXIT
 
 if [[ -z "$SKIP_SERVE" ]]; then
   echo "Building openpuffer (release)…"
-  cargo build --release -q
+  cargo build --release --features integration -q
   echo "Starting serve (ann-version=${ANN_VERSION}) on ${LISTEN}…"
   target/release/openpuffer serve \
     --listen "$LISTEN" \

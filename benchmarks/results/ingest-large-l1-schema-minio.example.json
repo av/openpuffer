@@ -1,0 +1,23 @@
+{
+  "benchmark": "ingest_large",
+  "tier": "l1",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+  "namespace": "bench-large-100000",
+  "num_docs": 100000,
+  "dim": 128,
+  "batch_size": 10000,
+  "batch_count": 10,
+  "ingest_wall_sec": 27,
+  "batch_sleep_sec": 1.1,
+  "seed": 42,
+  "embedding_fn": "bench_sin_v1",
+  "id_scheme": "doc-prefix",
+  "preferred_ann_version": 3,
+  "index_cursor": 10,
+  "wal_commit_seq": 10,
+  "index_cursor_eq_wal_commit_seq": true,
+  "index_timeout_sec": 7200,
+  "generator": "/home/everlier/code/openpuffer/benchmarks/workloads/generate_synthetic.py",
+  "notes": "MinIO schema example @ L1; ingest from run-minio-large-schema-example.sh (2026-06-04); not for COMPARISON.md",
+  "environment": "minio"
+}

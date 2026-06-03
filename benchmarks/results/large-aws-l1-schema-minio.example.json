@@ -1,0 +1,86 @@
+{
+  "benchmark": "cold_large_l1",
+  "environment": "minio",
+  "tier": "l1",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+  "namespace": "bench-large-100000",
+  "primary_query": "vector-q00",
+  "namespace_docs": 100000,
+  "dimensions": 128,
+  "seed": 42,
+  "embedding_fn": "bench_sin_v1",
+  "cache_dir": "",
+  "consistency": "strong",
+  "preferred_ann_version": 3,
+  "index_cursor_eq_wal_commit_seq": true,
+  "storage_roundtrips": 3,
+  "cold_s3_keys_fetched": 15,
+  "s3_get_count": 0,
+  "s3_get_count_note": "segment cache counter; cold path uses s3_batch (see cold_s3_keys_fetched)",
+  "p50_query_latency_ms": 1205,
+  "p95_query_latency_ms": 3301,
+  "candidates_ratio": 0.0008,
+  "recall_at_10": 1.0,
+  "cold_query_runs": 7,
+  "cold_runs": [
+    {
+      "run": 1,
+      "query_name": "vector-q00",
+      "latency_ms": 3301,
+      "storage_roundtrips": 5,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 25
+    },
+    {
+      "run": 2,
+      "query_name": "vector-q00",
+      "latency_ms": 1156,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 3,
+      "query_name": "vector-q00",
+      "latency_ms": 2144,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 4,
+      "query_name": "vector-q00",
+      "latency_ms": 1164,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 5,
+      "query_name": "vector-q00",
+      "latency_ms": 959,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 6,
+      "query_name": "vector-q00",
+      "latency_ms": 1205,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 7,
+      "query_name": "vector-q00",
+      "latency_ms": 1301,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    }
+  ],
+  "index_keys_total": null,
+  "index_object_count": null,
+  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Regenerate: ./scripts/bench-large.sh --tier l1"
+}

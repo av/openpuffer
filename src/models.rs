@@ -281,6 +281,8 @@ pub struct NamespaceMetadata {
     pub approx_row_count: u64,
     pub unindexed_bytes: u64,
     pub index_status: IndexStatus,
+    /// ANN layout version committed on this namespace (`2` default, `3` after v3 index build).
+    pub preferred_ann_version: u8,
 }
 
 #[derive(Debug, Serialize)]

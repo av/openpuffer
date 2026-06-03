@@ -1570,6 +1570,10 @@ async fn deep_health_and_namespace_metadata_fields() {
     assert_eq!(meta["index_status"].as_str(), Some("up_to_date"));
     assert!(meta["unindexed_bytes"].as_u64().is_some());
     assert_eq!(meta["index_cursor"].as_u64(), meta["wal_commit_seq"].as_u64());
+    assert!(
+        meta["preferred_ann_version"].as_u64().is_some(),
+        "namespace metadata must expose preferred_ann_version for large-tier gates"
+    );
 
     // Unindexed tail: write without waiting for indexer.
     upsert_batch(

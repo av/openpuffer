@@ -270,7 +270,9 @@ wait_until_indexed() {
 }
 
 reset_cache() {
-  curl -sf -X POST "${BASE_URL}/v1/debug/cache-stats/reset" >/dev/null
+  # Requires `integration` feature on the serve binary (see cargo build below).
+  curl -sf -X POST "${BASE_URL}/v1/debug/cache-stats/reset" >/dev/null \
+    || echo "warning: cache-stats reset failed (rebuild serve with --features integration?)" >&2
 }
 
 cold_query_once() {
@@ -358,7 +360,7 @@ trap cleanup EXIT
 
 if [[ -z "$SKIP_SERVE" ]]; then
   echo "Building openpuffer (release)…"
-  cargo build --release -q
+  cargo build --release --features integration -q
   echo "Starting serve (no cache, ann-version=${ANN_VERSION}) on ${LISTEN}…"
   target/release/openpuffer serve \
     --listen "$LISTEN" \
