@@ -61,6 +61,29 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant API as HTTP API
+    participant BUF as Write buffer
+    participant S3 as Object storage (S3)
+    participant IDX as Background indexer
+
+    C->>API: POST write (upsert / patch / delete)
+    API->>BUF: enqueue batch (upserts + patches + deletes)
+    Note over BUF: group commit ≤1/s per namespace<br/>or max_batch_ops (512)
+
+    BUF->>BUF: flush timer or batch full
+    BUF->>S3: PUT wal/{seq:08}.bin
+    BUF->>S3: CAS meta.json (wal_commit_seq = seq)
+    BUF-->>IDX: wake(namespace) — non-blocking
+    BUF-->>API: durable commit ok
+    API-->>C: 200 ACK (strong consistency)
+
+    Note over IDX,C: Index build is async;<br/>not on the write ACK path
+```
+
 Optional **`block_until_indexed: true`** on the write body blocks the HTTP response until the background indexer catches up (`index_cursor == wal_commit_seq`), up to **30s** (504 on timeout). Intended for tests and clients that need indexed segments before proceeding; default writes remain decoupled.
 
 ### Schema types (`schema` on write)
@@ -155,6 +178,53 @@ Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.
 | Path | What happens |
 |------|----------------|
 | **Cold** | No disk cache (`--cache-dir=""`): batched parallel S3 plan ([`s3_batch.rs`](../src/s3_batch.rs)) — round 1 `centroids-l0`+FTS, round 2 filter+L1+clusters (query path fetches only probed L1/clusters), WAL tail in extra rounds; `performance.storage_roundtrips` on query JSON |
+
+### Cold query (`s3_batch` roundtrips)
+
+With `--cache-dir=""`, a **strong** query issues parallel `GetObject` batches; each batch is one logical `storage_roundtrip` (~100ms RTT to object storage). Typical cold path: **2** WAL rounds (meta + snapshot/tail) + **2** index rounds (L0/FTS, then filter + probed L1/clusters) + **1** unindexed WAL tail when `index_cursor < wal_commit_seq` → `performance.storage_roundtrips` ≈ **5** (reported on JSON and `X-Openpuffer-Storage-Roundtrips`).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant Q as Query handler
+    participant S3 as Object storage (S3)
+    participant P as Query planner
+
+    C->>Q: POST query (consistency: strong)
+
+    rect rgb(240, 248, 255)
+        Note over Q,S3: Roundtrip 1 — metadata
+        Q->>S3: parallel GET meta.json
+    end
+
+    rect rgb(240, 248, 255)
+        Note over Q,S3: Roundtrip 2 — doc baseline (WAL)
+        Q->>S3: parallel GET wal/snapshot.bin + tail wal/*.bin
+        Q->>Q: replay → NamespaceView
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Q,S3: Roundtrip 3 — index round 1
+        Q->>S3: parallel GET centroids-l0.bin + fts-{seg}.bin
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Q,S3: Roundtrip 4 — index round 2
+        Q->>S3: parallel GET filter-{seg}.bin +<br/>probed centroids-l1-* + clusters-*
+    end
+
+    opt index_cursor < wal_commit_seq
+        rect rgb(248, 255, 240)
+            Note over Q,S3: Roundtrip 5 — unindexed WAL tail
+            Q->>S3: parallel GET wal/{index_cursor+1..commit}.bin
+        end
+    end
+
+    Q->>P: candidates → score → top_k (+ filter intersect)
+    P-->>Q: rows + performance.storage_roundtrips
+    Q-->>C: 200 JSON (+ X-Openpuffer-Storage-Roundtrips)
+```
 | **Cold (cached)** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
 | **Warm** | Local file + HEAD etag match: serve from disk (no `GetObject`) |
 | **Prefetch** | After `centroids-l0.bin` loads, background task fetches all `centroids-l1-*` + `clusters-*.bin` into cache for follow-up ANN queries |
@@ -210,6 +280,30 @@ HTTP headers: `X-Openpuffer-Candidates`, `X-Openpuffer-Candidates-Fraction` (`ca
 Regression guard: `cargo test --features perf` runs `tests/perf_namespace.rs` (5k docs, 128-dim ANN) and asserts `candidates_ratio < 0.12` (not O(n); two-level probe fetches ~`4×2` fine clusters plus tail).
 
 ## Background indexer
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant IDX as Background indexer
+    participant S3 as Object storage (S3)
+
+    Note over IDX: tick every 500ms or wake() after write flush
+
+    IDX->>S3: discover namespaces (index_cursor < wal_commit_seq)
+    loop fair round-robin per lagging namespace
+        IDX->>S3: GET wal/{index_cursor+1..wal_commit_seq}.bin
+        IDX->>S3: GET latest fts / filter / vector segments
+        IDX->>IDX: apply_delta (BM25 postings, filter map, ANN assign)
+        IDX->>S3: PUT fts-{seq}.bin, filter-{seq}.bin,<br/>centroids-l0, centroids-l1-*, clusters-*
+        IDX->>S3: CAS meta.json (index_cursor, segment ids)
+    end
+    opt caught up and wal_commit_seq > 10
+        IDX->>S3: PUT wal/snapshot.bin
+        IDX->>S3: DELETE wal/{seq:08}.bin (seq ≤ index_cursor − 3)
+        IDX->>S3: CAS meta.json (wal_snapshot_seq)
+    end
+    Note over IDX: errors → re-queue; writes never blocked
+```
 
 Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/indexer.rs)):
 
