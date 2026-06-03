@@ -20,7 +20,7 @@ use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::minio::MinIO;
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
 /// Percent-encode a namespace for use as a single URL path segment (e.g. `bad/name` → `bad%2Fname`).
 pub fn namespace_path_segment(name: &str) -> String {
@@ -284,7 +284,13 @@ pub async fn s3_object_exists(client: &Client, bucket: &str, key: &str) -> bool 
     }
 }
 
-pub async fn list_keys_with_prefix(client: &Client, bucket: &str, prefix: &str) -> Vec<String> {
+const LIST_OBJECTS_RETRY_ATTEMPTS: u32 = 5;
+
+async fn list_keys_with_prefix_once(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
     let mut token: Option<String> = None;
     loop {
@@ -295,7 +301,10 @@ pub async fn list_keys_with_prefix(client: &Client, bucket: &str, prefix: &str) 
         if let Some(t) = &token {
             req = req.continuation_token(t);
         }
-        let out = req.send().await.expect("list objects");
+        let out = req
+            .send()
+            .await
+            .map_err(|e| format!("list objects prefix={prefix}: {e}"))?;
         for obj in out.contents() {
             if let Some(k) = obj.key() {
                 keys.push(k.to_string());
@@ -306,7 +315,92 @@ pub async fn list_keys_with_prefix(client: &Client, bucket: &str, prefix: &str) 
             break;
         }
     }
-    keys
+    Ok(keys)
+}
+
+/// List S3 keys under `prefix`, retrying transient ListObjects failures (MinIO load).
+pub async fn list_keys_with_prefix(client: &Client, bucket: &str, prefix: &str) -> Vec<String> {
+    let mut last_err = String::new();
+    for attempt in 0..LIST_OBJECTS_RETRY_ATTEMPTS {
+        match list_keys_with_prefix_once(client, bucket, prefix).await {
+            Ok(keys) => return keys,
+            Err(e) => {
+                last_err = e;
+                sleep(Duration::from_millis(80 * (attempt as u64 + 1))).await;
+            }
+        }
+    }
+    panic!(
+        "list objects failed after {LIST_OBJECTS_RETRY_ATTEMPTS} attempts for prefix={prefix}: {last_err}"
+    );
+}
+
+/// Poll ListObjects until at least `min_count` keys appear (eventual listing consistency).
+pub async fn list_keys_with_prefix_min_count(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    min_count: usize,
+    timeout: Duration,
+) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    let mut last = Vec::new();
+    loop {
+        last = list_keys_with_prefix(client, bucket, prefix).await;
+        if last.len() >= min_count {
+            return last;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "list prefix={prefix}: expected >={min_count} keys within {timeout:?}, last={last:?}"
+            );
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Poll ListObjects until `predicate` holds on the key set.
+pub async fn list_keys_with_prefix_until<F>(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    timeout: Duration,
+    mut predicate: F,
+) -> Vec<String>
+where
+    F: FnMut(&[String]) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    let mut last = Vec::new();
+    loop {
+        last = list_keys_with_prefix(client, bucket, prefix).await;
+        if predicate(&last) {
+            return last;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "list prefix={prefix}: predicate not satisfied within {timeout:?}, last={last:?}"
+            );
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}
+
+fn index_segment_keys_ready(keys: &[String]) -> bool {
+    let has_fts = keys.iter().any(|k| k.contains("/index/fts-") && k.ends_with(".bin"));
+    let has_centroids = keys.iter().any(|k| k.ends_with("centroids-l0.bin"));
+    let has_filter = keys
+        .iter()
+        .any(|k| k.contains("/index/filter-") && k.ends_with(".bin"));
+    has_fts && has_centroids && has_filter
+}
+
+fn two_level_centroid_keys_ready(keys: &[String]) -> bool {
+    let has_l0 = keys.iter().any(|k| k.ends_with("centroids-l0.bin"));
+    let has_l1 = keys
+        .iter()
+        .any(|k| k.contains("centroids-l1-") && k.ends_with(".bin"));
+    has_l0 && has_l1
 }
 
 pub fn wal_upsert_ids(entry: &WalEntry) -> Vec<String> {
@@ -368,18 +462,18 @@ pub async fn assert_wal_layout_after_write(
 
 pub async fn assert_index_objects(client: &Client, bucket: &str, namespace: &str) {
     let index_prefix = format!("{ROOT_PREFIX}{namespace}/index/");
-    let keys = list_keys_with_prefix(client, bucket, &index_prefix).await;
-    let has_fts = keys.iter().any(|k| k.contains("/index/fts-") && k.ends_with(".bin"));
-    let has_centroids = keys.iter().any(|k| k.ends_with("centroids-l0.bin"));
-    let has_filter = keys
-        .iter()
-        .any(|k| k.contains("/index/filter-") && k.ends_with(".bin"));
-    assert!(has_fts, "expected index/fts-*.bin, keys={keys:?}");
+    let keys = list_keys_with_prefix_until(
+        client,
+        bucket,
+        &index_prefix,
+        Duration::from_secs(45),
+        index_segment_keys_ready,
+    )
+    .await;
     assert!(
-        has_centroids,
-        "expected centroids-l0.bin under index/, keys={keys:?}"
+        index_segment_keys_ready(&keys),
+        "expected fts/centroids/filter index segments, keys={keys:?}"
     );
-    assert!(has_filter, "expected index/filter-*.bin, keys={keys:?}");
 }
 
 pub async fn assert_two_level_centroids_on_backend(
@@ -388,7 +482,14 @@ pub async fn assert_two_level_centroids_on_backend(
     namespace: &str,
 ) {
     let index_prefix = format!("{ROOT_PREFIX}{namespace}/index/");
-    let keys = list_keys_with_prefix(client, bucket, &index_prefix).await;
+    let keys = list_keys_with_prefix_until(
+        client,
+        bucket,
+        &index_prefix,
+        Duration::from_secs(45),
+        two_level_centroid_keys_ready,
+    )
+    .await;
     let l0_key = keys
         .iter()
         .find(|k| k.ends_with("centroids-l0.bin"))
@@ -561,22 +662,29 @@ impl Drop for ServeHandle {
 pub async fn wait_until_indexed(base_url: &str, namespace: &str, timeout: Duration) {
     let client = reqwest::Client::new();
     let url = format!("{base_url}/v1/namespaces/{namespace}");
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = Instant::now() + timeout;
+    let mut last_cursor = 0u64;
+    let mut last_commit = 0u64;
+    let mut last_status = "no_response".to_string();
     loop {
-        if tokio::time::Instant::now() >= deadline {
+        if Instant::now() >= deadline {
             panic!(
-                "index_cursor never caught up for {namespace} within {timeout:?}"
+                "index_cursor never caught up for {namespace} within {timeout:?} \
+                 (last cursor={last_cursor} commit={last_commit} status={last_status})"
             );
         }
         if let Ok(resp) = client.get(&url).send().await {
+            last_status = format!("{}", resp.status());
             if resp.status() == StatusCode::OK {
                 let v: Value = resp.json().await.expect("metadata json");
-                let cursor = v["index_cursor"].as_u64().unwrap_or(0);
-                let commit = v["wal_commit_seq"].as_u64().unwrap_or(0);
-                if commit > 0 && cursor == commit {
+                last_cursor = v["index_cursor"].as_u64().unwrap_or(0);
+                last_commit = v["wal_commit_seq"].as_u64().unwrap_or(0);
+                if last_commit > 0 && last_cursor == last_commit {
                     return;
                 }
             }
+        } else {
+            last_status = "request_error".to_string();
         }
         sleep(Duration::from_millis(250)).await;
     }

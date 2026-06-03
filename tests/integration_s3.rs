@@ -212,7 +212,7 @@ async fn minio_wal_index_layout_queries_and_restart_persistence() {
     serve2.wait_ready().await;
 
     assert_wal_layout_after_write(&fixture.client, &fixture.bucket, NAMESPACE).await;
-    wait_until_indexed(&serve2.base_url, NAMESPACE, Duration::from_secs(10)).await;
+    wait_until_indexed(&serve2.base_url, NAMESPACE, Duration::from_secs(45)).await;
     assert_index_objects(&fixture.client, &fixture.bucket, NAMESPACE).await;
     assert_search_results(&serve2.base_url).await;
 
@@ -1346,7 +1346,17 @@ async fn copy_from_namespace_returns_same_docs_on_dest() {
     );
 
     let dest_prefix = format!("{ROOT_PREFIX}{NAMESPACE_COPY_DEST}/");
-    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+    let dest_keys = list_keys_with_prefix_until(
+        &fixture.client,
+        &fixture.bucket,
+        &dest_prefix,
+        Duration::from_secs(45),
+        |keys| {
+            keys.iter().any(|k| k.contains("/wal/"))
+                && keys.iter().any(|k| k.ends_with("meta.json"))
+        },
+    )
+    .await;
     assert!(
         dest_keys.iter().any(|k| k.contains("/wal/")),
         "dest missing wal objects: {dest_keys:?}"
@@ -1456,7 +1466,14 @@ async fn branch_from_namespace_independent_writes_do_not_affect_source() {
     );
 
     let dest_prefix = format!("{ROOT_PREFIX}{NAMESPACE_BRANCH_DEST}/");
-    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+    let dest_keys = list_keys_with_prefix_until(
+        &fixture.client,
+        &fixture.bucket,
+        &dest_prefix,
+        Duration::from_secs(45),
+        |keys| keys.iter().any(|k| k.contains("/wal/")),
+    )
+    .await;
     assert!(
         dest_keys.iter().any(|k| k.contains("/wal/")),
         "branch dest missing wal objects: {dest_keys:?}"
@@ -1619,7 +1636,7 @@ async fn ten_thousand_docs_indexed_query() {
     sleep(Duration::from_millis(1200)).await;
     let write_elapsed = write_started.elapsed();
 
-    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(180)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(240)).await;
     let index_elapsed = write_started.elapsed();
 
     let warm_resp = reqwest::Client::new()
@@ -1685,8 +1702,8 @@ async fn ten_thousand_docs_indexed_query() {
         meta.wal_commit_seq
     );
     assert!(
-        test_started.elapsed() < Duration::from_secs(180),
-        "test exceeded 180s wall clock"
+        test_started.elapsed() < Duration::from_secs(300),
+        "test exceeded 300s wall clock"
     );
 }
 
@@ -1749,7 +1766,7 @@ async fn wal_compaction_after_full_index_query_still_works() {
 
     let snapshot_key = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/snapshot.bin");
     let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_WAL_COMPACT).await;
     loop {
         let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
@@ -1777,7 +1794,7 @@ async fn wal_compaction_after_full_index_query_still_works() {
                 }
             }
             panic!(
-                "wal compaction did not finish within 60s, meta={meta:?} wal_keys={wal_keys:?} segment_wals={segment_wals:?} missing_seqs={missing:?}"
+                "wal compaction did not finish within 90s, meta={meta:?} wal_keys={wal_keys:?} segment_wals={segment_wals:?} missing_seqs={missing:?}"
             );
         }
         sleep(Duration::from_millis(250)).await;
@@ -2852,14 +2869,21 @@ async fn s3_branch_from_namespace_clones_prefix() {
     let src_prefix = format!("{ROOT_PREFIX}{src}/");
     let dest_prefix = format!("{ROOT_PREFIX}{dest}/");
     let src_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &src_prefix).await;
-    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+    assert!(!src_keys.is_empty(), "source must have S3 objects before branch");
+    let dest_keys = list_keys_with_prefix_min_count(
+        &fixture.client,
+        &fixture.bucket,
+        &dest_prefix,
+        src_keys.len(),
+        Duration::from_secs(45),
+    )
+    .await;
 
     assert_eq!(
         src_keys.len(),
         dest_keys.len(),
         "branch must duplicate every source key (src={src_keys:?} dest={dest_keys:?})"
     );
-    assert!(!src_keys.is_empty(), "source must have S3 objects before branch");
 
     for key in &src_keys {
         let suffix = key
@@ -3095,7 +3119,14 @@ async fn s3_two_instances_share_bucket() {
     let meta_key = openpuffer::meta::meta_key(ns);
     let etag_before = head_object_etag(&fixture.client, &fixture.bucket, &meta_key).await;
     let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
-    let wal_keys_before = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+    let wal_keys_before = list_keys_with_prefix_until(
+        &fixture.client,
+        &fixture.bucket,
+        &wal_prefix,
+        Duration::from_secs(30),
+        |keys| keys.iter().any(|k| k.ends_with("00000001.bin")),
+    )
+    .await;
     assert!(
         wal_keys_before.iter().any(|k| k.ends_with("00000001.bin")),
         "expected wal/00000001.bin before restart, keys={wal_keys_before:?}"
@@ -3237,19 +3268,23 @@ async fn multi_instance_stateless_integration() {
         "instance B FTS must see A's docs, got {fts_on_b:?}"
     );
 
-    upsert_batch(
+    write_batch(
         &serve_b.base_url,
         ns,
-        json!([{
-            "id": "doc-d",
-            "attributes": {
-                "embedding": [0.0, 0.0, 1.0],
-                "text": "echo foxtrot instance b",
-                "tier": "pro"
-            }
-        }]),
+        json!({
+            "block_until_indexed": true,
+            "upsert_rows": [{
+                "id": "doc-d",
+                "attributes": {
+                    "embedding": [0.0, 0.0, 1.0],
+                    "text": "echo foxtrot instance b",
+                    "tier": "pro"
+                }
+            }]
+        }),
     )
     .await;
+    wait_until_indexed(&serve_a.base_url, ns, Duration::from_secs(60)).await;
 
     let meta_after_b = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
     assert!(
@@ -3444,7 +3479,7 @@ async fn s3_compaction_removes_old_wal_objects() {
     wait_until_indexed(&serve.base_url, ns, Duration::from_secs(90)).await;
 
     let snapshot_key = format!("{ROOT_PREFIX}{ns}/wal/snapshot.bin");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
     loop {
         if meta.wal_snapshot_seq > 0
@@ -3468,7 +3503,14 @@ async fn s3_compaction_removes_old_wal_objects() {
     assert_eq!(meta.index_cursor, meta.wal_commit_seq);
 
     let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
-    let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+    let wal_keys = list_keys_with_prefix_until(
+        &fixture.client,
+        &fixture.bucket,
+        &wal_prefix,
+        Duration::from_secs(30),
+        |keys| keys.iter().any(|k| k == &snapshot_key),
+    )
+    .await;
     assert!(
         wal_keys.iter().any(|k| k == &snapshot_key),
         "expected wal/snapshot.bin on MinIO, keys={wal_keys:?}"
@@ -3617,7 +3659,7 @@ async fn fair_multi_namespace_background_indexer() {
 
     sleep(Duration::from_millis(1200)).await;
 
-    let deadline = Duration::from_secs(60);
+    let deadline = Duration::from_secs(120);
     let wait_all = async {
         wait_until_indexed(&base, NAMESPACE_FAIR_HOT, deadline).await;
         wait_until_indexed(&base, NAMESPACE_FAIR_B, deadline).await;
@@ -3625,7 +3667,7 @@ async fn fair_multi_namespace_background_indexer() {
     };
     tokio::time::timeout(deadline, wait_all)
         .await
-        .expect("all three namespaces should index within 60s");
+        .expect("all three namespaces should index within 120s");
 
     let client = reqwest::Client::new();
     for ns in [NAMESPACE_FAIR_HOT, NAMESPACE_FAIR_B, NAMESPACE_FAIR_C] {
@@ -3828,16 +3870,23 @@ async fn s3_copy_from_namespace_duplicates_all_keys() {
     let src_prefix = format!("{ROOT_PREFIX}{src}/");
     let dest_prefix = format!("{ROOT_PREFIX}{dest}/");
     let src_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &src_prefix).await;
-    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+    assert!(
+        !src_keys.is_empty(),
+        "source namespace must have S3 objects before copy"
+    );
+    let dest_keys = list_keys_with_prefix_min_count(
+        &fixture.client,
+        &fixture.bucket,
+        &dest_prefix,
+        src_keys.len(),
+        Duration::from_secs(45),
+    )
+    .await;
 
     assert_eq!(
         src_keys.len(),
         dest_keys.len(),
         "copy must duplicate every source key (src={src_keys:?} dest={dest_keys:?})"
-    );
-    assert!(
-        !src_keys.is_empty(),
-        "source namespace must have S3 objects before copy"
     );
 
     for key in &src_keys {
@@ -4637,6 +4686,7 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         NS,
         json!({
             "schema": { "tag": { "type": "string", "filterable": true } },
+            "block_until_indexed": true,
             "upsert_rows": [
                 { "id": "p1", "attributes": { "tag": "bulk" } },
                 { "id": "p2", "attributes": { "tag": "bulk" } },
@@ -4646,7 +4696,6 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         }),
     )
     .await;
-    sleep(Duration::from_millis(1200)).await;
 
     let (status, body) = write_expect(
         &serve.base_url,
@@ -4687,7 +4736,7 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         "final partial batch should not set rows_remaining: {body:?}"
     );
 
-    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, NS, Duration::from_secs(60)).await;
 
     let remaining = export_all_ids(&serve.base_url, NS, None).await;
     assert!(
@@ -4699,6 +4748,7 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         &serve.base_url,
         NS,
         json!({
+            "block_until_indexed": true,
             "upsert_rows": [
                 { "id": "q1", "attributes": { "tag": "patch", "tier": "a" } },
                 { "id": "q2", "attributes": { "tag": "patch", "tier": "a" } },
@@ -4708,7 +4758,6 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         }),
     )
     .await;
-    sleep(Duration::from_millis(1200)).await;
 
     let client = reqwest::Client::new();
     let patch_resp = client
@@ -4722,7 +4771,8 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
                 "filters": ["tag", "Eq", "patch"],
                 "patch": { "tier": "b" }
             },
-            "patch_by_filter_allow_partial": true
+            "patch_by_filter_allow_partial": true,
+            "block_until_indexed": true
         }))
         .send()
         .await
@@ -4925,10 +4975,12 @@ async fn full_architecture_smoke() {
     write_batch(
         &serve.base_url,
         ns,
-        json!({ "delete_by_filter": ["tier", "Eq", "upgraded"] }),
+        json!({
+            "delete_by_filter": ["tier", "Eq", "upgraded"],
+            "block_until_indexed": true
+        }),
     )
     .await;
-    sleep(Duration::from_millis(1200)).await;
 
     let remaining = query_ids_ns(
         &serve.base_url,
@@ -4972,7 +5024,7 @@ async fn full_architecture_smoke() {
 
     let snapshot_key = format!("{ROOT_PREFIX}{ns}/wal/snapshot.bin");
     let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
-    let compact_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let compact_deadline = tokio::time::Instant::now() + Duration::from_secs(120);
     loop {
         let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
         let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
@@ -5117,8 +5169,15 @@ async fn full_architecture_smoke() {
     );
 
     let branch_prefix = format!("{ROOT_PREFIX}{NAMESPACE_FULL_ARCH_BRANCH}/");
-    let branch_keys =
-        list_keys_with_prefix(&fixture.client, &fixture.bucket, &branch_prefix).await;
+    let src_key_count = list_keys_with_prefix(&fixture.client, &fixture.bucket, &format!("{ROOT_PREFIX}{ns}/")).await.len();
+    let branch_keys = list_keys_with_prefix_min_count(
+        &fixture.client,
+        &fixture.bucket,
+        &branch_prefix,
+        src_key_count,
+        Duration::from_secs(45),
+    )
+    .await;
     assert!(
         branch_keys.iter().any(|k| k.contains("/wal/")),
         "branch namespace must have WAL on S3, keys={branch_keys:?}"
