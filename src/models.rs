@@ -24,14 +24,6 @@ pub fn validate_doc_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Legacy namespace manifest (read-only fallback; new writes use WAL + meta.json).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Manifest {
-    pub doc_ids: Vec<String>,
-    #[serde(default)]
-    pub schema_hints: Value,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
@@ -116,14 +108,6 @@ pub struct QueryResponse {
 
 pub fn namespace_prefix(name: &str) -> String {
     format!("{ROOT_PREFIX}{name}/")
-}
-
-pub fn manifest_key(name: &str) -> String {
-    format!("{ROOT_PREFIX}{name}/manifest.json")
-}
-
-pub fn doc_key(name: &str, id: &str) -> String {
-    format!("{ROOT_PREFIX}{name}/docs/{id}.json")
 }
 
 #[cfg(test)]

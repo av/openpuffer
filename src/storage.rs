@@ -286,9 +286,6 @@ async fn namespace_exists(client: &Client, bucket: &str, name: &str) -> Result<b
     if object_exists(client, bucket, &crate::meta::meta_key(name)).await? {
         return Ok(true);
     }
-    if object_exists(client, bucket, &crate::models::manifest_key(name)).await? {
-        return Ok(true);
-    }
     let prefix = crate::models::namespace_prefix(name);
     let out = client
         .list_objects_v2()

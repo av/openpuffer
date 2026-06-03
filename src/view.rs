@@ -5,7 +5,7 @@
 
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
-use crate::namespace::{fetch_meta, load_legacy_docs, replay_wal_range};
+use crate::namespace::{fetch_meta, replay_wal_range};
 use crate::wal::{apply_entry, WalEntry};
 use anyhow::Result;
 use aws_sdk_s3::Client;
@@ -17,7 +17,7 @@ pub struct NamespaceView {
     pub docs: HashMap<String, Document>,
     pub meta: NamespaceMeta,
     pub meta_etag: Option<String>,
-    /// Last WAL sequence applied into `docs` (0 = empty / legacy-only).
+    /// Last WAL sequence applied into `docs` (0 = empty namespace).
     pub last_applied_wal_seq: u64,
 }
 
@@ -75,28 +75,21 @@ impl NamespaceView {
         Ok(true)
     }
 
-    /// Cold load: meta + full WAL replay, or legacy manifest path.
+    /// Cold load: `meta.json` + full WAL replay. No `meta.json` → empty namespace.
     pub async fn load(client: &Client, bucket: &str, namespace: &str) -> Result<Self> {
-        if let Some((meta, etag)) = fetch_meta(client, bucket, namespace).await? {
-            let mut docs = HashMap::new();
-            let last = meta.wal_commit_seq;
-            if last > 0 {
-                replay_wal_range(client, bucket, namespace, &mut docs, 1, last).await?;
-            }
-            return Ok(Self {
-                docs,
-                meta,
-                meta_etag: etag,
-                last_applied_wal_seq: last,
-            });
+        let Some((meta, etag)) = fetch_meta(client, bucket, namespace).await? else {
+            return Ok(Self::empty());
+        };
+        let mut docs = HashMap::new();
+        let last = meta.wal_commit_seq;
+        if last > 0 {
+            replay_wal_range(client, bucket, namespace, &mut docs, 1, last).await?;
         }
-
-        let docs = load_legacy_docs(client, bucket, namespace).await?;
         Ok(Self {
             docs,
-            meta: NamespaceMeta::default(),
-            meta_etag: None,
-            last_applied_wal_seq: 0,
+            meta,
+            meta_etag: etag,
+            last_applied_wal_seq: last,
         })
     }
 }

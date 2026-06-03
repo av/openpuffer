@@ -1,18 +1,13 @@
 //! Per-namespace WAL append and replay on S3.
 
 use crate::meta::{meta_after_wal_commit, meta_key, next_wal_seq, NamespaceMeta, META_RETRIES};
-use crate::models::{self, Document, Manifest};
+use crate::models::Document;
 use crate::wal::{apply_entry, decode, encode, wal_key, WalEntry};
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
 use std::time::Duration;
-
-pub struct LoadedNamespaceData {
-    pub docs: HashMap<String, Document>,
-    pub meta_etag: Option<String>,
-}
 
 /// Fetch durable namespace metadata (`meta.json`), if present.
 pub async fn fetch_meta(
@@ -135,60 +130,6 @@ pub async fn append_wal(
         }
     }
     Err(anyhow!("meta CAS failed after retries"))
-}
-
-/// Load namespace documents: WAL replay when `meta.json` exists, else legacy manifest path.
-pub async fn load_namespace(
-    client: &Client,
-    bucket: &str,
-    namespace: &str,
-) -> Result<LoadedNamespaceData> {
-    let meta_key = meta_key(namespace);
-    if let Some((meta, etag)) = get_meta(client, bucket, &meta_key).await? {
-        let mut docs = HashMap::new();
-        replay_wal_range(
-            client,
-            bucket,
-            namespace,
-            &mut docs,
-            1,
-            meta.wal_commit_seq,
-        )
-        .await?;
-        return Ok(LoadedNamespaceData {
-            docs,
-            meta_etag: etag,
-        });
-    }
-
-    let docs = load_legacy_docs(client, bucket, namespace).await?;
-    Ok(LoadedNamespaceData {
-        docs,
-        meta_etag: None,
-    })
-}
-
-/// Legacy manifest + per-doc JSON (read-only fallback).
-pub async fn load_legacy_docs(
-    client: &Client,
-    bucket: &str,
-    namespace: &str,
-) -> Result<HashMap<String, Document>> {
-    let manifest_key = models::manifest_key(namespace);
-    let manifest = match get_meta_json::<Manifest>(client, bucket, &manifest_key).await? {
-        Some((m, _)) => m,
-        None => return Ok(HashMap::new()),
-    };
-
-    let mut docs = HashMap::new();
-    for id in &manifest.doc_ids {
-        let doc_key = models::doc_key(namespace, id);
-        if let Some(bytes) = get_object_bytes_optional(client, bucket, &doc_key).await? {
-            let doc: Document = serde_json::from_slice(&bytes).context("parse legacy document")?;
-            docs.insert(id.clone(), doc);
-        }
-    }
-    Ok(docs)
 }
 
 async fn get_meta(

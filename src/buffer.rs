@@ -101,7 +101,9 @@ impl WriteBufferManager {
                 let ns = namespace.to_string();
                 let handle = tokio::spawn(async move {
                     sleep(mgr.config.max_delay).await;
-                    let _ = mgr.flush_namespace(&ns).await;
+                    if let Err(e) = mgr.flush_namespace(&ns).await {
+                        tracing::error!("group-commit flush {ns}: {e:#}");
+                    }
                 });
                 st.timer = Some(handle.abort_handle());
                 false
@@ -111,6 +113,12 @@ impl WriteBufferManager {
         };
 
         if flush_now {
+            {
+                let mut st = buf.state.lock().await;
+                if let Some(t) = st.timer.take() {
+                    t.abort();
+                }
+            }
             self.flush_namespace(namespace).await?;
         }
 
@@ -174,9 +182,7 @@ impl WriteBufferManager {
             if st.upserts.is_empty() && st.deletes.is_empty() {
                 return Ok(());
             }
-            if let Some(t) = st.timer.take() {
-                t.abort();
-            }
+            let _ = st.timer.take();
             (
                 std::mem::take(&mut st.upserts),
                 std::mem::take(&mut st.deletes),
@@ -184,30 +190,42 @@ impl WriteBufferManager {
             )
         };
 
-        let entry = WalEntry::from_write(upserts, deletes)?;
-        let docs = entry.clone().into_documents()?;
-        let seq = append_wal(
-            &self.client,
-            &self.bucket,
-            namespace,
-            docs,
-            entry.deletes.clone(),
-        )
-        .await?;
-
-        // Wake async background indexer; writes are not blocked on index build.
-        if let Some(indexer) = &self.background_indexer {
-            indexer.wake(namespace).await;
+        let result: Result<CommittedBatch> = async {
+            let entry = WalEntry::from_write(upserts, deletes)?;
+            let docs = entry.clone().into_documents()?;
+            let seq = append_wal(
+                &self.client,
+                &self.bucket,
+                namespace,
+                docs,
+                entry.deletes.clone(),
+            )
+            .await?;
+            Ok(CommittedBatch {
+                seq,
+                entry: entry.clone(),
+            })
         }
+        .await;
 
-        let committed = CommittedBatch {
-            seq,
-            entry: entry.clone(),
-        };
-        for w in waiters {
-            let _ = w.send(Ok(committed.clone()));
+        match result {
+            Ok(committed) => {
+                for w in waiters {
+                    let _ = w.send(Ok(committed.clone()));
+                }
+                if let Some(indexer) = &self.background_indexer {
+                    indexer.wake(namespace).await;
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let msg = format!("{err:#}");
+                for w in waiters {
+                    let _ = w.send(Err(anyhow::anyhow!("{msg}")));
+                }
+                Err(err)
+            }
         }
-        Ok(())
     }
 }
 

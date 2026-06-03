@@ -1,11 +1,13 @@
 //! S3 round-trip integration tests against MinIO via testcontainers.
 //!
-//! Flow: MinIO container → `openpuffer serve` → upsert → vector / FTS / hybrid query
-//! → kill serve → new serve (same S3) → queries still return data (restart persistence).
+//! Asserts turbopuffer-style layout (`meta.json`, `wal/`, `index/`), background indexing,
+//! vector / FTS / hybrid / filter queries, and restart persistence — no `docs/{id}.json`.
 
 use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
+use openpuffer::meta::meta_key;
+use openpuffer::models::ROOT_PREFIX;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::net::TcpListener;
@@ -37,6 +39,10 @@ fn openpuffer_bin() -> PathBuf {
         })
 }
 
+fn ns_prefix() -> String {
+    format!("{ROOT_PREFIX}{NAMESPACE}/")
+}
+
 async fn s3_client(endpoint: &str) -> Client {
     let creds = Credentials::new(MINIO_USER, MINIO_PASSWORD, None, None, "integration-test");
     let shared = aws_config::defaults(aws_config::BehaviorVersion::latest())
@@ -53,6 +59,111 @@ async fn s3_client(endpoint: &str) -> Client {
 
 async fn ensure_bucket(client: &Client, bucket: &str) {
     let _ = client.create_bucket().bucket(bucket).send().await;
+}
+
+async fn s3_object_exists(client: &Client, bucket: &str, key: &str) -> bool {
+    match client.head_object().bucket(bucket).key(key).send().await {
+        Ok(_) => true,
+        Err(e) => {
+            let service = e.into_service_error();
+            if service.is_not_found() {
+                false
+            } else {
+                panic!("head object {key}: {service}");
+            }
+        }
+    }
+}
+
+async fn list_keys_with_prefix(client: &Client, bucket: &str, prefix: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(prefix);
+        if let Some(t) = &token {
+            req = req.continuation_token(t);
+        }
+        let out = req.send().await.expect("list objects");
+        for obj in out.contents() {
+            if let Some(k) = obj.key() {
+                keys.push(k.to_string());
+            }
+        }
+        token = out.next_continuation_token().map(|s| s.to_string());
+        if token.is_none() {
+            break;
+        }
+    }
+    keys
+}
+
+async fn assert_wal_layout_after_write(client: &Client, bucket: &str) {
+    let meta = meta_key(NAMESPACE);
+    assert!(
+        s3_object_exists(client, bucket, &meta).await,
+        "expected {meta} after upsert"
+    );
+    let wal = format!("{ROOT_PREFIX}{NAMESPACE}/wal/00000001.bin");
+    assert!(
+        s3_object_exists(client, bucket, &wal).await,
+        "expected {wal} after upsert"
+    );
+
+    let docs_prefix = format!("{ROOT_PREFIX}{NAMESPACE}/docs/");
+    let legacy_keys: Vec<_> = list_keys_with_prefix(client, bucket, &docs_prefix)
+        .await
+        .into_iter()
+        .filter(|k| k.ends_with(".json"))
+        .collect();
+    assert!(
+        legacy_keys.is_empty(),
+        "legacy docs/*.json must not exist, found {legacy_keys:?}"
+    );
+    let manifest = format!("{ROOT_PREFIX}{NAMESPACE}/manifest.json");
+    assert!(
+        !s3_object_exists(client, bucket, &manifest).await,
+        "legacy manifest.json must not exist"
+    );
+}
+
+async fn assert_index_objects(client: &Client, bucket: &str) {
+    let index_prefix = format!("{ROOT_PREFIX}{NAMESPACE}/index/");
+    let keys = list_keys_with_prefix(client, bucket, &index_prefix).await;
+    let has_fts = keys.iter().any(|k| k.contains("/index/fts-") && k.ends_with(".bin"));
+    let has_centroids = keys
+        .iter()
+        .any(|k| k.ends_with("/index/centroids.bin"));
+    let has_filter = keys
+        .iter()
+        .any(|k| k.contains("/index/filter-") && k.ends_with(".bin"));
+    assert!(has_fts, "expected index/fts-*.bin, keys={keys:?}");
+    assert!(has_centroids, "expected index/centroids.bin, keys={keys:?}");
+    assert!(has_filter, "expected index/filter-*.bin, keys={keys:?}");
+}
+
+async fn wait_until_indexed(base_url: &str, timeout: Duration) {
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/v1/namespaces/{NAMESPACE}");
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("index_cursor never caught up to wal_commit_seq within {timeout:?}");
+        }
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status() == StatusCode::OK {
+                let v: Value = resp.json().await.expect("metadata json");
+                let cursor = v["index_cursor"].as_u64().unwrap_or(0);
+                let commit = v["wal_commit_seq"].as_u64().unwrap_or(0);
+                if commit > 0 && cursor == commit {
+                    return;
+                }
+            }
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
 }
 
 struct ServeHandle {
@@ -131,21 +242,24 @@ async fn upsert_documents(base_url: &str) {
                 "id": "doc-a",
                 "attributes": {
                     "embedding": [1.0, 0.0, 0.0],
-                    "text": "alpha bravo unique"
+                    "text": "alpha bravo unique",
+                    "tier": "pro"
                 }
             },
             {
                 "id": "doc-b",
                 "attributes": {
                     "embedding": [0.0, 1.0, 0.0],
-                    "text": "charlie delta"
+                    "text": "charlie delta",
+                    "tier": "free"
                 }
             },
             {
                 "id": "doc-c",
                 "attributes": {
                     "embedding": [0.9, 0.1, 0.0],
-                    "text": "alpha charlie"
+                    "text": "alpha charlie",
+                    "tier": "pro"
                 }
             }
         ]
@@ -156,14 +270,22 @@ async fn upsert_documents(base_url: &str) {
         .send()
         .await
         .expect("upsert request");
-    assert_eq!(resp.status(), StatusCode::OK, "upsert failed: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "upsert failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
 }
 
-async fn query_ids(base_url: &str, rank_by: Value) -> Vec<String> {
-    let body = json!({
+async fn query_ids(base_url: &str, rank_by: Value, filters: Option<Value>) -> Vec<String> {
+    let mut body = json!({
         "rank_by": rank_by,
         "top_k": 3
     });
+    if let Some(f) = filters {
+        body["filters"] = f;
+    }
     let resp = reqwest::Client::new()
         .post(format!("{base_url}/v2/namespaces/{NAMESPACE}/query"))
         .json(&body)
@@ -189,6 +311,7 @@ async fn assert_search_results(base_url: &str) {
     let vector_ids = query_ids(
         base_url,
         json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        None,
     )
     .await;
     assert_eq!(
@@ -197,7 +320,7 @@ async fn assert_search_results(base_url: &str) {
         "vector top-1 should be doc-a, got {vector_ids:?}"
     );
 
-    let fts_ids = query_ids(base_url, json!(["BM25", "text", "alpha"])).await;
+    let fts_ids = query_ids(base_url, json!(["BM25", "text", "alpha"]), None).await;
     assert!(
         fts_ids.contains(&"doc-a".to_string()) && fts_ids.contains(&"doc-c".to_string()),
         "FTS should return doc-a and doc-c, got {fts_ids:?}"
@@ -210,6 +333,7 @@ async fn assert_search_results(base_url: &str) {
             ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
             ["BM25", "text", "alpha"]
         ]),
+        None,
     )
     .await;
     assert!(
@@ -221,10 +345,25 @@ async fn assert_search_results(base_url: &str) {
         hybrid_ids.contains(&"doc-a".to_string()),
         "hybrid results should include doc-a, got {hybrid_ids:?}"
     );
+
+    let filter_ids = query_ids(
+        base_url,
+        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        Some(json!(["tier", "Eq", "pro"])),
+    )
+    .await;
+    assert!(
+        filter_ids.contains(&"doc-a".to_string()) && filter_ids.contains(&"doc-c".to_string()),
+        "filter tier=pro should include doc-a and doc-c, got {filter_ids:?}"
+    );
+    assert!(
+        !filter_ids.contains(&"doc-b".to_string()),
+        "filter tier=pro must exclude doc-b, got {filter_ids:?}"
+    );
 }
 
 #[tokio::test]
-async fn minio_upsert_vector_fts_hybrid_and_restart_persistence() {
+async fn minio_wal_index_layout_queries_and_restart_persistence() {
     let minio = MinIO::default().start().await.expect("start MinIO container");
     let host = minio.get_host().await.expect("minio host");
     let port = minio
@@ -242,14 +381,34 @@ async fn minio_upsert_vector_fts_hybrid_and_restart_persistence() {
     let mut serve1 = ServeHandle::spawn(&endpoint, &listen);
     serve1.wait_ready().await;
     upsert_documents(&serve1.base_url).await;
+
+    assert_wal_layout_after_write(&s3, BUCKET).await;
+    wait_until_indexed(&serve1.base_url, Duration::from_secs(30)).await;
+    assert_index_objects(&s3, BUCKET).await;
+
     assert_search_results(&serve1.base_url).await;
 
-    // Prove data survives serve process restart with only S3 backing.
+    // Prove data survives serve process restart with only S3 backing (WAL + index).
     serve1.stop();
     drop(serve1);
     sleep(Duration::from_millis(500)).await;
 
     let serve2 = ServeHandle::spawn(&endpoint, &listen);
     serve2.wait_ready().await;
+
+    assert_wal_layout_after_write(&s3, BUCKET).await;
+    wait_until_indexed(&serve2.base_url, Duration::from_secs(10)).await;
+    assert_index_objects(&s3, BUCKET).await;
     assert_search_results(&serve2.base_url).await;
+
+    // Namespace prefix must not contain legacy doc JSON paths.
+    let all_keys = list_keys_with_prefix(&s3, BUCKET, &ns_prefix()).await;
+    let legacy_doc_keys: Vec<_> = all_keys
+        .iter()
+        .filter(|k| k.contains("/docs/") && k.ends_with(".json"))
+        .collect();
+    assert!(
+        legacy_doc_keys.is_empty(),
+        "no docs/{{id}}.json keys under namespace, found {legacy_doc_keys:?}"
+    );
 }

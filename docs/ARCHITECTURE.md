@@ -20,7 +20,7 @@ openpuffer/{ns}/
     └── ...
 ```
 
-Legacy layout (`manifest.json`, `docs/{id}.json`) is **read-only fallback** for namespaces created before WAL; new writes go **only** to the WAL.
+All durable state uses **WAL + index segments only**. There is no per-document `docs/{id}.json` or `manifest.json` layout. Namespaces without `meta.json` are treated as empty.
 
 ## Namespace metadata (`meta.json`)
 
@@ -66,8 +66,6 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 |------|----------|
 | `strong` (default) | Indexed segments + exhaustive scoring for doc ids touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`. Queries never block on the background indexer. |
 | `eventual` | Indexed segments only; skip WAL tail scan (faster; very recent writes may be invisible until indexed). |
-
-Legacy namespaces still load `manifest.json` + `docs/` when no `meta.json`.
 
 ## Background indexer
 

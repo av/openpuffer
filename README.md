@@ -8,7 +8,7 @@ Stateless vector and full-text search server with S3-compatible object storage. 
 - BM25 full-text search
 - Hybrid `rank_by` queries (`Sum` / `Product`)
 - Single static binary — no sidecar services
-- All durable state in S3 under `openpuffer/{namespace}/`
+- All durable state in S3 under `openpuffer/{namespace}/` (`meta.json`, `wal/`, `index/` — no per-doc JSON files)
 
 ## Build
 
