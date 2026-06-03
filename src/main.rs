@@ -1,6 +1,7 @@
 //! openpuffer binary — `openpuffer serve` starts the HTTP API.
 
 use anyhow::Result;
+use openpuffer::cache::SegmentCache;
 use openpuffer::config::{parse_cli, build_s3_from_serve, Commands, ServeArgs};
 use openpuffer::storage::Storage;
 use openpuffer::{router, AppConfig, AppState};
@@ -23,7 +24,8 @@ async fn main() -> Result<()> {
 async fn serve(args: ServeArgs) -> Result<()> {
     let config: AppConfig = args.app_config();
     let client = build_s3_from_serve(&args).await?;
-    let storage = Storage::new(client, config.bucket.clone());
+    let cache = SegmentCache::from_optional(config.cache_dir.clone());
+    let storage = Storage::new(client, config.bucket.clone(), cache);
 
     let state = AppState {
         storage: storage.clone(),
@@ -32,9 +34,15 @@ async fn serve(args: ServeArgs) -> Result<()> {
 
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
+    let cache_note = config
+        .cache_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "disabled (memory-only)".into());
     info!(
         listen = %config.listen,
         bucket = %config.bucket,
+        cache_dir = %cache_note,
         "openpuffer serve listening (stateless, S3-compatible storage)"
     );
 

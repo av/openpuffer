@@ -47,11 +47,30 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
+## Local disk cache (index segments)
+
+Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.rs)) — not WAL or `meta.json`.
+
+| Setting | Behavior |
+|---------|----------|
+| `--cache-dir` / `OPENPUFFER_CACHE_DIR` (default `/tmp/openpuffer-cache`) | Mirror `index/*` under `{cache_dir}/{bucket}/{s3_key}` |
+| Empty `--cache-dir=""` | Memory-only: every index load uses S3 directly |
+
+**Warm vs cold query:**
+
+| Path | What happens |
+|------|----------------|
+| **Cold** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
+| **Warm** | Local file + HEAD etag match: serve from disk (no `GetObject`) |
+| **Prefetch** | After `centroids.bin` loads, background task fetches all `clusters-*.bin` into cache for follow-up ANN queries |
+
+**Indexer:** each `PutObject` for FTS / filter / vector segments writes S3 first, then populates the cache from the response etag.
+
 ## Read path / query planner
 
 **Implemented** ([`search.rs`](../src/search.rs)):
 
-1. Load `meta.json` + FTS/vector `index/` segments + in-process [`NamespaceView`](../src/view.rs) (incremental WAL catch-up).
+1. Load `meta.json` + FTS/vector `index/` segments (disk cache when enabled) + in-process [`NamespaceView`](../src/view.rs) (incremental WAL catch-up).
 2. **Candidate generation** per `rank_by` subtree:
    - BM25: FTS posting-list union + top posting hits (indexed docs only).
    - Vector: ANN centroid probe + cluster member ids (indexed docs only).

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "openpuffer", about = "S3-backed vector and FTS search")]
@@ -35,12 +36,17 @@ pub struct ServeArgs {
 
     #[arg(long, env = "OPENPUFFER_S3_SECRET_KEY")]
     pub s3_secret_key: String,
+
+    /// Local disk cache for index segments (empty = memory-only, no disk I/O).
+    #[arg(long, env = "OPENPUFFER_CACHE_DIR", default_value = "/tmp/openpuffer-cache")]
+    pub cache_dir: String,
 }
 
 #[derive(Clone)]
 pub struct AppConfig {
     pub listen: String,
     pub bucket: String,
+    pub cache_dir: Option<PathBuf>,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -68,9 +74,18 @@ pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
 
 impl ServeArgs {
     pub fn app_config(&self) -> AppConfig {
+        let cache_dir = {
+            let s = self.cache_dir.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(s))
+            }
+        };
         AppConfig {
             listen: self.listen.clone(),
             bucket: self.s3_bucket.clone(),
+            cache_dir,
         }
     }
 }

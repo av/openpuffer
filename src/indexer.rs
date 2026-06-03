@@ -4,6 +4,7 @@
 //! The write hot path only durably appends WAL + CAS `wal_commit_seq`; queries still see
 //! strong consistency via indexed segments + unindexed WAL tail scan.
 
+use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
@@ -19,7 +20,12 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
 /// Merge WAL `(index_cursor+1)..=wal_commit_seq` into index segments and CAS-advance `index_cursor`.
-pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> Result<()> {
+pub async fn index_wal_range(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    cache: &Arc<SegmentCache>,
+) -> Result<()> {
     for attempt in 0..META_RETRIES {
         let Some((meta, meta_etag)) = fetch_meta(client, bucket, namespace).await? else {
             return Ok(());
@@ -34,8 +40,9 @@ pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> 
         let entries = replay_wal_entries(client, bucket, namespace, from, to).await?;
 
         let field = primary_fts_field(&meta);
-        let mut segment = load_fts_segment(client, bucket, namespace, meta.fts_segment_id, &field)
-            .await?
+        let mut segment =
+            load_fts_segment(client, bucket, namespace, meta.fts_segment_id, &field, cache)
+                .await?
             .unwrap_or_else(|| FtsSegment {
                 segment_id: to,
                 field: field.clone(),
@@ -59,25 +66,32 @@ pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> 
         let filter_segment = FilterSegment::build(to, &meta.schema, &filter_pairs);
         let filter_key = FilterSegment::key(namespace, to);
         let filter_body = filter_segment.encode()?;
-        client
+        let filter_resp = client
             .put_object()
             .bucket(bucket)
             .key(&filter_key)
-            .body(ByteStream::from(filter_body))
+            .body(ByteStream::from(filter_body.clone()))
             .send()
             .await
             .with_context(|| format!("put filter segment {to:08}"))?;
+        cache.populate_after_put(
+            bucket,
+            &filter_key,
+            &filter_body,
+            filter_resp.e_tag(),
+        );
 
         let key = FtsSegment::key(namespace, to);
         let body = segment.encode()?;
-        client
+        let fts_resp = client
             .put_object()
             .bucket(bucket)
             .key(&key)
-            .body(ByteStream::from(body))
+            .body(ByteStream::from(body.clone()))
             .send()
             .await
             .with_context(|| format!("put fts segment {to:08}"))?;
+        cache.populate_after_put(bucket, &key, &body, fts_resp.e_tag());
 
         let mut vector_segment_id = meta.vector_segment_id;
         let mut vector_field = meta.vector_field.clone();
@@ -93,7 +107,7 @@ pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> 
                 meta.distance_metric,
                 &pairs,
             )? {
-                write_vector_index(client, bucket, namespace, &vindex).await?;
+                write_vector_index(client, bucket, namespace, &vindex, cache).await?;
                 vector_segment_id = to;
                 vector_field = vfield;
                 dimensions = vindex.centroids.dimensions;
@@ -145,29 +159,32 @@ async fn write_vector_index(
     bucket: &str,
     namespace: &str,
     vindex: &VectorIndex,
+    cache: &Arc<SegmentCache>,
 ) -> Result<()> {
     let ckey = CentroidIndex::key(namespace);
     let cbody = vindex.centroids.encode()?;
-    client
+    let cresp = client
         .put_object()
         .bucket(bucket)
         .key(&ckey)
-        .body(ByteStream::from(cbody))
+        .body(ByteStream::from(cbody.clone()))
         .send()
         .await
         .context("put centroids.bin")?;
+    cache.populate_after_put(bucket, &ckey, &cbody, cresp.e_tag());
 
     for (cid, cluster) in &vindex.clusters {
         let key = ClusterSegment::key(namespace, *cid);
         let body = cluster.encode()?;
-        client
+        let resp = client
             .put_object()
             .bucket(bucket)
             .key(&key)
-            .body(ByteStream::from(body))
+            .body(ByteStream::from(body.clone()))
             .send()
             .await
             .with_context(|| format!("put cluster {cid:08}"))?;
+        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
     }
     Ok(())
 }
@@ -226,15 +243,17 @@ async fn head_content_length(client: &Client, bucket: &str, key: &str) -> Result
 pub struct BackgroundIndexer {
     client: Client,
     bucket: String,
+    cache: Arc<SegmentCache>,
     pending: Mutex<HashSet<String>>,
     notify: Notify,
 }
 
 impl BackgroundIndexer {
-    pub fn spawn(client: Client, bucket: String) -> Arc<Self> {
+    pub fn spawn(client: Client, bucket: String, cache: Arc<SegmentCache>) -> Arc<Self> {
         let this = Arc::new(Self {
             client,
             bucket,
+            cache,
             pending: Mutex::new(HashSet::new()),
             notify: Notify::new(),
         });
@@ -274,7 +293,7 @@ impl BackgroundIndexer {
         }
 
         for namespace in work {
-            match index_wal_range(&self.client, &self.bucket, &namespace).await {
+            match index_wal_range(&self.client, &self.bucket, &namespace, &self.cache).await {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::warn!(
@@ -364,36 +383,21 @@ async fn load_fts_segment(
     namespace: &str,
     segment_id: u64,
     expected_field: &str,
+    cache: &Arc<SegmentCache>,
 ) -> Result<Option<FtsSegment>> {
     if segment_id == 0 {
         return Ok(None);
     }
     let key = FtsSegment::key(namespace, segment_id);
-    let out = client.get_object().bucket(bucket).key(&key).send().await;
-    match out {
-        Ok(resp) => {
-            let bytes = resp
-                .body
-                .collect()
-                .await
-                .context("read fts segment")?
-                .into_bytes();
-            let seg = FtsSegment::decode(&bytes)?;
-            if !expected_field.is_empty() && seg.field != expected_field {
-                // Schema field changed; rebuild from WAL up to index_cursor would be ideal.
-                // v1: keep loaded segment if non-empty, else empty.
-            }
-            Ok(Some(seg))
-        }
-        Err(e) => {
-            let service = e.into_service_error();
-            if service.is_no_such_key() {
-                Ok(None)
-            } else {
-                Err(anyhow!("get fts segment: {service}"))
-            }
-        }
+    let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+        return Ok(None);
+    };
+    let seg = FtsSegment::decode(&bytes)?;
+    if !expected_field.is_empty() && seg.field != expected_field {
+        // Schema field changed; rebuild from WAL up to index_cursor would be ideal.
+        // v1: keep loaded segment if non-empty, else empty.
     }
+    Ok(Some(seg))
 }
 
 async fn load_filter_segment(
@@ -401,31 +405,16 @@ async fn load_filter_segment(
     bucket: &str,
     namespace: &str,
     segment_id: u64,
+    cache: &Arc<SegmentCache>,
 ) -> Result<Option<FilterSegment>> {
     if segment_id == 0 {
         return Ok(None);
     }
     let key = FilterSegment::key(namespace, segment_id);
-    let out = client.get_object().bucket(bucket).key(&key).send().await;
-    match out {
-        Ok(resp) => {
-            let bytes = resp
-                .body
-                .collect()
-                .await
-                .context("read filter segment")?
-                .into_bytes();
-            Ok(Some(FilterSegment::decode(&bytes)?))
-        }
-        Err(e) => {
-            let service = e.into_service_error();
-            if service.is_no_such_key() {
-                Ok(None)
-            } else {
-                Err(anyhow!("get filter segment: {service}"))
-            }
-        }
-    }
+    let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+        return Ok(None);
+    };
+    Ok(Some(FilterSegment::decode(&bytes)?))
 }
 
 /// CAS payload after indexer merges WAL through `index_cursor`.
@@ -466,11 +455,12 @@ pub async fn load_filter_segment_for_query(
     bucket: &str,
     namespace: &str,
     meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
 ) -> Result<Option<FilterSegment>> {
     if meta.filter_segment_id == 0 || meta.index_cursor == 0 {
         return Ok(None);
     }
-    load_filter_segment(client, bucket, namespace, meta.filter_segment_id).await
+    load_filter_segment(client, bucket, namespace, meta.filter_segment_id, cache).await
 }
 
 /// Load FTS segment for queries (returns None if not yet indexed).
@@ -479,12 +469,20 @@ pub async fn load_fts_segment_for_query(
     bucket: &str,
     namespace: &str,
     meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
 ) -> Result<Option<FtsSegment>> {
     if meta.fts_segment_id == 0 || meta.index_cursor == 0 {
         return Ok(None);
     }
-    load_fts_segment(client, bucket, namespace, meta.fts_segment_id, &primary_fts_field(meta))
-        .await
+    load_fts_segment(
+        client,
+        bucket,
+        namespace,
+        meta.fts_segment_id,
+        &primary_fts_field(meta),
+        cache,
+    )
+    .await
 }
 
 /// Load vector ANN index (centroids + all cluster segments) for queries.
@@ -493,53 +491,32 @@ pub async fn load_vector_index_for_query(
     bucket: &str,
     namespace: &str,
     meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
 ) -> Result<Option<VectorIndex>> {
     if meta.vector_segment_id == 0 || meta.index_cursor == 0 || meta.dimensions == 0 {
         return Ok(None);
     }
     let ckey = CentroidIndex::key(namespace);
-    let out = client.get_object().bucket(bucket).key(&ckey).send().await;
-    let centroids = match out {
-        Ok(resp) => {
-            let bytes = resp
-                .body
-                .collect()
-                .await
-                .context("read centroids.bin")?
-                .into_bytes();
-            CentroidIndex::decode(&bytes)?
-        }
-        Err(e) => {
-            let service = e.into_service_error();
-            if service.is_no_such_key() {
-                return Ok(None);
-            }
-            return Err(anyhow!("get centroids: {service}"));
-        }
+    let Some(cbytes) = cache.get_bytes(client, bucket, &ckey).await? else {
+        return Ok(None);
     };
+    let centroids = CentroidIndex::decode(&cbytes)?;
+
+    if cache.enabled() {
+        let cluster_keys: Vec<String> = (0..centroids.num_centroids)
+            .map(|cid| ClusterSegment::key(namespace, cid))
+            .collect();
+        Arc::clone(cache).prefetch_background(client.clone(), bucket.to_string(), cluster_keys);
+    }
 
     let mut clusters = HashMap::new();
     for cid in 0..centroids.num_centroids {
         let key = ClusterSegment::key(namespace, cid);
-        let seg_out = client.get_object().bucket(bucket).key(&key).send().await;
-        match seg_out {
-            Ok(resp) => {
-                let bytes = resp
-                    .body
-                    .collect()
-                    .await
-                    .with_context(|| format!("read cluster {cid:08}"))?
-                    .into_bytes();
-                let seg = ClusterSegment::decode(&bytes)?;
-                clusters.insert(cid, seg);
-            }
-            Err(e) => {
-                let service = e.into_service_error();
-                if !service.is_no_such_key() {
-                    return Err(anyhow!("get cluster {cid}: {service}"));
-                }
-            }
-        }
+        let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+            continue;
+        };
+        let seg = ClusterSegment::decode(&bytes)?;
+        clusters.insert(cid, seg);
     }
 
     Ok(Some(VectorIndex {
@@ -625,6 +602,7 @@ mod tests {
                     .build(),
             ),
             bucket: "test".into(),
+            cache: SegmentCache::disabled(),
             pending: Mutex::new(HashSet::new()),
             notify: Notify::new(),
         };

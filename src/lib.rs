@@ -14,10 +14,12 @@
 //! CLI: `openpuffer serve` with flags:
 //!   --s3-endpoint --s3-bucket --s3-region --s3-access-key --s3-secret-key
 //! Env: OPENPUFFER_S3_ENDPOINT, OPENPUFFER_S3_BUCKET, OPENPUFFER_S3_REGION,
-//!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY
+//!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY,
+//!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
 
 pub mod api;
 pub mod buffer;
+pub mod cache;
 pub mod config;
 pub mod filter;
 pub mod index;

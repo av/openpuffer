@@ -1,4 +1,5 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
+use crate::cache::SegmentCache;
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
@@ -29,6 +30,7 @@ pub fn s3_error_hint(err: &anyhow::Error) -> Option<&'static str> {
 pub struct Storage {
     client: Client,
     bucket: String,
+    cache: Arc<SegmentCache>,
     write_buffer: WriteBufferManager,
     views: Arc<RwLock<HashMap<String, NamespaceView>>>,
 }
@@ -44,9 +46,9 @@ pub struct LoadedNamespace {
 }
 
 impl Storage {
-    pub fn new(client: Client, bucket: String) -> Arc<Self> {
+    pub fn new(client: Client, bucket: String, cache: Arc<SegmentCache>) -> Arc<Self> {
         let background_indexer =
-            BackgroundIndexer::spawn(client.clone(), bucket.clone());
+            BackgroundIndexer::spawn(client.clone(), bucket.clone(), Arc::clone(&cache));
         let write_buffer = WriteBufferManager::new(
             client.clone(),
             bucket.clone(),
@@ -56,9 +58,14 @@ impl Storage {
         Arc::new(Self {
             client,
             bucket,
+            cache,
             write_buffer,
             views: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    pub fn segment_cache(&self) -> &Arc<SegmentCache> {
+        &self.cache
     }
 
     /// Namespace metadata for turbopuffer-style observability.
@@ -137,14 +144,20 @@ impl Storage {
     }
 
     async fn loaded_from_view(&self, name: &str, view: &NamespaceView) -> Result<LoadedNamespace> {
-        let fts =
-            crate::indexer::load_fts_segment_for_query(&self.client, &self.bucket, name, &view.meta)
-                .await?;
+        let fts = crate::indexer::load_fts_segment_for_query(
+            &self.client,
+            &self.bucket,
+            name,
+            &view.meta,
+            &self.cache,
+        )
+        .await?;
         let vector = crate::indexer::load_vector_index_for_query(
             &self.client,
             &self.bucket,
             name,
             &view.meta,
+            &self.cache,
         )
         .await?;
         let filter_index = crate::indexer::load_filter_segment_for_query(
@@ -152,6 +165,7 @@ impl Storage {
             &self.bucket,
             name,
             &view.meta,
+            &self.cache,
         )
         .await?;
         let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {

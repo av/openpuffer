@@ -29,7 +29,9 @@ openpuffer serve \
   --s3-secret-key minioadmin
 ```
 
-Environment variables: `OPENPUFFER_S3_ENDPOINT`, `OPENPUFFER_S3_BUCKET`, `OPENPUFFER_S3_REGION`, `OPENPUFFER_S3_ACCESS_KEY`, `OPENPUFFER_S3_SECRET_KEY`.
+Environment variables: `OPENPUFFER_S3_ENDPOINT`, `OPENPUFFER_S3_BUCKET`, `OPENPUFFER_S3_REGION`, `OPENPUFFER_S3_ACCESS_KEY`, `OPENPUFFER_S3_SECRET_KEY`, `OPENPUFFER_CACHE_DIR` (default `/tmp/openpuffer-cache`; set empty for memory-only).
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for warm/cold index cache behavior.
 
 ## API
 
