@@ -4,15 +4,35 @@ This document compares **[openpuffer](https://github.com/av/openpuffer)** (self-
 
 For implementation detail see [ARCHITECTURE.md](ARCHITECTURE.md). For API shapes see [turbopuffer’s docs](https://turbopuffer.com/docs).
 
-**Last refreshed:** SPFresh + cold @ 1M program (post-anneal `26906a6`); treat this as **architecture v0.2** maturity (crate **0.2.0**), not a v1.0 product claim.
+**Last refreshed:** `b42f784` (2026-06-03) — SPFresh + cold program Phases 0–C; crate **0.3.0**. Treat as **architecture v0.3** maturity (facts + MinIO artifacts), not a v1.0 product claim.
 
 ---
 
-## Architecture maturity (v0.2)
+## Maturity vs TurboPuffer (measured)
+
+Honest side-by-side on dimensions we can **prove in-repo** (MinIO testcontainers unless noted). TurboPuffer rows are **product/docs reference**, not reproduced here.
+
+| Dimension | TurboPuffer (reference) | openpuffer (measured) | Evidence |
+|-----------|-------------------------|----------------------|----------|
+| **Cold query @ 10k** | Published ~400–874ms class at 1M; no public 10k split | **2** `storage_roundtrips`, p50 **703ms**, **15** `cold_s3_keys_fetched`, `candidates_ratio` **0.008** (strong, empty cache, caught-up index) | [`baseline-10k.json`](../benchmarks/results/baseline-10k.json); CI `bench_cold_10k_baseline` |
+| **Cold query @ 100k** | Same family; fleet-tuned at scale | **2** roundtrips, p50 **828ms**, `recall_at_10` **1.0**, `candidates_ratio` **0.0008** | [`nightly-100k.json`](../benchmarks/results/nightly-100k.json); `bench_cold_100k_nightly` `#[ignore]` |
+| **Cold query @ 1M** | Marketing/docs ~400–500ms cold on AWS | **Manual gate pending** — not validated on AWS in-repo. Run [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) → commit `benchmarks/results/1m-aws.json` | No `1m-aws.json` yet; MinIO is correctness-only per script header |
+| **SPFresh ANN recall @ 10k (v3 vs v2)** | Production SPFresh hierarchy | Lib gate: **v3 ≥ v2 + 0.05** recall@10 on identical 10k synthetic fixture (tight probes); optional re-rank **≥ 0.92** @ 10k | `recall_v3_at_least_five_points_above_v2_on_10k_fixture`; `recall_at_10_10k_with_rerank_at_least_point_nine_two` |
+| **SPFresh ANN recall @ 50k** | — | Cold probed v3: **`recall_at_10` 1.0**, `ann_version` **3**, **175** index objects | [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json); `stress_50k` `#[ignore]` |
+| **SPFresh ANN recall @ 100k** | Production recall SLOs | Lib gate **recall@10 ≥ 0.90** (synthetic, `#[ignore]`); nightly cold bench **`recall_at_10` 1.0** on MinIO namespace | `recall_at_10_100k_synthetic_at_least_point_nine`; nightly JSON |
+| **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | **`POST /v1/namespaces/{name}/recall`** — `avg_recall`, `avg_ann_count`, `avg_exhaustive_count`; MinIO integration **≥ 0.85** @ 10k; filters tested | `recall_http_response_shape_on_minio`, `recall_http_with_filters` |
+| **`storage_roundtrips`** | Not exposed the same way in public API docs | **≤ 4** spec gate (strong caught-up); **2** measured @ 10k / 50k v3 / 100k vector cold; hybrid 10k **≤ 4** with FTS bootstrap | `plan_cold_query`; baseline + nightly + 50k JSON; `cold_hybrid_10k_fts_vector_filter_on_minio` |
+| **Index object count @ scale** | Object-storage–tuned segment count (undisclosed) | On disk vs cold GET differ: **144** @ 10k (15 keys fetched), **175** @ 50k v3, **274** @ 100k; v3 cap gate **&lt; 500** @ 100k sizing | JSON artifacts; `ann_v3_index_object_count_100k_under_five_hundred` |
+
+**Takeaway:** openpuffer closes the **shape** gap (probed cold load, v3 SPFresh-inspired index, recall HTTP, roundtrip accounting) with MinIO proof through **100k**. **1M AWS cold latency** and production ANN tuning remain **operator-owned** gates—not claimed here until `1m-aws.json` exists.
+
+---
+
+## Architecture maturity (v0.3)
 
 openpuffer started as a turbopuffer-shaped API and is now a **real WAL + async index-on-S3 system**. The table below is how we describe maturity internally—not semver on the crate.
 
-| Dimension | v0.1 (early) | **v0.2 (current)** | turbopuffer (reference) |
+| Dimension | v0.1 (early) | **v0.3 (current)** | turbopuffer (reference) |
 |-----------|--------------|-------------------|-------------------------|
 | **System of record** | WAL + meta; legacy JSON fallback | **WAL + `meta.json` + `index/` only**; integration tests forbid `docs/*.json` | Production WAL + index layout |
 | **Write path** | Basic append | Group commit, CAS, 1/s cap, compaction snapshot, CRC WAL wire format | Production batching + fleet scale |
@@ -22,7 +42,7 @@ openpuffer started as a turbopuffer-shaped API and is now a **real WAL + async i
 | **Operability** | README | Deep health, export, warm, limits, optional Prometheus, docker dev/test compose, **multi-replica integration-tested** | Control plane, auth, regions, billing |
 | **Production readiness** | Prototype | **Private-network / staging / fork base** | Managed SLA product |
 
-**What v0.2 means in practice:** you can run **multiple stateless `serve` processes** against one bucket (integration-tested: instance B queries A’s indexed writes; cross-instance warm/export), inspect `openpuffer/{ns}/wal|index|meta.json`, and get turbopuffer-like strong reads without a separate database. You should still **benchmark your bucket, region, and probes** before betting a business on ANN recall or cold latency.
+**What v0.3 means in practice:** you can run **multiple stateless `serve` processes** against one bucket (integration-tested: instance B queries A’s indexed writes; cross-instance warm/export), inspect `openpuffer/{ns}/wal|index|meta.json`, and get turbopuffer-like strong reads without a separate database. You should still **benchmark your bucket, region, and probes** before betting a business on ANN recall or cold latency.
 
 ---
 
@@ -124,10 +144,10 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 |-----|-------------|------------|
 | **True SPFresh** | Production centroid hierarchy, segment merges, object-storage–tuned layout | **v3** routing + L2 splits + incremental maintenance; still not turbopuffer’s full SPFresh fleet |
 | **Graph ANN** | Centroid-based (not HNSW) by design | Same family; v3 improves recall vs v2 (+0.05 @ 10k gate) but fewer tuning years than prod |
-| **Cold latency at 1M docs** | ~400–500ms class (marketing/docs) | **Not validated at 1M on AWS** — manual path: [`scripts/bench-1m.sh`](../scripts/bench-1m.sh), record `benchmarks/results/1m-aws.json`. **10k MinIO (post–Phase A, probed cold):** `storage_roundtrips` **2**, p50 **~919ms**, `cold_s3_keys_fetched` **15**, `candidates_ratio` **0.0058** — 351 ANN index objects exist but are not all GET on cold query ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)). **10k hybrid cold** (`Sum` vector+BM25 + filter, `--cache-dir=""`): integration `cold_hybrid_10k_fts_vector_filter_on_minio` — FTS in bootstrap round 2, `storage_roundtrips ≤ 4`, non-empty pro-tier hits. **50k MinIO v3 (mid-tier stress, `#[ignore]`):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `index_object_count` **175** (`cold_50k_v3` JSON from `fifty_thousand_docs_v3_cold_probed_validation`). **100k MinIO nightly (`#[ignore]`):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `candidates_ratio` **0.0008**, p50 **828ms**, `index_object_count` **274** ([`nightly-100k.json`](../benchmarks/results/nightly-100k.json); gates recall@10 ≥ 0.88, ratio &lt; 0.20, roundtrips ≤ 4). |
+| **Cold latency at scale** | ~400–500ms class @ 1M (marketing/docs) | **1M AWS: manual gate pending** — [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) → `benchmarks/results/1m-aws.json`. **Measured MinIO:** 10k p50 **703ms**, 100k p50 **828ms** ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json), [`nightly-100k.json`](../benchmarks/results/nightly-100k.json)). **10k hybrid cold:** integration `cold_hybrid_10k_fts_vector_filter_on_minio` — FTS bootstrap, `storage_roundtrips ≤ 4`. **50k v3:** [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json). See [measured table](#maturity-vs-turbopuffer-measured) above. |
 | **FTS sophistication** | Production BM25 + optimizations | BM25 + improved tokenizer; simpler merge chain than turbopuffer at scale |
 | **Filter expressiveness** | Broader DSL (e.g. text ops, more combinators) | v1: scalar compares + `In` + `And`/`Or` only; no `Contains`/`Glob`/etc. |
-| **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | **`POST /v1/namespaces/{name}/recall`** implemented; not every turbopuffer recall option |
+| **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | **`POST /v1/namespaces/{name}/recall`** — MinIO **avg_recall ≥ 0.85** @ 10k; not every turbopuffer recall option |
 | **Patch vector in place** | turbopuffer patch vector support | **Vector fields cannot be patched** (400 on vector patch attrs) |
 | **Conditional writes** | Full conditional write surface + edge cases | **`upsert_condition`**, **`patch_condition`**, **`delete_condition`** with filter DSL + `$ref_new`; not every turbopuffer write edge case |
 | **Namespace pinning product** | [Pinning](https://turbopuffer.com/docs/pinning) for residency/latency | Warm LRU in-process only |
@@ -135,7 +155,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 
 ### Throughput & limits
 
-| Area | turbopuffer (typical) | openpuffer v0.2 |
+| Area | turbopuffer (typical) | openpuffer v0.3 |
 |------|----------------------|-----------------|
 | Write payload | Up to **512 MiB** / request | **64 MiB** hard cap |
 | Effective ingest | High batching inside 1/s WAL commits; docs cite **~10k+ vectors/s** class at scale | **~1 WAL commit/s/ns** hard cap; practical throughput is batch-size × commits/s, not cloud-scale |
@@ -148,7 +168,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 
 **Do not expect openpuffer to match turbopuffer’s published latencies** without your own tuning and hardware:
 
-- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). Caught-up **10k** on MinIO (post–Phase A): **2** `storage_roundtrips`, **15** `cold_s3_keys_fetched`, p50 **~919ms** — probed cluster GETs only (integration: bounded by probe plan, not `num_fine_total`; 351 index objects on disk). **50k v3** mid-tier (`stress_50k`, release, MinIO): **2** roundtrips, **recall@10 1.0**, **175** probed ANN objects — see [`docs/BENCHMARKS.md`](BENCHMARKS.md). **1M on AWS** is manual only.
+- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). Caught-up **10k** MinIO: **2** `storage_roundtrips`, **15** `cold_s3_keys_fetched`, p50 **703ms**, **144** index objects on disk ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)). **50k v3:** **2** roundtrips, **recall@10 1.0**, **175** objects ([`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json)). **100k:** p50 **828ms**, **274** objects ([`nightly-100k.json`](../benchmarks/results/nightly-100k.json)). **1M on AWS:** **manual gate pending** — [`scripts/bench-1m.sh`](../scripts/bench-1m.sh).
 - **Warm query** after `POST …/warm` + disk cache can avoid `GetObject` on index segments; `eventual` on a pinned view skips WAL I/O—similar *shape* to turbopuffer’s sub-10ms goal, but measured only in integration tests on MinIO, not at million-doc scale.
 - **ANN recall** — lib gates: v2 `recall@10 > 0.75` (1k×32); v3 ≥ v2 + 0.05 @ 10k; re-rank ≥ 0.92 @ 10k; 100k ≥ 0.90 (`#[ignore]`); HTTP recall ≥ 0.85 @ 10k MinIO. Production recall still depends on probes, `ann_version`, and rebuild cadence.
 - **Indexing lag** under load: fair scheduler + 2s slices mean multi-namespace workloads share indexer time; a 10k-doc namespace can take ~30s+ to catch up on MinIO (see integration test notes). Optional **50k-doc stress** (`large_stress`) indexes in ~40–45s on a dev machine with `--release`; not validated on AWS at that scale.
@@ -172,23 +192,23 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 - You need **managed SLAs**, global regions, and **million-document cold queries in hundreds of milliseconds** out of the box.
 - You require **production auth**, CMEK, audit logs, SOC2-style controls, or multi-tenant billing.
 - Write throughput must sustain **thousands of commits per second per namespace** or very large single-request payloads (>64 MiB).
-- You need **full turbopuffer API coverage** (advanced filters, vector patch, recall HTTP API, pinning product, every write edge case beyond the conditional-write trio).
+- You need **full turbopuffer API coverage** (advanced filters, vector patch, every recall option, pinning product, every write edge case beyond the conditional-write trio).
 - **ANN recall and latency are business-critical** without you operating benchmarks, probe tuning, and capacity planning on your bucket/region.
 - You want **HNSW/graph indexes** or SPFresh-equivalent behavior without operating your own index research loop.
 
-For those cases, use **[turbopuffer](https://turbopuffer.com)** (managed) or treat openpuffer as an **architecture reference implementation (v0.2)**, not a drop-in replacement.
+For those cases, use **[turbopuffer](https://turbopuffer.com)** (managed) or treat openpuffer as an **architecture reference implementation (v0.3)**, not a drop-in replacement.
 
 ---
 
 ## Quick reference matrix
 
-| | turbopuffer | openpuffer (v0.2) |
+| | turbopuffer | openpuffer (v0.3) |
 |---|-------------|-------------------|
 | **License / deployment** | Commercial SaaS (+ enterprise BYOC) | Open source; self-hosted binary |
 | **System of record** | S3 (per region) | Your S3-compatible bucket |
-| **API compatibility** | Canonical | Core write/query/metadata/export/warm subset |
-| **Architecture fidelity** | Production SPFresh + FTS + filters | WAL + 2-level k-means ANN + FTS + filters (simplified, verified on MinIO) |
-| **Maturity** | Production product | Reference/staging architecture; **facts-driven** ann/cold gates + S3-proof integration (incl. cold probe bound, recall HTTP, multi-instance, 50k optional stress) |
+| **API compatibility** | Canonical | Core write/query/metadata/export/warm/recall subset |
+| **Architecture fidelity** | Production SPFresh + FTS + filters | WAL + v2/v3 centroid ANN + FTS + filters; v3 SPFresh-inspired maintenance |
+| **Maturity** | Production product | Staging/reference; **measured** 10k/50k/100k cold + ann/cold facts; **1M AWS pending** |
 | **Best fit** | Production apps at scale | Dev, staging, private cloud, learning, forks |
 
 ---

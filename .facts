@@ -453,3 +453,9 @@
 - label: OPENPUFFER_COLD_MAX_KEYS_PER_ROUND sub-batches parallel GETs within one storage_roundtrip
   command: grep -q 'OPENPUFFER_COLD_MAX_KEYS_PER_ROUND' src/s3_batch.rs && cargo test --lib cold_fetch_sub_batch_count_caps_parallel_gets -q && cargo test --lib plan_cold_query_500_round3_keys_one_roundtrip_unchanged -q
   tags: [spec, cold, implemented]
+
+# plan
+
+- label: PLAN Phase 0-C outcomes verified — manual check against committed benchmark artifacts and ann/cold facts (1M AWS still pending)
+  command: test -f benchmarks/results/baseline-10k.json && test -f benchmarks/results/nightly-100k.json && test -f benchmarks/results/cold-50k-v3.json && test -f scripts/bench-1m.sh && test -f docs/PLAN_SPFRESH_AND_COLD_1M.md && ! test -f benchmarks/results/1m-aws.json && echo 'Manual verify: ls -l benchmarks/results/baseline-10k.json benchmarks/results/nightly-100k.json benchmarks/results/cold-50k-v3.json; facts check --tags "ann or cold"; 1M gate pending — run scripts/bench-1m.sh then commit benchmarks/results/1m-aws.json'
+  tags: [plan, implemented]
