@@ -5,7 +5,7 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use openpuffer::meta::{meta_key, NamespaceMeta};
 use openpuffer::models::ROOT_PREFIX;
-use openpuffer::wal::{decode, wal_key, WalEntry};
+use openpuffer::wal::{decode, decode_snapshot, wal_key, WalEntry, WalSnapshot};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::net::TcpListener;
@@ -127,6 +127,19 @@ pub async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Vec<u
         .to_vec()
 }
 
+pub async fn head_object_etag(client: &Client, bucket: &str, key: &str) -> String {
+    let out = client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("head object {key}: {e}"));
+    out.e_tag()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| panic!("S3 object {key} missing ETag"))
+}
+
 pub async fn object_size(client: &Client, bucket: &str, key: &str) -> u64 {
     let out = client
         .head_object()
@@ -136,6 +149,16 @@ pub async fn object_size(client: &Client, bucket: &str, key: &str) -> u64 {
         .await
         .unwrap_or_else(|e| panic!("head object {key}: {e}"));
     out.content_length().unwrap_or(0) as u64
+}
+
+pub async fn decode_wal_snapshot_from_s3(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+) -> WalSnapshot {
+    let key = WalSnapshot::key(namespace);
+    let bytes = get_object_bytes(client, bucket, &key).await;
+    decode_snapshot(&bytes).expect("decode WalSnapshot from S3 bytes")
 }
 
 pub async fn decode_wal_entry_from_s3(

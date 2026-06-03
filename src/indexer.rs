@@ -19,17 +19,20 @@ use crate::wal::{collect_index_delta, WalEntry};
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
 /// Merge WAL `(index_cursor+1)..=wal_commit_seq` into index segments and CAS-advance `index_cursor`.
+///
+/// When `max_segments` is `Some(n)`, indexes at most `n` WAL files per call (fair background slices).
 pub async fn index_wal_range(
     client: &Client,
     bucket: &str,
     namespace: &str,
     cache: &Arc<SegmentCache>,
+    max_segments: Option<u64>,
 ) -> Result<()> {
     for attempt in 0..META_RETRIES {
         let Some((meta, _)) = fetch_meta(client, bucket, namespace).await? else {
@@ -41,7 +44,10 @@ pub async fn index_wal_range(
         }
 
         let from = meta.index_cursor.saturating_add(1);
-        let to = meta.wal_commit_seq;
+        let mut to = meta.wal_commit_seq;
+        if let Some(max) = max_segments {
+            to = to.min(from.saturating_add(max.saturating_sub(1)));
+        }
 
         let field = primary_fts_field(&meta);
         let mut segment =
@@ -298,6 +304,24 @@ async fn write_vector_index(
 /// Poll interval when no WAL flush notification is pending.
 pub const INDEX_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Max wall time spent indexing a single namespace per background tick when multiple namespaces compete.
+pub const MAX_INDEX_TIME_PER_NS_PER_TICK: Duration = Duration::from_secs(2);
+
+/// Priority key for background indexer scheduling: unindexed WAL segment count.
+pub fn index_scheduling_lag(meta: &NamespaceMeta) -> u64 {
+    unindexed_wal_segments(meta)
+}
+
+/// Sort namespace names by descending index lag (largest backlog first).
+pub fn sort_namespaces_by_index_lag(names: &mut [String], lag: &HashMap<String, u64>) {
+    names.sort_by(|a, b| {
+        lag.get(b)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&lag.get(a).copied().unwrap_or(0))
+    });
+}
+
 /// True when WAL segments exist that are not yet merged into `index/`.
 pub fn needs_indexing(meta: &NamespaceMeta) -> bool {
     meta.index_cursor < meta.wal_commit_seq
@@ -345,12 +369,15 @@ async fn head_content_length(client: &Client, bucket: &str, key: &str) -> Result
     Ok(out.content_length().unwrap_or(0).max(0) as u64)
 }
 
-/// Async background indexer: one global task, per-namespace work queue + periodic S3 scan.
+/// Async background indexer: one global task, fair round-robin across namespaces.
 pub struct BackgroundIndexer {
     client: Client,
     bucket: String,
     cache: Arc<SegmentCache>,
-    pending: Mutex<HashSet<String>>,
+    /// Round-robin queue; reprioritized by lag at the start of each tick.
+    queue: Mutex<VecDeque<String>>,
+    /// Names currently in `queue` (dedupe for `wake`).
+    queued: Mutex<HashSet<String>>,
     notify: Notify,
 }
 
@@ -360,7 +387,8 @@ impl BackgroundIndexer {
             client,
             bucket,
             cache,
-            pending: Mutex::new(HashSet::new()),
+            queue: Mutex::new(VecDeque::new()),
+            queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),
         });
         let runner = Arc::clone(&this);
@@ -372,8 +400,12 @@ impl BackgroundIndexer {
 
     /// Notify the background loop that `namespace` may have unindexed WAL (non-blocking).
     pub async fn wake(&self, namespace: &str) {
-        self.pending.lock().await.insert(namespace.to_string());
-        self.notify.notify_one();
+        let name = namespace.to_string();
+        let mut queued = self.queued.lock().await;
+        if queued.insert(name.clone()) {
+            self.queue.lock().await.push_back(name);
+            self.notify.notify_one();
+        }
     }
 
     async fn run(self: Arc<Self>) {
@@ -386,46 +418,143 @@ impl BackgroundIndexer {
     }
 
     async fn tick(&self) -> Result<()> {
-        let mut work: HashSet<String> = self.pending.lock().await.drain().collect();
-
-        for name in list_namespace_names(&self.client, &self.bucket).await? {
-            if let Some((meta, _)) =
-                crate::namespace::fetch_meta(&self.client, &self.bucket, &name).await?
+        self.refresh_work_queue().await?;
+        let round_len = self.queue.lock().await.len();
+        let fair_time_limit = if round_len > 1 {
+            Some(MAX_INDEX_TIME_PER_NS_PER_TICK)
+        } else {
+            None
+        };
+        for _ in 0..round_len {
+            let Some(namespace) = self.queue.lock().await.pop_front() else {
+                break;
+            };
+            let still_work = match self
+                .index_namespace_timeboxed(&namespace, fair_time_limit)
+                .await
             {
-                if needs_indexing(&meta) || crate::wal_compaction::needs_wal_compaction(&meta) {
-                    work.insert(name);
-                }
-            }
-        }
-
-        for namespace in work {
-            match index_wal_range(&self.client, &self.bucket, &namespace, &self.cache).await {
-                Ok(()) => {
-                    if let Err(e) = crate::wal_compaction::maybe_compact_wal(
-                        &self.client,
-                        &self.bucket,
-                        &namespace,
-                        &self.cache,
-                    )
-                    .await
-                    {
-                        tracing::warn!("wal compaction for {namespace}: {e:#}");
-                    }
-                }
+                Ok(needs_more) => needs_more,
                 Err(e) => {
                     tracing::warn!(
                         "indexer failed for {namespace} (will retry): {e:#}"
                     );
-                    self.pending.lock().await.insert(namespace);
+                    true
                 }
+            };
+            if still_work {
+                self.queue.lock().await.push_back(namespace);
+            } else {
+                self.queued.lock().await.remove(&namespace);
             }
         }
         Ok(())
     }
 
+    /// Discover lagging namespaces, merge into the round-robin queue, sort by descending lag.
+    async fn refresh_work_queue(&self) -> Result<()> {
+        let mut names: HashSet<String> = self.queued.lock().await.clone();
+        for name in list_namespace_names(&self.client, &self.bucket).await? {
+            if self.namespace_has_work(&name).await? {
+                names.insert(name);
+            }
+        }
+
+        let mut lag = HashMap::new();
+        let mut active = Vec::new();
+        for name in names {
+            let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, &name).await? else {
+                continue;
+            };
+            let l = index_scheduling_lag(&meta);
+            let compaction = crate::wal_compaction::needs_wal_compaction(&meta);
+            if l > 0 || compaction {
+                lag.insert(name.clone(), l);
+                active.push(name);
+            }
+        }
+
+        sort_namespaces_by_index_lag(&mut active, &lag);
+
+        let mut queued = self.queued.lock().await;
+        let mut queue = self.queue.lock().await;
+        queue.clear();
+        queued.clear();
+        for name in active {
+            queue.push_back(name.clone());
+            queued.insert(name);
+        }
+        Ok(())
+    }
+
+    async fn namespace_has_work(&self, namespace: &str) -> Result<bool> {
+        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
+            return Ok(false);
+        };
+        Ok(needs_indexing(&meta) || crate::wal_compaction::needs_wal_compaction(&meta))
+    }
+
+    /// Index one WAL segment; optional per-tick time limit when multiple namespaces compete.
+    async fn index_namespace_timeboxed(
+        &self,
+        namespace: &str,
+        time_limit: Option<Duration>,
+    ) -> Result<bool> {
+        let work = index_wal_range(
+            &self.client,
+            &self.bucket,
+            namespace,
+            &self.cache,
+            Some(1),
+        );
+        let index_result = match time_limit {
+            Some(limit) => tokio::time::timeout(limit, work).await,
+            None => Ok(work.await),
+        };
+
+        match index_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                tracing::debug!(
+                    "background indexer time slice ({time_limit:?}) exceeded for {namespace}"
+                );
+            }
+        }
+
+        let still_indexing = self.namespace_still_needs_indexing(namespace).await?;
+        if !still_indexing {
+            if let Err(e) = crate::wal_compaction::maybe_compact_wal(
+                &self.client,
+                &self.bucket,
+                namespace,
+                &self.cache,
+            )
+            .await
+            {
+                tracing::warn!("wal compaction for {namespace}: {e:#}");
+            }
+        }
+
+        Ok(still_indexing || self.namespace_needs_compaction_only(namespace).await?)
+    }
+
+    async fn namespace_still_needs_indexing(&self, namespace: &str) -> Result<bool> {
+        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
+            return Ok(false);
+        };
+        Ok(needs_indexing(&meta))
+    }
+
+    async fn namespace_needs_compaction_only(&self, namespace: &str) -> Result<bool> {
+        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
+            return Ok(false);
+        };
+        Ok(crate::wal_compaction::needs_wal_compaction(&meta))
+    }
+
     #[cfg(test)]
-    async fn pending_namespaces(&self) -> HashSet<String> {
-        self.pending.lock().await.clone()
+    async fn queued_namespaces(&self) -> VecDeque<String> {
+        self.queue.lock().await.clone()
     }
 }
 
@@ -811,6 +940,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sort_namespaces_by_index_lag_orders_descending() {
+        let mut names = vec![
+            "low".to_string(),
+            "hot".to_string(),
+            "mid".to_string(),
+        ];
+        let lag = HashMap::from([
+            ("low".to_string(), 1),
+            ("hot".to_string(), 50),
+            ("mid".to_string(), 10),
+        ]);
+        sort_namespaces_by_index_lag(&mut names, &lag);
+        assert_eq!(names, vec!["hot", "mid", "low"]);
+    }
+
+    #[test]
+    fn index_scheduling_lag_matches_unindexed_segments() {
+        let meta = NamespaceMeta {
+            index_cursor: 2,
+            wal_commit_seq: 7,
+            ..Default::default()
+        };
+        assert_eq!(index_scheduling_lag(&meta), 5);
+    }
+
     #[tokio::test]
     async fn background_indexer_wake_enqueues_namespace() {
         let idx = BackgroundIndexer {
@@ -821,14 +976,15 @@ mod tests {
             ),
             bucket: "test".into(),
             cache: SegmentCache::disabled(),
-            pending: Mutex::new(HashSet::new()),
+            queue: Mutex::new(VecDeque::new()),
+            queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),
         };
         idx.wake("ns-a").await;
         idx.wake("ns-a").await;
-        let pending = idx.pending_namespaces().await;
-        assert_eq!(pending.len(), 1);
-        assert!(pending.contains("ns-a"));
+        let queue = idx.queued_namespaces().await;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.front().map(String::as_str), Some("ns-a"));
     }
 
     #[tokio::test]

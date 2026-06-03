@@ -137,8 +137,9 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 1. After each durable WAL flush, the write buffer **notifies** the indexer (`wake`) — no await on index build.
 2. A single tokio background task runs continuously:
    - Waits up to **500ms** or until notified.
-   - Processes namespaces in the pending queue plus any namespace where `index_cursor < wal_commit_seq` (S3 prefix scan).
-3. For each lagging namespace:
+   - Discovers namespaces where `index_cursor < wal_commit_seq` (pending `wake` + S3 prefix scan).
+   - **Fair scheduling:** round-robin queue reprioritized each tick by descending `(wal_commit_seq - index_cursor)`; one WAL segment per namespace per tick; **2s** time slice per namespace when multiple namespaces compete so one hot namespace cannot starve others.
+3. For each lagging namespace (time-boxed slice):
    - Read WAL from `index_cursor + 1` through `wal_commit_seq`.
    - **FTS:** load latest `fts-{id}.bin`, `apply_delta` from WAL batch only, write `fts-{seq}.bin`, append `fts_segment_ids`.
    - **Filter:** load latest filter segment, `apply_delta` (no full WAL replay).

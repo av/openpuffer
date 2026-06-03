@@ -37,9 +37,17 @@ const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const NAMESPACE_S3_WAL_BYTES: &str = "itest-s3-wal-bytes";
 const NAMESPACE_S3_L1_CENTROIDS: &str = "itest-s3-l1-centroids";
 const NAMESPACE_VEC_B64: &str = "itest-vec-b64";
+const NAMESPACE_FAIR_HOT: &str = "itest-fair-hot";
+const NAMESPACE_FAIR_B: &str = "itest-fair-b";
+const NAMESPACE_FAIR_C: &str = "itest-fair-c";
+const FAIR_HOT_BATCH: usize = 400;
+const FAIR_HOT_BATCHES: usize = 5;
 const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
 const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
 const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
+const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
+const NAMESPACE_S3_COPY_KEYS_SRC: &str = "itest-s3-copy-keys-src";
+const NAMESPACE_S3_COPY_KEYS_DEST: &str = "itest-s3-copy-keys-dest";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -2315,4 +2323,352 @@ async fn s3_compaction_removes_old_wal_objects() {
         fts_ids.iter().any(|id| id.starts_with("s3c-")),
         "query after compaction via cold S3 load, ids={fts_ids:?}"
     );
+}
+
+/// Three namespaces written concurrently; fair background indexer must not let one hot ns starve the others.
+#[tokio::test]
+async fn fair_multi_namespace_background_indexer() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        None,
+        Some(FAIR_HOT_BATCH),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "embedding": "[32]f32"
+    });
+
+    let base = serve.base_url.clone();
+    let schema_hot = schema.clone();
+    let schema_b = schema.clone();
+    let hot = tokio::spawn({
+        let base = base.clone();
+        async move {
+            for b in 0..FAIR_HOT_BATCHES {
+                if b > 0 {
+                    sleep(Duration::from_millis(1100)).await;
+                }
+                let start = b * FAIR_HOT_BATCH;
+                let mut body = json!({
+                    "upsert_columns": fair_upsert_columns(start, FAIR_HOT_BATCH, 32)
+                });
+                if b == 0 {
+                    body["schema"] = schema_hot.clone();
+                }
+                write_batch(&base, NAMESPACE_FAIR_HOT, body).await;
+            }
+        }
+    });
+
+    let small_b = tokio::spawn({
+        let base = base.clone();
+        async move {
+            write_batch(
+                &base,
+                NAMESPACE_FAIR_B,
+                json!({
+                    "schema": schema_b,
+                    "upsert_rows": (0..12).map(|i| json!({
+                        "id": format!("b-{i}"),
+                        "attributes": {
+                            "text": format!("fair namespace b doc {i}"),
+                            "embedding": fair_embedding(i, 32)
+                        }
+                    })).collect::<Vec<_>>()
+                }),
+            )
+            .await;
+        }
+    });
+
+    let small_c = tokio::spawn({
+        let base = base.clone();
+        async move {
+            write_batch(
+                &base,
+                NAMESPACE_FAIR_C,
+                json!({
+                    "schema": schema,
+                    "upsert_rows": (0..12).map(|i| json!({
+                        "id": format!("c-{i}"),
+                        "attributes": {
+                            "text": format!("fair namespace c doc {i}"),
+                            "embedding": fair_embedding(i + 100, 32)
+                        }
+                    })).collect::<Vec<_>>()
+                }),
+            )
+            .await;
+        }
+    });
+
+    hot.await.expect("hot namespace writes");
+    small_b.await.expect("fair-b writes");
+    small_c.await.expect("fair-c writes");
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let deadline = Duration::from_secs(60);
+    let wait_all = async {
+        wait_until_indexed(&base, NAMESPACE_FAIR_HOT, deadline).await;
+        wait_until_indexed(&base, NAMESPACE_FAIR_B, deadline).await;
+        wait_until_indexed(&base, NAMESPACE_FAIR_C, deadline).await;
+    };
+    tokio::time::timeout(deadline, wait_all)
+        .await
+        .expect("all three namespaces should index within 60s");
+
+    let client = reqwest::Client::new();
+    for ns in [NAMESPACE_FAIR_HOT, NAMESPACE_FAIR_B, NAMESPACE_FAIR_C] {
+        let meta: Value = client
+            .get(format!("{base}/v1/namespaces/{ns}"))
+            .send()
+            .await
+            .expect("metadata")
+            .json()
+            .await
+            .expect("metadata json");
+        assert_eq!(
+            meta["index_status"].as_str(),
+            Some("up_to_date"),
+            "{ns}: {meta}"
+        );
+        let cursor = meta["index_cursor"].as_u64().unwrap_or(0);
+        let commit = meta["wal_commit_seq"].as_u64().unwrap_or(0);
+        assert_eq!(cursor, commit, "{ns} index_cursor behind commit");
+    }
+}
+
+fn fair_embedding(seed: usize, dim: usize) -> Value {
+    let emb: Vec<f64> = (0..dim)
+        .map(|d| ((seed * dim + d) as f64 * 0.001).sin())
+        .collect();
+    json!(emb)
+}
+
+/// FTS + filter index segments grow on MinIO across WAL batches; hybrid query hits indexed docs.
+#[tokio::test]
+async fn s3_fts_and_filter_segments_grow_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let ns = NAMESPACE_S3_SEG_GROW;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "grow-1",
+            "attributes": {
+                "embedding": [1.0, 0.0, 0.0],
+                "text": "segment growth alpha batch one",
+                "tier": "a"
+            }
+        }]),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let meta1 = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(meta1.index_cursor, 1);
+    let fts_id1 = *meta1.fts_segment_ids.last().expect("fts segment id");
+    let filter_id1 = *meta1.filter_segment_ids.last().expect("filter segment id");
+    let fts_key1 = format!("{ROOT_PREFIX}{ns}/index/fts-{fts_id1:08}.bin");
+    let filter_key1 = format!("{ROOT_PREFIX}{ns}/index/filter-{filter_id1:08}.bin");
+    let fts_size1 = object_size(&fixture.client, &fixture.bucket, &fts_key1).await;
+    let filter_size1 = object_size(&fixture.client, &fixture.bucket, &filter_key1).await;
+    assert!(fts_size1 > 0, "fts segment after batch 1 must be non-empty");
+    assert!(filter_size1 > 0, "filter segment after batch 1 must be non-empty");
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "grow-2",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "segment growth bravo batch two",
+                    "tier": "b"
+                }
+            },
+            {
+                "id": "grow-3",
+                "attributes": {
+                    "embedding": [0.9, 0.1, 0.0],
+                    "text": "segment growth alpha batch two extra",
+                    "tier": "a"
+                }
+            }
+        ]),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let meta2 = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(meta2.index_cursor, 2);
+    let fts_id2 = *meta2.fts_segment_ids.last().expect("fts segment id after batch 2");
+    let filter_id2 = *meta2
+        .filter_segment_ids
+        .last()
+        .expect("filter segment id after batch 2");
+    let fts_key2 = format!("{ROOT_PREFIX}{ns}/index/fts-{fts_id2:08}.bin");
+    let filter_key2 = format!("{ROOT_PREFIX}{ns}/index/filter-{filter_id2:08}.bin");
+    let fts_size2 = object_size(&fixture.client, &fixture.bucket, &fts_key2).await;
+    let filter_size2 = object_size(&fixture.client, &fixture.bucket, &filter_key2).await;
+
+    let fts_grew = meta2.fts_segment_ids.len() > meta1.fts_segment_ids.len()
+        || fts_size2 > fts_size1
+        || fts_id2 != fts_id1;
+    let filter_grew = meta2.filter_segment_ids.len() > meta1.filter_segment_ids.len()
+        || filter_size2 > filter_size1
+        || filter_id2 != filter_id1;
+    assert!(
+        fts_grew,
+        "FTS index must grow: meta1={meta1:?} size1={fts_size1} meta2={meta2:?} size2={fts_size2}"
+    );
+    assert!(
+        filter_grew,
+        "filter index must grow: meta1={meta1:?} size1={filter_size1} meta2={meta2:?} size2={filter_size2}"
+    );
+
+    let fts_bytes = get_object_bytes(&fixture.client, &fixture.bucket, &fts_key2).await;
+    assert!(
+        !fts_bytes.is_empty(),
+        "GetObject on fts segment must return non-empty postings"
+    );
+
+    let hybrid = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": [
+                "Sum",
+                ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+                ["BM25", "text", "alpha"]
+            ],
+            "top_k": 3
+        }),
+    )
+    .await;
+    let top = hybrid["rows"][0]["id"]
+        .as_str()
+        .expect("hybrid top hit id");
+    assert!(
+        top == "grow-1" || top == "grow-3",
+        "hybrid top hit should be alpha+vector doc, got {top} rows={:?}",
+        hybrid["rows"]
+    );
+    assert!(
+        hybrid["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .any(|r| r["id"] == "grow-1"),
+        "hybrid must return grow-1, got {:?}",
+        hybrid["rows"]
+    );
+}
+
+/// `copy_from_namespace` server-side copy: dest prefix has same object count as source.
+#[tokio::test]
+async fn s3_copy_from_namespace_duplicates_all_keys() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let src = NAMESPACE_S3_COPY_KEYS_SRC;
+    let dest = NAMESPACE_S3_COPY_KEYS_DEST;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        src,
+        json!([
+            {
+                "id": "key-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "copy key parity alpha",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "key-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "copy key parity bravo",
+                    "tier": "free"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, src, Duration::from_secs(60)).await;
+    assert_index_objects(&fixture.client, &fixture.bucket, src).await;
+
+    write_batch(
+        &serve.base_url,
+        dest,
+        json!({"copy_from_namespace": src}),
+    )
+    .await;
+
+    let src_prefix = format!("{ROOT_PREFIX}{src}/");
+    let dest_prefix = format!("{ROOT_PREFIX}{dest}/");
+    let src_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &src_prefix).await;
+    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+
+    assert_eq!(
+        src_keys.len(),
+        dest_keys.len(),
+        "copy must duplicate every source key (src={src_keys:?} dest={dest_keys:?})"
+    );
+    assert!(
+        !src_keys.is_empty(),
+        "source namespace must have S3 objects before copy"
+    );
+
+    for key in &src_keys {
+        let suffix = key
+            .strip_prefix(&src_prefix)
+            .expect("source key under namespace prefix");
+        let expected_dest = format!("{dest_prefix}{suffix}");
+        assert!(
+            dest_keys.contains(&expected_dest),
+            "dest missing copy of {key} (expected {expected_dest})"
+        );
+    }
+
+    let dest_meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, dest).await;
+    assert!(
+        dest_meta.fts_segment_ids.len() >= 1 && dest_meta.filter_segment_ids.len() >= 1,
+        "copied meta should retain index segment chains: {dest_meta:?}"
+    );
+}
+
+fn fair_upsert_columns(start: usize, count: usize, dim: usize) -> Value {
+    let mut ids = Vec::with_capacity(count);
+    let mut texts = Vec::with_capacity(count);
+    let mut embeddings = Vec::with_capacity(count);
+    for i in start..start + count {
+        ids.push(json!(format!("hot-{i}")));
+        texts.push(json!(format!("fair hot stressterm document {i}")));
+        embeddings.push(fair_embedding(i, dim));
+    }
+    json!({
+        "id": ids,
+        "text": texts,
+        "embedding": embeddings
+    })
 }
