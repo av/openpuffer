@@ -438,6 +438,9 @@
 
 # bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
 
+- label: G4 run-tpuf-large-benchmark.sh dry-run and tpuf env preflight in large-benchmark-preflight.sh
+  command: test -x scripts/run-tpuf-large-benchmark.sh && grep -q 'large_preflight_validate_tpuf_env' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-tpuf-large-benchmark.sh --dry-run --skip-g2 >/dev/null
+  tags: [spec, bench-tpuf, implemented]
 - label: benchmarks/tpuf_driver/run_benchmark.py unit tests pass and read workload queries.json recall_defaults
   command: test -f benchmarks/tpuf_driver/run_benchmark.py && grep -q 'recall_defaults' benchmarks/tpuf_driver/run_benchmark.py && python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
   tags: [spec, bench-tpuf, implemented]

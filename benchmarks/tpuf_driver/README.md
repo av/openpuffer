@@ -12,12 +12,23 @@ Python harness that loads the **same synthetic-128 workload** as `scripts/ingest
 
 ## Usage
 
+**Operator wrapper (G4 — recommended):** runs G2 subset, API key/region preflight, then this driver.
+
 ```bash
-# Validate config without API calls
+./scripts/run-tpuf-large-benchmark.sh --dry-run
+./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1
+
+export TURBOPUFFER_API_KEY='tpuf_...'
+export TURBOPUFFER_REGION='aws-us-east-1'
+./scripts/run-tpuf-large-benchmark.sh --tier l1
+```
+
+**Direct driver** (same protocol, no G2 preflight):
+
+```bash
 python3 benchmarks/tpuf_driver/run_benchmark.py --dry-run
 python3 benchmarks/tpuf_driver/run_benchmark.py --dry-run --tier l3
 
-# Full run (creates bench-tpuf-YYYY-MM-DD-{tier}, ingests, benches, deletes namespace)
 export TURBOPUFFER_API_KEY='tpuf_...'
 export TURBOPUFFER_REGION='aws-us-east-1'
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1

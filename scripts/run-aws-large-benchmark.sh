@@ -119,5 +119,5 @@ if [[ "$SKIP_BENCH" != "1" ]]; then
 fi
 
 echo "G3 complete: ${RESULTS}"
-echo "Next: python3 benchmarks/tpuf_driver/run_benchmark.py --tier ${TIER}  # G4"
+echo "Next: ./scripts/run-tpuf-large-benchmark.sh --tier ${TIER}  # G4"
 echo "      ./scripts/render-report.sh --date $(date +%F)"

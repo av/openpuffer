@@ -1,6 +1,7 @@
-# Shared preflight for large-tier ingest/bench (G3 AWS scale proof).
-# Source from ingest-large.sh, bench-large.sh, run-aws-large-benchmark.sh — do not execute directly.
-# See docs/BENCHMARKS.md § large-dataset runbook and docs/PLAN_LARGE_DATASET_BENCHMARK.md G3.
+# Shared preflight for large-tier ingest/bench (G3 AWS scale proof, G4 turbopuffer baseline).
+# Source from ingest-large.sh, bench-large.sh, run-aws-large-benchmark.sh,
+# run-tpuf-large-benchmark.sh — do not execute directly.
+# See docs/BENCHMARKS.md § large-dataset runbook and docs/PLAN_LARGE_DATASET_BENCHMARK.md G3/G4.
 
 large_preflight_root() {
   if [[ -n "${LARGE_PREFLIGHT_ROOT:-}" ]]; then
@@ -156,5 +157,59 @@ Optional (document in report / JSON notes):
 
 EC2: launch in same region as bucket; SSH tunnel if needed; no public ingress required.
 After G2 green: ./scripts/run-aws-large-benchmark.sh --tier l1
+EOF
+}
+
+large_preflight_validate_tpuf_env() {
+  : "${TURBOPUFFER_API_KEY:?preflight: set TURBOPUFFER_API_KEY (see https://turbopuffer.com/docs/testing)}"
+  if [[ -z "${TURBOPUFFER_REGION:-}" ]]; then
+    echo "preflight: TURBOPUFFER_REGION unset (defaulting driver to aws-us-east-1)" >&2
+    export TURBOPUFFER_REGION=aws-us-east-1
+  fi
+  if [[ -n "${OPENPUFFER_S3_REGION:-}" ]]; then
+    local aws="${OPENPUFFER_S3_REGION,,}"
+    local tpuf="${TURBOPUFFER_REGION,,}"
+    if [[ "$tpuf" != *"${aws}"* ]] && [[ "$aws" != *"${tpuf#aws-}"* ]]; then
+      echo "preflight: warning OPENPUFFER_S3_REGION=${OPENPUFFER_S3_REGION} may not align with TURBOPUFFER_REGION=${TURBOPUFFER_REGION}" >&2
+      echo "  Run tpuf from the same region as the openpuffer AWS bench host (plan § fairness)." >&2
+    fi
+  fi
+}
+
+large_preflight_tpuf_python_deps() {
+  if python3 -c "import turbopuffer" >/dev/null 2>&1; then
+    echo "preflight: turbopuffer Python package OK"
+    return 0
+  fi
+  local req="${1}/benchmarks/tpuf_driver/requirements.txt"
+  if [[ -f "$req" ]]; then
+    echo "preflight: installing turbopuffer driver deps from ${req}…" >&2
+    python3 -m pip install -q -r "$req"
+    python3 -c "import turbopuffer" >/dev/null 2>&1 || {
+      echo "preflight: failed to import turbopuffer after pip install" >&2
+      return 1
+    }
+    echo "preflight: turbopuffer Python package OK (installed)"
+    return 0
+  fi
+  echo "preflight: missing turbopuffer package; pip install -r benchmarks/tpuf_driver/requirements.txt" >&2
+  return 1
+}
+
+large_preflight_print_tpuf_operator_env() {
+  cat <<'EOF'
+Required for live G4 turbopuffer run (same region as openpuffer AWS bench host):
+  export TURBOPUFFER_API_KEY=tpuf_...
+  export TURBOPUFFER_REGION=aws-us-east-1    # align with OPENPUFFER_S3_REGION / EC2
+  export TURBOPUFFER_BENCH_TIER=l1           # l1|l2|l3
+
+Optional:
+  export TURBOPUFFER_BENCH_NAMESPACE=bench-tpuf-YYYY-MM-DD-l1
+  export TURBOPUFFER_BENCH_RESULTS=benchmarks/results/tpuf-l1.json
+  export TURBOPUFFER_BENCH_ENFORCE_GATES=1   # recall@10 >= 0.85 + index up-to-date
+  export TURBOPUFFER_BENCH_SKIP_DELETE=1     # keep namespace for debug
+
+After G3 large-aws JSON (or in parallel on a host with API access):
+  ./scripts/run-tpuf-large-benchmark.sh --tier l1
 EOF
 }

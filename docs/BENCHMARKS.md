@@ -42,9 +42,10 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 |------|-------|---------|--------|
 | 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
 | 0b | G3 preflight | [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) `--preflight-only` | G2 subset + AWS `head-bucket` + workload manifest |
+| 0c | G4 preflight | [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--preflight-only` | G2 subset + `TURBOPUFFER_API_KEY` / region + workload manifest |
 | 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
 | 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
-| 3 | tpuf | [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
+| 3 | tpuf | [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
 | 3b | 3.3 | [`scripts/run-id-overlap-spotcheck.sh`](../scripts/run-id-overlap-spotcheck.sh) `--tier l1` | `benchmarks/results/id-overlap-l1.json` (after both sides indexed) |
 | 4 | report | [`scripts/render-report.sh`](../scripts/render-report.sh) | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
 
@@ -65,7 +66,18 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32
 # preflight only: ./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1
 ```
 
-Shared S3/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh). `bench-large.sh` refuses to write `large-aws-*.json` from a MinIO endpoint unless `OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1` or the results path contains `minio` / `example` / `schema`.
+**G4 one-shot (API key in same region as AWS bench):**
+
+```bash
+export TURBOPUFFER_API_KEY=tpuf_...
+export TURBOPUFFER_REGION=aws-us-east-1   # match OPENPUFFER_S3_REGION / EC2
+# optional: export TURBOPUFFER_BENCH_NAMESPACE=bench-tpuf-2026-06-04-l1
+
+./scripts/run-tpuf-large-benchmark.sh --tier l1
+# preflight only: ./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1
+```
+
+Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh). `bench-large.sh` refuses to write `large-aws-*.json` from a MinIO endpoint unless `OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1` or the results path contains `minio` / `example` / `schema`.
 
 **MinIO schema example only** (validates `cold_large_l1` JSON shape; **not** for COMPARISON / tpuf):
 
@@ -78,6 +90,7 @@ Shared S3/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](.
 
 ```bash
 ./scripts/run-aws-large-benchmark.sh --dry-run
+./scripts/run-tpuf-large-benchmark.sh --dry-run
 ./scripts/ingest-large.sh --tier l1 --dry-run
 ./scripts/bench-large.sh --tier l1 --dry-run
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
@@ -99,6 +112,7 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
    - `pytest benchmarks/tpuf_driver/test_run_benchmark.py`
    - [`scripts/test_render-report.sh`](../scripts/test_render-report.sh)
    - [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) / [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--dry-run` for the selected tier
+   - [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--dry-run` (wraps tpuf driver)
    - [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--dry-run`
    - `facts check --tags bench-large` and `facts check --tags bench-tpuf`
 

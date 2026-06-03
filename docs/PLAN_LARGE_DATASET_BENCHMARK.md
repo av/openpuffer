@@ -500,7 +500,8 @@ A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program �
 - [x] Workload manifests committed for L1–L3 (`synthetic-128/{l1-100k,l2-500k,l3-1m}/`; seed 42 in manifest).
 - [ ] openpuffer AWS: ingest + index catch-up + `preferred_ann_version == 3` (operator: [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh); preflight lib in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh)).
 - [ ] `benchmarks/results/large-aws-<tier>.json` committed or attached to report PR (schema example only: `large-aws-l1-schema-minio.example.json` with `environment=minio` — not for tpuf comparison).
-- [ ] turbopuffer: same tier ingested; `tpuf-<tier>.json` captured.
+- [x] G4 operator harness: [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) (API key/region preflight, G2 subset, wraps `run_benchmark.py`).
+- [ ] turbopuffer: same tier ingested; `tpuf-<tier>.json` captured (live run with `TURBOPUFFER_API_KEY`).
 - [ ] Report published under `docs/reports/` with methodology section complete.
 - [ ] [COMPARISON.md](COMPARISON.md) updated from measured rows, not docs-only tpuf numbers.
 - [ ] `facts check --tags "ann or cold"` still passes if gates unchanged.
