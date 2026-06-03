@@ -140,7 +140,8 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 2. A single tokio background task runs continuously:
    - Waits up to **500ms** or until notified.
    - Discovers namespaces where `index_cursor < wal_commit_seq` (pending `wake` + S3 prefix scan).
-   - **Fair scheduling:** round-robin queue reprioritized each tick by descending `(wal_commit_seq - index_cursor)`; one WAL segment per namespace per tick; **2s** time slice per namespace when multiple namespaces compete so one hot namespace cannot starve others.
+   - **Fair scheduling:** round-robin queue reprioritized each tick by descending `(wal_commit_seq - index_cursor)`. When several namespaces compete with small lag, index **one** WAL segment per namespace per tick with a **2s** time slice. When a namespace is alone or lag ≥ 8, index up to **8** segments per tick with no time slice (10k-doc catch-up on MinIO). Mid lag (4–7) indexes **2** segments per tick under fair mode.
+   - **Compaction pass:** after each tick, any namespace with `index_cursor == wal_commit_seq` and `wal_snapshot_seq < index_cursor` runs `maybe_compact_wal` (re-compact after a prior partial snapshot while WAL was still growing).
 3. For each lagging namespace (time-boxed slice):
    - Read WAL from `index_cursor + 1` through `wal_commit_seq`.
    - **FTS:** load latest `fts-{id}.bin`, `apply_delta` from WAL batch only, write `fts-{seq}.bin`, append `fts_segment_ids`.
