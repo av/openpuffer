@@ -93,6 +93,18 @@ pub struct ServeArgs {
     pub ann_rerank: bool,
 }
 
+/// Default cap on cluster `GetObject` count per probed vector query (`C + C×F + 4`; 4× default plan).
+pub const DEFAULT_ANN_MAX_PROBE_CLUSTERS: usize = 64;
+
+/// Max cluster segments fetched per probed query; override with `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` (≥ 8).
+pub fn ann_max_probe_clusters_from_env() -> usize {
+    std::env::var("OPENPUFFER_ANN_MAX_PROBE_CLUSTERS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 8)
+        .unwrap_or(DEFAULT_ANN_MAX_PROBE_CLUSTERS)
+}
+
 /// Whether vector queries re-rank the full probed ANN pool with exact view vectors.
 pub fn ann_rerank_from_env() -> bool {
     matches!(

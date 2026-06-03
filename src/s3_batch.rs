@@ -405,9 +405,7 @@ pub fn l1_keys_for_query_probe(
 
 /// Upper bound on cluster `GetObject` calls for one probed vector query (spec slack +4).
 pub fn cluster_get_upper_bound(l0: &CentroidIndexL0) -> usize {
-    let coarse = l0.probe_coarse as usize;
-    let fine = l0.probe_fine as usize;
-    coarse + coarse.saturating_mul(fine) + 4
+    crate::index::vector::cluster_get_upper_bound(l0)
 }
 
 /// Probed cluster object keys given L1 (+ optional v3 routing/L2) already in memory.
@@ -711,6 +709,7 @@ pub async fn fetch_cold_vector_probed(
 
     validate_cold_namespace(namespace)?;
     validate_cold_vector_field(field)?;
+    let l0 = l0.clamp_probe_plan_for_query();
     let l1_keys = l1_keys_for_query_probe(namespace, meta, field, &l0, query)?;
     if !l1_keys.is_empty() {
         storage_roundtrips = 1;
@@ -1096,7 +1095,9 @@ fn decode_l0_by_field_from_fetched(
         };
         if let Ok(l0) = CentroidIndexL0::decode(bytes) {
             if l0.num_fine_total > 0 {
-                let l0 = l0.align_with_namespace_meta(meta, None);
+                let l0 = l0
+                    .align_with_namespace_meta(meta, None)
+                    .clamp_probe_plan_for_query();
                 l0_by_field.insert(cfg.name.clone(), l0);
             }
         }

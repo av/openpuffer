@@ -8,6 +8,7 @@
 //! - `openpuffer_s3_get_total`
 //! - `openpuffer_cold_s3_keys_fetched` (counter)
 //! - `openpuffer_ann_probed_clusters` (counter)
+//! - `openpuffer_ann_probe_clamp_total` (counter; runtime probe plan clamped to cluster cap)
 
 #[cfg(feature = "metrics")]
 mod inner {
@@ -71,6 +72,14 @@ mod inner {
         .expect("openpuffer_ann_probed_clusters")
     });
 
+    pub static ANN_PROBE_CLAMP: LazyLock<prometheus::Counter> = LazyLock::new(|| {
+        register_counter!(Opts::new(
+            "openpuffer_ann_probe_clamp_total",
+            "ANN probe_coarse/probe_fine clamped at query time to OPENPUFFER_ANN_MAX_PROBE_CLUSTERS"
+        ))
+        .expect("openpuffer_ann_probe_clamp_total")
+    });
+
     pub static COLD_QUERY_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
         register_histogram_vec!(
             HistogramOpts::new(
@@ -113,6 +122,10 @@ mod inner {
         }
     }
 
+    pub fn inc_ann_probe_clamp() {
+        ANN_PROBE_CLAMP.inc();
+    }
+
     pub fn observe_cold_query_duration_seconds(secs: f64) {
         COLD_QUERY_DURATION.with_label_values(&[]).observe(secs);
     }
@@ -125,6 +138,7 @@ mod inner {
         let _ = &*S3_GETS;
         let _ = &*COLD_S3_KEYS_FETCHED;
         let _ = &*ANN_PROBED_CLUSTERS;
+        let _ = &*ANN_PROBE_CLAMP;
         let metric_families = prometheus::gather();
         let mut buf = Vec::new();
         TextEncoder::new().encode(&metric_families, &mut buf)?;
@@ -154,6 +168,9 @@ pub fn add_cold_s3_keys_fetched(_n: u64) {}
 pub fn add_ann_probed_clusters(_n: u64) {}
 
 #[cfg(not(feature = "metrics"))]
+pub fn inc_ann_probe_clamp() {}
+
+#[cfg(not(feature = "metrics"))]
 pub fn observe_cold_query_duration_seconds(_secs: f64) {}
 
 #[cfg(feature = "metrics")]
@@ -167,6 +184,7 @@ mod tests {
         inc_s3_get();
         add_cold_s3_keys_fetched(12);
         add_ann_probed_clusters(8);
+        inc_ann_probe_clamp();
         set_index_lag_segments(3);
         observe_query_duration_seconds(0.042);
         observe_cold_query_duration_seconds(0.128);
@@ -194,6 +212,10 @@ mod tests {
         assert!(
             body.contains("openpuffer_ann_probed_clusters"),
             "missing ann probed: {body}"
+        );
+        assert!(
+            body.contains("openpuffer_ann_probe_clamp_total"),
+            "missing ann probe clamp: {body}"
         );
         assert!(
             body.contains("openpuffer_cold_query_duration_seconds"),

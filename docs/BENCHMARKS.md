@@ -52,6 +52,12 @@ Set on `openpuffer serve` (and indexer builds) before indexing; values are persi
 
 Higher probes → better recall, more `cold_s3_keys_fetched` / `performance.candidates` / `storage_roundtrips`. See [ARCHITECTURE.md](ARCHITECTURE.md#vector-ann-spfresh-inspired) for the query path. Related: `OPENPUFFER_ANN_VERSION` (2/3), `OPENPUFFER_ANN_RERANK` (exact re-rank pool).
 
+**Runtime cluster cap (query path):** even if L0 was built with huge probe env values, `serve` clamps `probe_coarse` / `probe_fine` at query time so cluster `GetObject` count stays ≤ `C + C×F + 4` and ≤ `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` (default **64**). Emits `tracing` warn + `openpuffer_ann_probe_clamp_total` when clamping.
+
+| Environment variable | Default | Effect |
+|---------------------|---------|--------|
+| `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` | **64** | Max cluster segments fetched per probed vector query |
+
 ### Cold S3 fetch tuning (`serve` + cold query path)
 
 | Environment variable | Default | Effect |

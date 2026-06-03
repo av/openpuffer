@@ -967,7 +967,10 @@ async fn load_vector_l0_for_field(
         return Ok(None);
     };
     let l0 = CentroidIndexL0::decode(&l0_bytes)?;
-    Ok(Some(l0.align_with_namespace_meta(meta, Some(ann_build))))
+    Ok(Some(
+        l0.align_with_namespace_meta(meta, Some(ann_build))
+            .clamp_probe_plan_for_query(),
+    ))
 }
 
 /// Probed L1 + cluster load via segment cache (warm query path; mirrors [`crate::s3_batch::fetch_cold_vector_probed`]).

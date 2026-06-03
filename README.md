@@ -151,6 +151,7 @@ Cold/ANN counters (increment on probed cold loads and vector ANN queries):
 |--------|---------|
 | `openpuffer_cold_s3_keys_fetched` | S3 object keys fetched on cold batch plans (each parallel sub-batch key counts once) |
 | `openpuffer_ann_probed_clusters` | Cluster segments selected by ANN probe planning per vector query |
+| `openpuffer_ann_probe_clamp_total` | Times on-disk probe widths were clamped to `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` at query time |
 
 Also exported: `openpuffer_wal_commits_total`, `openpuffer_index_lag_segments`, `openpuffer_s3_get_total`, `openpuffer_query_duration_seconds`, `openpuffer_cold_query_duration_seconds`.
 

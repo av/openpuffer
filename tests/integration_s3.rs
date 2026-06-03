@@ -3701,7 +3701,9 @@ async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
 
     let l0_key = format!("{ROOT_PREFIX}{ns}/index/embedding/centroids-l0.bin");
     let l0_bytes = get_object_bytes(&fixture.client, &fixture.bucket, &l0_key).await;
-    let l0 = CentroidIndexL0::decode(&l0_bytes).expect("decode centroids-l0");
+    let l0 = CentroidIndexL0::decode(&l0_bytes)
+        .expect("decode centroids-l0")
+        .clamp_probe_plan_for_query();
     assert!(
         l0.num_fine_total > 100,
         "fixture must have many fine clusters (got {})",

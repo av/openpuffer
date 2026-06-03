@@ -7,7 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::{AnnBuildConfig, AnnProbeConfig};
+use crate::config::{ann_max_probe_clusters_from_env, AnnBuildConfig, AnnProbeConfig};
 use crate::meta::NamespaceMeta;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
@@ -23,6 +23,55 @@ pub const DEFAULT_PROBE_COARSE: u32 = 4;
 
 /// Fine centroids to probe per selected coarse cell.
 pub const DEFAULT_PROBE_FINE: u32 = 2;
+
+/// Upper bound on cluster `GetObject` calls for one probed query (`C + C×F + 4` slack).
+pub fn cluster_get_upper_bound_for_probes(coarse: u32, fine: u32) -> usize {
+    let c = coarse.max(1) as usize;
+    let f = fine.max(1) as usize;
+    c + c.saturating_mul(f) + 4
+}
+
+/// Upper bound from on-disk L0 probe metadata (see [`CentroidIndexL0::clamp_probe_plan_for_query`]).
+pub fn cluster_get_upper_bound(l0: &CentroidIndexL0) -> usize {
+    cluster_get_upper_bound_for_probes(l0.probe_coarse, l0.probe_fine)
+}
+
+/// Reduce `(coarse, fine)` so `cluster_get_upper_bound_for_probes` ≤ `max_clusters`.
+fn clamp_probe_widths_to_cluster_cap(coarse: u32, fine: u32, max_clusters: usize) -> (u32, u32) {
+    let mut c = coarse.max(1);
+    let f_orig = fine.max(1);
+    if cluster_get_upper_bound_for_probes(c, f_orig) <= max_clusters {
+        return (c, f_orig);
+    }
+    let c_cap = ((max_clusters.saturating_sub(4)) / 2).max(1) as u32;
+    c = c.min(c_cap);
+    let room = max_clusters
+        .saturating_sub(4)
+        .saturating_sub(c as usize);
+    let f_max = if c > 0 {
+        (room / c as usize).max(1) as u32
+    } else {
+        1
+    };
+    let f = f_orig.min(f_max).max(1);
+    if cluster_get_upper_bound_for_probes(c, f) <= max_clusters {
+        return (c, f);
+    }
+    let mut c = c;
+    let mut f = 1u32;
+    while c > 1 && cluster_get_upper_bound_for_probes(c, f) > max_clusters {
+        c -= 1;
+        let room = max_clusters
+            .saturating_sub(4)
+            .saturating_sub(c as usize);
+        f = if c > 0 {
+            (room / c as usize).max(1) as u32
+        } else {
+            1
+        };
+    }
+    (c.max(1), f.max(1))
+}
 
 /// On-disk ANN layout version (v2 = legacy two-level cap at 16 coarse).
 pub const ANN_VERSION_V2: u8 = 2;
@@ -357,6 +406,32 @@ impl CentroidIndexL0 {
         }
         if build.is_some() || self.probe_fine == 0 {
             self.probe_fine = probes.fine;
+        }
+        self
+    }
+
+    /// Clamp on-disk probe widths at query time so cluster fetches stay within
+    /// [`cluster_get_upper_bound_for_probes`] and [`ann_max_probe_clusters_from_env`].
+    pub fn clamp_probe_plan_for_query(mut self) -> Self {
+        if self.num_fine_total <= 32 {
+            return self;
+        }
+        let max_clusters = ann_max_probe_clusters_from_env();
+        let orig_coarse = self.probe_coarse.max(1);
+        let orig_fine = self.probe_fine.max(1);
+        let (coarse, fine) = clamp_probe_widths_to_cluster_cap(orig_coarse, orig_fine, max_clusters);
+        if coarse != orig_coarse || fine != orig_fine {
+            tracing::warn!(
+                probe_coarse = orig_coarse,
+                probe_fine = orig_fine,
+                clamped_coarse = coarse,
+                clamped_fine = fine,
+                max_cluster_gets = max_clusters,
+                "ANN probe plan clamped to cluster fetch cap"
+            );
+            crate::metrics::inc_ann_probe_clamp();
+            self.probe_coarse = coarse;
+            self.probe_fine = fine;
         }
         self
     }
@@ -1875,6 +1950,70 @@ mod tests {
                 attributes: [("embedding".into(), json!(embedding))].into(),
             },
         )
+    }
+
+    #[test]
+    fn cluster_get_upper_bound_matches_default_probes() {
+        let l0 = CentroidIndexL0 {
+            probe_coarse: DEFAULT_PROBE_COARSE,
+            probe_fine: DEFAULT_PROBE_FINE,
+            ..CentroidIndexL0::default()
+        };
+        assert_eq!(cluster_get_upper_bound(&l0), 16);
+    }
+
+    #[test]
+    fn absurd_on_disk_probes_clamp_to_default_cluster_cap() {
+        let l0 = CentroidIndexL0 {
+            probe_coarse: 999,
+            probe_fine: 999,
+            num_fine_total: 5000,
+            num_coarse: 64,
+            ..CentroidIndexL0::default()
+        }
+        .clamp_probe_plan_for_query();
+        assert!(
+            cluster_get_upper_bound(&l0) <= crate::config::DEFAULT_ANN_MAX_PROBE_CLUSTERS,
+            "bound {} coarse {} fine {}",
+            cluster_get_upper_bound(&l0),
+            l0.probe_coarse,
+            l0.probe_fine
+        );
+        assert!(l0.probe_coarse <= 30);
+        assert_eq!(l0.probe_fine, 1);
+    }
+
+    #[test]
+    fn absurd_probes_respect_openpuffer_ann_max_probe_clusters_env() {
+        let key = "OPENPUFFER_ANN_MAX_PROBE_CLUSTERS";
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, "24");
+        let l0 = CentroidIndexL0 {
+            probe_coarse: 500,
+            probe_fine: 500,
+            num_fine_total: 4000,
+            num_coarse: 32,
+            ..CentroidIndexL0::default()
+        }
+        .clamp_probe_plan_for_query();
+        assert!(cluster_get_upper_bound(&l0) <= 24);
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn small_num_fine_total_skips_probe_clamp() {
+        let l0 = CentroidIndexL0 {
+            probe_coarse: 999,
+            probe_fine: 999,
+            num_fine_total: 16,
+            ..CentroidIndexL0::default()
+        }
+        .clamp_probe_plan_for_query();
+        assert_eq!(l0.probe_coarse, 999);
+        assert_eq!(l0.probe_fine, 999);
     }
 
     #[test]
