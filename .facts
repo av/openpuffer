@@ -117,6 +117,12 @@
 - label: limits module enforces namespace name pattern max upsert rows filter batch cap and 64 MiB write body
   command: test -f src/limits.rs && grep -q 'validate_namespace_name' src/limits.rs && cargo test -F integration --test integration_s3 server_limits_reject_invalid_namespace_and_batch_sizes -q
   tags: [implemented]
+- label: write delete_by_filter_allow_partial caps at OPENPUFFER_MAX_FILTER_BATCH_ROWS and sets rows_remaining when more matches remain
+  command: grep -q 'delete_by_filter_allow_partial' src/models.rs && grep -q 'rows_remaining' src/models.rs && cargo test -F integration --test integration_s3 filter_batch_partial_delete_and_patch_on_minio -q
+  tags: [implemented]
+- label: write patch_by_filter_allow_partial caps at OPENPUFFER_MAX_FILTER_BATCH_ROWS and sets rows_remaining when more matches remain
+  command: grep -q 'patch_by_filter_allow_partial' src/models.rs && cargo test -F integration --test integration_s3 filter_batch_partial_delete_and_patch_on_minio -q
+  tags: [implemented]
 - label: write schema uuid and []uuid canonicalize RFC4122 strings to lowercase hyphenated form on upsert
   command: grep -q 'field_is_uuid_scalar' src/schema.rs && grep -q 'field_is_uuid_array' src/schema.rs && cargo test --lib validate_uuid_attributes_on_write -q
   tags: [implemented]

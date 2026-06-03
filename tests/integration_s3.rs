@@ -4470,6 +4470,150 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
     );
 }
 
+/// `delete_by_filter_allow_partial` / `patch_by_filter_allow_partial` cap at max filter batch and set `rows_remaining`.
+#[tokio::test]
+async fn filter_batch_partial_delete_and_patch_on_minio() {
+    const NS: &str = "itest-filter-partial";
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn_with_limits(
+        &fixture,
+        &listen,
+        None,
+        None,
+        Some(50),
+        None,
+        Some(2),
+    );
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NS,
+        json!({
+            "schema": { "tag": { "type": "string", "filterable": true } },
+            "upsert_rows": [
+                { "id": "p1", "attributes": { "tag": "bulk" } },
+                { "id": "p2", "attributes": { "tag": "bulk" } },
+                { "id": "p3", "attributes": { "tag": "bulk" } },
+                { "id": "p4", "attributes": { "tag": "bulk" } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        NS,
+        json!({
+            "delete_by_filter": ["tag", "Eq", "bulk"],
+            "delete_by_filter_allow_partial": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "partial delete batch 1: {body:?}");
+    assert_eq!(body["rows_deleted"].as_u64(), Some(2));
+    assert_eq!(body["rows_remaining"].as_bool(), Some(true));
+
+    let wal1 = decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, NS, 2).await;
+    assert_eq!(
+        wal1.deletes.len(),
+        2,
+        "S3 WAL seq 2 must record exactly two deletes, got {:?}",
+        wal1.deletes
+    );
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        NS,
+        json!({
+            "delete_by_filter": ["tag", "Eq", "bulk"],
+            "delete_by_filter_allow_partial": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "partial delete batch 2: {body:?}");
+    assert_eq!(body["rows_deleted"].as_u64(), Some(2));
+    assert!(
+        body.get("rows_remaining").is_none() || body["rows_remaining"].as_bool() == Some(false),
+        "final partial batch should not set rows_remaining: {body:?}"
+    );
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let remaining = export_all_ids(&serve.base_url, NS, None).await;
+    assert!(
+        remaining.is_empty(),
+        "two partial delete batches (cap 2) must remove all four docs, got {remaining:?}"
+    );
+
+    write_batch(
+        &serve.base_url,
+        NS,
+        json!({
+            "upsert_rows": [
+                { "id": "q1", "attributes": { "tag": "patch", "tier": "a" } },
+                { "id": "q2", "attributes": { "tag": "patch", "tier": "a" } },
+                { "id": "q3", "attributes": { "tag": "patch", "tier": "a" } },
+                { "id": "q4", "attributes": { "tag": "patch", "tier": "a" } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let client = reqwest::Client::new();
+    let patch_resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url,
+            namespace_path_segment(NS)
+        ))
+        .json(&json!({
+            "patch_by_filter": {
+                "filters": ["tag", "Eq", "patch"],
+                "patch": { "tier": "b" }
+            },
+            "patch_by_filter_allow_partial": true
+        }))
+        .send()
+        .await
+        .expect("patch_by_filter partial");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "partial patch failed"
+    );
+    let patch_body: Value = patch_resp.json().await.expect("patch json");
+    assert_eq!(patch_body["rows_patched"].as_u64(), Some(2));
+    assert_eq!(patch_body["rows_remaining"].as_bool(), Some(true));
+
+    let wal_keys = list_wal_keys(&fixture.client, &fixture.bucket, NS).await;
+    let seqs = wal_segment_seqs(&wal_keys);
+    let mut patch_wal = None;
+    for &seq in seqs.iter().rev() {
+        let entry = decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, NS, seq).await;
+        if entry.patches.len() == 2 {
+            patch_wal = Some(entry);
+            break;
+        }
+    }
+    let wal_patch = patch_wal.expect("S3 WAL segment with two partial patches");
+    assert_eq!(
+        wal_patch.patches.len(),
+        2,
+        "partial patch batch must write two patches to S3, ids: {:?}",
+        wal_patch
+            .patches
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Single integration test exercising the full turbopuffer-style architecture on MinIO.
 #[tokio::test]
 async fn full_architecture_smoke() {
