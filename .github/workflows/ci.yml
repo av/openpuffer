@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Integration/bench tests spawn `openpuffer serve` via tests/common/s3_harness.rs.
+  # Build release binary first; tests read this path (else target/release/openpuffer).
+  CARGO_BIN_EXE_openpuffer: ${{ github.workspace }}/target/release/openpuffer
 
 jobs:
   unit:
@@ -44,6 +47,9 @@ jobs:
           shared-key: integration
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Build openpuffer (release, integration)
+        run: cargo build --release --features integration
+
       - name: cargo test -F integration
         env:
           # GitHub-hosted runners: avoid Ryuk sidecar permission issues with testcontainers.
@@ -65,6 +71,9 @@ jobs:
         with:
           shared-key: bench
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build openpuffer (release, bench)
+        run: cargo build --release --features bench
 
       # 10k cold baseline + storage_roundtrips ≤ 4 (non-ignored bench tests).
       - name: cargo test -F bench --test bench_cold
@@ -95,6 +104,9 @@ jobs:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build openpuffer (release, integration)
+        run: cargo build --release --features integration
 
       - name: Install facts CLI
         run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
