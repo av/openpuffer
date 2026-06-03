@@ -321,6 +321,10 @@ fn write_has_row_ops(body: &WriteRequest) -> bool {
             .delete_by_filter
             .as_ref()
             .is_some_and(|v| !v.is_null())
+        || body
+            .patch_by_filter
+            .as_ref()
+            .is_some_and(|v| !v.is_null())
 }
 
 async fn write_namespace(
@@ -415,13 +419,57 @@ async fn write_namespace(
         }
     }
 
-    let effective_schema =
-        effective_write_schema(&state, &name, body.schema.as_ref(), !patches.is_empty()).await;
+    let patch_by_filter = match body
+        .patch_by_filter
+        .as_ref()
+        .filter(|v| !v.is_null())
+    {
+        None => None,
+        Some(v) => match parse_patch_by_filter(v) {
+            Ok(parsed) => Some(parsed),
+            Err(msg) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": msg})),
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    let effective_schema = effective_write_schema(
+        &state,
+        &name,
+        body.schema.as_ref(),
+        !patches.is_empty() || patch_by_filter.is_some(),
+    )
+    .await;
+
+    if let Some((_, ref patch_attrs)) = patch_by_filter {
+        if let Err(msg) = validate_patch_attributes(patch_attrs, &effective_schema) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    }
+
     for patch in &patches {
         if let Err(msg) = validate_patch_attributes(&patch.attributes, &effective_schema) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some((ref filters, _)) = patch_by_filter {
+        if let Err(e) = parse_filter(filters) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{e:#}")})),
             )
                 .into_response();
         }
@@ -487,6 +535,7 @@ async fn write_namespace(
             body.deletes,
             body.schema,
             body.delete_by_filter,
+            patch_by_filter,
             upsert_condition,
             distance_metric,
             body.return_affected_ids,
@@ -535,6 +584,30 @@ async fn effective_write_schema(
         Some(patch) => merge_schema(&base, patch),
         None => base,
     }
+}
+
+/// turbopuffer `patch_by_filter`: `{ "filters": <filter>, "patch": { ...attrs } }`.
+fn parse_patch_by_filter(
+    value: &serde_json::Value,
+) -> Result<(serde_json::Value, std::collections::HashMap<String, serde_json::Value>), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "patch_by_filter must be an object".to_string())?;
+    let filters = obj
+        .get("filters")
+        .cloned()
+        .ok_or_else(|| "patch_by_filter requires filters".to_string())?;
+    let patch_val = obj
+        .get("patch")
+        .ok_or_else(|| "patch_by_filter requires patch".to_string())?;
+    let patch_obj = patch_val
+        .as_object()
+        .ok_or_else(|| "patch_by_filter.patch must be an object".to_string())?;
+    let patch = patch_obj
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    Ok((filters, patch))
 }
 
 fn apply_column_batch(

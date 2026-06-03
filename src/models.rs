@@ -49,6 +49,9 @@ pub struct WriteRequest {
     /// Delete all documents matching this filter (same syntax as query `filters`).
     #[serde(default)]
     pub delete_by_filter: Option<Value>,
+    /// Patch all documents matching `filters` with `patch` attributes (`{ filters, patch }`).
+    #[serde(default)]
+    pub patch_by_filter: Option<Value>,
     /// Copy all S3 objects from another namespace (destination must be empty).
     #[serde(default)]
     pub copy_from_namespace: Option<String>,

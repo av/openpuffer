@@ -19,6 +19,11 @@ name = "integration_s3"
 path = "tests/integration_s3.rs"
 required-features = ["integration"]
 
+[[test]]
+name = "integration_external_s3"
+path = "tests/integration_external_s3.rs"
+required-features = ["integration"]
+
 [dependencies]
 anyhow = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }

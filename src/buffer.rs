@@ -411,7 +411,26 @@ impl WriteBufferManager {
                 }
             };
             match drained {
-                None => Ok(()),
+                None => {
+                    let waiters = {
+                        let mut st = buf.state.lock().await;
+                        let _ = st.timer.take();
+                        std::mem::take(&mut st.waiters)
+                    };
+                    for w in waiters {
+                        let batch = CommittedBatch {
+                            seq: 0,
+                            entry: WalEntry {
+                                upserts: vec![],
+                                patches: vec![],
+                                deletes: vec![],
+                            },
+                            stats: w.stats,
+                        };
+                        let _ = w.tx.send(Ok(batch));
+                    }
+                    Ok(())
+                }
                 Some((upserts, patches, deletes, schema_patch, distance_metric, waiters)) => {
                     let result: Result<(u64, WalEntry)> = async {
                         let entry = WalEntry::from_write(upserts, patches, deletes)?;

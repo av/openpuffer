@@ -419,10 +419,11 @@ impl Storage {
         &self,
         namespace: &str,
         upserts: Vec<Document>,
-        patches: Vec<Document>,
+        mut patches: Vec<Document>,
         mut deletes: Vec<String>,
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
+        patch_by_filter: Option<(serde_json::Value, HashMap<String, serde_json::Value>)>,
         upsert_condition: Option<serde_json::Value>,
         distance_metric: Option<crate::meta::DistanceMetric>,
         return_affected_ids: bool,
@@ -430,12 +431,30 @@ impl Storage {
         if let Some(filter_val) = delete_by_filter {
             if !filter_val.is_null() {
                 let resolved = self
-                    .resolve_delete_by_filter(namespace, &filter_val)
+                    .resolve_ids_for_filter(namespace, &filter_val)
                     .await?;
                 for id in resolved {
                     if !deletes.contains(&id) {
                         deletes.push(id);
                     }
+                }
+            }
+        }
+
+        if let Some((filter_val, patch_attrs)) = patch_by_filter {
+            let resolved = self
+                .resolve_ids_for_filter(namespace, &filter_val)
+                .await?;
+            for id in resolved {
+                if let Some(existing) = patches.iter_mut().find(|p| p.id == id) {
+                    for (k, v) in &patch_attrs {
+                        existing.attributes.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    patches.push(Document {
+                        id,
+                        attributes: patch_attrs.clone(),
+                    });
                 }
             }
         }
@@ -524,8 +543,8 @@ impl Storage {
         Ok(view.docs)
     }
 
-    /// Resolve doc ids for `delete_by_filter` via filter index + WAL tail (strong consistency).
-    async fn resolve_delete_by_filter(
+    /// Resolve doc ids for filter-based writes via filter index + WAL tail (strong consistency).
+    async fn resolve_ids_for_filter(
         &self,
         namespace: &str,
         filter_val: &serde_json::Value,

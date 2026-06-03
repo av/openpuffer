@@ -72,6 +72,9 @@
 - label: write accepts delete_by_filter resolving ids via filter index and WAL tail
   command: grep -q 'delete_by_filter' src/models.rs && grep -q 'matching_doc_ids_for_filter' src/search.rs
   tags: [implemented]
+- label: write accepts patch_by_filter resolving ids via filter index and WAL tail with patch attrs
+  command: grep -q 'patch_by_filter' src/models.rs && grep -q 'resolve_ids_for_filter' src/storage.rs
+  tags: [implemented]
 - label: write enforces at most one durable WAL commit per namespace per second
   command: grep -q 'min_commit_interval' src/buffer.rs && grep -q 'wal_commit_rate_max_one_per_second' tests/integration_s3.rs
   tags: [implemented]
@@ -200,6 +203,9 @@
   tags: [implemented]
 - label: integration test schema_on_write_and_delete_by_filter applies schema and filter deletes
   command: cargo test -F integration --test integration_s3 schema_on_write_and_delete_by_filter -q
+  tags: [implemented]
+- label: integration test patch_by_filter_updates_matching_docs patches via filter index and WAL tail
+  command: cargo test -F integration --test integration_s3 patch_by_filter_updates_matching_docs -q
   tags: [implemented]
 - label: integration test patch_rows_updates_fts_after_index merges patches through indexer
   command: cargo test -F integration --test integration_s3 patch_rows_updates_fts -q

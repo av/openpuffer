@@ -207,7 +207,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
 
 /// Doc ids matching a filter (indexed segment + strong-consistency WAL tail corrections).
 ///
-/// Used by query filtering and `delete_by_filter` on the write path.
+/// Used by query filtering and `delete_by_filter` / `patch_by_filter` on the write path.
 pub fn matching_doc_ids_for_filter(
     ctx: &QueryContext<'_>,
     expr: &FilterExpr,
