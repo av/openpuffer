@@ -8,7 +8,8 @@ use crate::meta::{
 use serde_json::Value;
 use crate::models::Document;
 use crate::wal::{
-    apply_entry, decode, decode_snapshot, encode, wal_key, WalEntry, WalSnapshot,
+    apply_entry, decode_segment, decode_segment_with_policy, decode_snapshot, encode, wal_key,
+    WalCorruptPolicy, WalEntry, WalSnapshot,
 };
 use crate::wal_compaction::wal_replay_from;
 use anyhow::{anyhow, Context, Result};
@@ -34,7 +35,7 @@ pub async fn read_wal_entry(
     seq: u64,
 ) -> Result<WalEntry> {
     let bytes = read_wal_segment(client, bucket, namespace, seq).await?;
-    decode(&bytes).context("decode wal entry")
+    decode_segment(&bytes, Some(seq)).context("decode wal entry")
 }
 
 /// Fetch and decode WAL segments `from_seq..=to_seq` without applying.
@@ -156,10 +157,12 @@ pub async fn replay_wal_range(
     if from_seq == 0 || to_seq == 0 || from_seq > to_seq {
         return Ok(());
     }
+    let policy = WalCorruptPolicy::current();
     for seq in from_seq..=to_seq {
         let bytes = read_wal_segment(client, bucket, namespace, seq).await?;
-        let entry = decode(&bytes)?;
-        apply_entry(docs, &entry)?;
+        if let Some(entry) = decode_segment_with_policy(&bytes, seq, policy)? {
+            apply_entry(docs, &entry)?;
+        }
     }
     Ok(())
 }
@@ -385,7 +388,7 @@ async fn get_object_bytes_optional(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wal::{apply_entry, encode, WalEntry};
+    use crate::wal::{apply_entry, decode_segment_with_policy, encode, WalCorruptPolicy, WalEntry};
     use crate::models::Document;
 
     #[test]
@@ -411,8 +414,10 @@ mod tests {
         let bytes1 = encode(&e1).unwrap();
         let bytes2 = encode(&e2).unwrap();
         let mut docs2 = HashMap::new();
-        for bytes in [bytes1, bytes2] {
-            let entry = decode(&bytes).unwrap();
+        for (seq, bytes) in [(1u64, bytes1), (2, bytes2)] {
+            let entry = decode_segment_with_policy(&bytes, seq, WalCorruptPolicy::Fail)
+                .unwrap()
+                .unwrap();
             apply_entry(&mut docs2, &entry).unwrap();
         }
         assert!(docs2.is_empty());

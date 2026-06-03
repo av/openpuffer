@@ -21,6 +21,7 @@
 //!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
 //!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
 //!      OPENPUFFER_FTS_STEM (optional Porter stemming for FTS; default off)
+//!      OPENPUFFER_WAL_CORRUPT_POLICY (`fail` | `skip` on corrupt WAL replay)
 
 pub mod api;
 pub mod billing;

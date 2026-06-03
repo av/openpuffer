@@ -2239,6 +2239,7 @@ dependencies = [
  "base64",
  "bincode",
  "clap",
+ "crc32fast",
  "half",
  "reqwest",
  "rust-stemmers",

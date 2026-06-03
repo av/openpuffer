@@ -3,6 +3,7 @@
 use anyhow::Result;
 use openpuffer::cache::SegmentCache;
 use openpuffer::config::{parse_cli, build_s3_from_serve, Commands, ServeArgs};
+use openpuffer::wal::init_corrupt_policy;
 use openpuffer::storage::Storage;
 use openpuffer::{router, AppConfig, AppState};
 use tracing::info;
@@ -23,6 +24,7 @@ async fn main() -> Result<()> {
 
 async fn serve(args: ServeArgs) -> Result<()> {
     let config: AppConfig = args.app_config();
+    init_corrupt_policy(config.wal_corrupt_policy);
     let client = build_s3_from_serve(&args).await?;
     let cache = SegmentCache::from_optional(config.cache_dir.clone());
     let storage = Storage::new(

@@ -1,8 +1,17 @@
-//! Write-ahead log entries: `openpuffer/{ns}/wal/{seq:08}.bin` (bincode).
+//! Write-ahead log entries: `openpuffer/{ns}/wal/{seq:08}.bin` (bincode + optional CRC32).
+//!
+//! **Wire format (v1):** `[0x01 version][bincode payload][crc32 LE]` where CRC32 is IEEE over
+//! the payload only. Legacy segments are raw bincode (no version byte).
 
 use crate::models::Document;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// WAL segment format version: bincode payload + trailing CRC32.
+pub const WAL_FORMAT_CRC32: u8 = 1;
+
+const CRC32_TRAILER_LEN: usize = 4;
 
 /// One committed WAL batch (upserts, attribute patches, and deletes in a single object).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -147,12 +156,155 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<WalSnapshot> {
     serde_json::from_slice(bytes).context("decode WalSnapshot")
 }
 
+/// How to handle a WAL segment that fails CRC or payload decode during replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalCorruptPolicy {
+    /// Abort namespace load / replay (default, fail-safe).
+    Fail,
+    /// Log and skip the corrupt segment; prior segments remain applied.
+    Skip,
+}
+
+impl WalCorruptPolicy {
+    /// `OPENPUFFER_WAL_CORRUPT_POLICY`: `fail` (default) | `skip`.
+    pub fn from_env() -> Self {
+        Self::from_env_str(
+            &std::env::var("OPENPUFFER_WAL_CORRUPT_POLICY").unwrap_or_default(),
+        )
+    }
+
+    pub fn from_env_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "skip" => Self::Skip,
+            _ => Self::Fail,
+        }
+    }
+
+    /// Cached policy for hot replay paths (set via [`init_corrupt_policy`] at serve).
+    pub fn current() -> Self {
+        *CORRUPT_POLICY.get_or_init(Self::from_env)
+    }
+}
+
+static CORRUPT_POLICY: OnceLock<WalCorruptPolicy> = OnceLock::new();
+
+/// Install WAL corrupt policy for the process (called from `serve`).
+pub fn init_corrupt_policy(policy: WalCorruptPolicy) {
+    let _ = CORRUPT_POLICY.set(policy);
+}
+
+/// CRC32 / payload mismatch or truncated v1 segment.
+#[derive(Debug, Clone)]
+pub struct WalCorrupt {
+    pub seq: Option<u64>,
+    pub reason: String,
+}
+
+impl std::fmt::Display for WalCorrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.seq {
+            Some(seq) => write!(f, "wal segment {seq:08} corrupt: {}", self.reason),
+            None => write!(f, "wal segment corrupt: {}", self.reason),
+        }
+    }
+}
+
+impl std::error::Error for WalCorrupt {}
+
+pub fn is_corrupt_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<WalCorrupt>().is_some()
+}
+
 pub fn encode(entry: &WalEntry) -> Result<Vec<u8>> {
-    bincode::serialize(entry).context("encode WalEntry")
+    let payload = bincode::serialize(entry).context("encode WalEntry payload")?;
+    let crc = crc32fast::hash(&payload);
+    let mut out = Vec::with_capacity(1 + payload.len() + CRC32_TRAILER_LEN);
+    out.push(WAL_FORMAT_CRC32);
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(out)
+}
+
+/// Legacy encoding (no version byte / CRC) — for backward-compat tests only.
+#[cfg(test)]
+pub fn encode_legacy(entry: &WalEntry) -> Result<Vec<u8>> {
+    bincode::serialize(entry).context("encode WalEntry legacy")
 }
 
 pub fn decode(bytes: &[u8]) -> Result<WalEntry> {
-    bincode::deserialize(bytes).context("decode WalEntry")
+    decode_segment(bytes, None)
+}
+
+/// Decode one WAL object, optionally tagging corrupt errors with `seq`.
+pub fn decode_segment(bytes: &[u8], seq: Option<u64>) -> Result<WalEntry> {
+    if bytes.is_empty() {
+        return Err(corrupt_err(seq, "empty wal segment"));
+    }
+    if bytes[0] == WAL_FORMAT_CRC32 && bytes.len() >= 1 + CRC32_TRAILER_LEN + 1 {
+        match decode_crc32_format(bytes, seq) {
+            Ok(entry) => return Ok(entry),
+            Err(e) if is_corrupt_error(&e) => {
+                // Legacy bincode may also start with `0x01`; only accept if deserialize works.
+                if let Ok(entry) = bincode::deserialize(bytes) {
+                    return Ok(entry);
+                }
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    bincode::deserialize(bytes)
+        .map_err(|e| corrupt_err(seq, format!("legacy bincode decode: {e}")))
+}
+
+fn decode_crc32_format(bytes: &[u8], seq: Option<u64>) -> Result<WalEntry> {
+    if bytes.len() < 1 + CRC32_TRAILER_LEN + 1 {
+        return Err(corrupt_err(
+            seq,
+            format!("truncated v1 wal ({} bytes)", bytes.len()),
+        ));
+    }
+    let payload = &bytes[1..bytes.len() - CRC32_TRAILER_LEN];
+    let stored_crc = u32::from_le_bytes(
+        bytes[bytes.len() - CRC32_TRAILER_LEN..]
+            .try_into()
+            .expect("crc trailer length"),
+    );
+    let computed_crc = crc32fast::hash(payload);
+    if stored_crc != computed_crc {
+        return Err(corrupt_err(
+            seq,
+            format!("crc32 mismatch (stored={stored_crc:#010x}, computed={computed_crc:#010x})"),
+        ));
+    }
+    bincode::deserialize(payload)
+        .map_err(|e| corrupt_err(seq, format!("bincode payload after crc ok: {e}")))
+}
+
+fn corrupt_err(seq: Option<u64>, reason: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(WalCorrupt {
+        seq,
+        reason: reason.into(),
+    })
+}
+
+/// Decode and apply corrupt policy (log + fail or skip).
+pub fn decode_segment_with_policy(
+    bytes: &[u8],
+    seq: u64,
+    policy: WalCorruptPolicy,
+) -> Result<Option<WalEntry>> {
+    match decode_segment(bytes, Some(seq)) {
+        Ok(entry) => Ok(Some(entry)),
+        Err(e) if is_corrupt_error(&e) => {
+            tracing::error!(namespace_seq = seq, "{}", e);
+            match policy {
+                WalCorruptPolicy::Fail => Err(e),
+                WalCorruptPolicy::Skip => Ok(None),
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Build FTS/filter/vector `apply_delta` inputs from WAL batches against a doc map baseline.
@@ -216,11 +368,89 @@ mod tests {
         )
         .unwrap();
         let bytes = encode(&entry).unwrap();
+        assert_eq!(bytes[0], WAL_FORMAT_CRC32);
+        assert!(bytes.len() > 5);
         let decoded = decode(&bytes).unwrap();
         assert_eq!(decoded.deletes, entry.deletes);
         assert_eq!(decoded.upserts[0].id, "a");
         let docs = decoded.into_documents().unwrap();
         assert_eq!(docs[0].attributes.get("text").unwrap(), &json!("hello"));
+    }
+
+    #[test]
+    fn wal_legacy_roundtrip_without_checksum() {
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "legacy".into(),
+                attributes: [("text".into(), json!("old"))].into(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let bytes = encode_legacy(&entry).unwrap();
+        // Legacy path: no CRC trailer (length differs from v1 for same entry).
+        let v1 = encode(&entry).unwrap();
+        assert_ne!(bytes.len(), v1.len());
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(decoded.upserts[0].id, "legacy");
+    }
+
+    #[test]
+    fn wal_corrupt_bytes_detected_crc_mismatch() {
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "a".into(),
+                attributes: Default::default(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut bytes = encode(&entry).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        let err = decode_segment(&bytes, Some(7)).unwrap_err();
+        assert!(is_corrupt_error(&err));
+        assert!(format!("{err:#}").contains("crc32 mismatch"));
+    }
+
+    #[test]
+    fn wal_corrupt_payload_flip_detected() {
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "a".into(),
+                attributes: Default::default(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut bytes = encode(&entry).unwrap();
+        if bytes.len() > 6 {
+            bytes[2] ^= 0x01;
+        }
+        let err = decode_segment(&bytes, Some(3)).unwrap_err();
+        assert!(is_corrupt_error(&err));
+    }
+
+    #[test]
+    fn wal_corrupt_policy_skip_returns_none() {
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "a".into(),
+                attributes: Default::default(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut bytes = encode(&entry).unwrap();
+        let tail = bytes.len() - 1;
+        bytes[tail] ^= 0xAA;
+        let out =
+            decode_segment_with_policy(&bytes, 1, WalCorruptPolicy::Skip).expect("skip policy");
+        assert!(out.is_none());
     }
 
     #[test]

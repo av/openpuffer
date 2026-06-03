@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::buffer::WriteBufferConfig;
 use crate::index::vector::{DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE};
 use crate::limits::{DEFAULT_MAX_FILTER_BATCH_ROWS, DEFAULT_MAX_UPSERT_ROWS};
+use crate::wal::WalCorruptPolicy;
 
 #[derive(Parser, Debug)]
 #[command(name = "openpuffer", about = "S3-backed vector and FTS search")]
@@ -73,6 +74,10 @@ pub struct ServeArgs {
     /// ANN query: fine centroids to probe per coarse cell.
     #[arg(long, env = "OPENPUFFER_ANN_FINE_PROBE", default_value_t = DEFAULT_PROBE_FINE)]
     pub ann_fine_probe: u32,
+
+    /// WAL replay on corrupt segment: `fail` (default) aborts load; `skip` logs and continues.
+    #[arg(long, env = "OPENPUFFER_WAL_CORRUPT_POLICY", default_value = "fail")]
+    pub wal_corrupt_policy: String,
 }
 
 /// ANN probe widths written into vector index metadata at build time.
@@ -115,6 +120,7 @@ pub struct AppConfig {
     pub write_buffer: WriteBufferConfig,
     pub limits: LimitsConfig,
     pub ann_probes: AnnProbeConfig,
+    pub wal_corrupt_policy: WalCorruptPolicy,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -164,7 +170,12 @@ impl ServeArgs {
                 coarse: self.ann_coarse_probe.max(1),
                 fine: self.ann_fine_probe.max(1),
             },
+            wal_corrupt_policy: WalCorruptPolicy::from_env_str(&self.wal_corrupt_policy),
         }
+    }
+
+    pub fn wal_corrupt_policy(&self) -> WalCorruptPolicy {
+        WalCorruptPolicy::from_env_str(&self.wal_corrupt_policy)
     }
 
     pub fn write_buffer_config(&self) -> WriteBufferConfig {

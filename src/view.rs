@@ -8,7 +8,9 @@ use crate::models::Document;
 use crate::namespace::{fetch_meta, load_docs_at_wal_commit, replay_wal_range};
 use crate::wal_compaction::wal_replay_from;
 use crate::s3_batch;
-use crate::wal::{apply_entry, decode, decode_snapshot, WalEntry};
+use crate::wal::{
+    apply_entry, decode_segment_with_policy, decode_snapshot, WalCorruptPolicy, WalEntry,
+};
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
@@ -124,11 +126,15 @@ impl NamespaceView {
             docs = snap.into_docs();
         }
         let last = meta.wal_commit_seq;
+        let policy = WalCorruptPolicy::current();
         if let Some(replay_from) = wal_replay_from(last_applied, last) {
             for seq in replay_from..=last {
                 if let Some(bytes) = wal_bytes.get(&seq) {
-                    let entry = decode(bytes)?;
-                    apply_entry(&mut docs, &entry)?;
+                    if let Some(entry) =
+                        decode_segment_with_policy(bytes, seq, policy)?
+                    {
+                        apply_entry(&mut docs, &entry)?;
+                    }
                 }
             }
         }

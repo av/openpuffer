@@ -56,7 +56,7 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 2. Enqueue in per-namespace **write buffer** (`buffer.rs`): group commit by time (default 1s) or batch size.
 3. Flush builds one `WalEntry` batch (upserts + attribute patches + deletes). Patches merge into existing docs on replay; missing ids ignored; vector fields cannot be patched. `delete_by_filter` / `patch_by_filter` resolve matching doc ids via the filter index + unindexed WAL tail (same strong-consistency path as query filters).
 4. Assign `seq = wal_commit_seq + 1`.
-5. **PUT** `wal/{seq:08}.bin` (bincode payload) — durable before ACK.
+5. **PUT** `wal/{seq:08}.bin` — v1 wire format: `[0x01][bincode WalEntry][crc32 LE]` (IEEE CRC over payload). Legacy segments without the version byte remain readable. Replay verifies CRC on v1 segments; corrupt segments log an error and abort load by default (`OPENPUFFER_WAL_CORRUPT_POLICY=fail`); `skip` continues after prior segments.
 6. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.

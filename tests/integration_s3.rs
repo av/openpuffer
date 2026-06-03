@@ -60,6 +60,8 @@ const NAMESPACE_BB3_F16_HYBRID: &str = "itest-bb3-f16-hybrid";
 const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
+const NAMESPACE_FULL_ARCH: &str = "itest-full-arch";
+const NAMESPACE_FULL_ARCH_BRANCH: &str = "itest-full-arch-branch";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -3720,6 +3722,409 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
         Some(1),
         "one doc should remain after partial delete, meta={meta:?}"
     );
+}
+
+/// Single integration test exercising the full turbopuffer-style architecture on MinIO.
+#[tokio::test]
+async fn full_architecture_smoke() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(1),
+        Some(50),
+    );
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_FULL_ARCH;
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "tier": {"type": "string", "filterable": true},
+        "embedding_a": "[4]f32",
+        "embedding_b": "[4]f32"
+    });
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({
+            "schema": schema,
+            "upsert_columns": full_arch_upsert_columns(0, 4)
+        }),
+    )
+    .await;
+
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(90)).await;
+
+    assert_wal_layout_after_write(&fixture.client, &fixture.bucket, ns).await;
+    assert_index_objects(&fixture.client, &fixture.bucket, ns).await;
+    assert_centroids_l0_for_field(&fixture.client, &fixture.bucket, ns, "embedding_a").await;
+    assert_centroids_l0_for_field(&fixture.client, &fixture.bucket, ns, "embedding_b").await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_meta_vector_fields(&meta, &[("embedding_a", 4), ("embedding_b", 4)]);
+    assert_eq!(meta.schema["text"]["full_text_search"], json!(true));
+    assert_eq!(meta.schema["tier"]["filterable"], json!(true));
+
+    let client = reqwest::Client::new();
+    let warm_resp = client
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve.base_url))
+        .send()
+        .await
+        .expect("warm");
+    assert_eq!(warm_resp.status(), StatusCode::OK, "warm failed");
+
+    let strong = |body: Value| {
+        let mut b = body;
+        b["consistency"] = json!("strong");
+        b
+    };
+
+    let vector_a = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!(["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_a.first().map(String::as_str),
+        Some("arch-0"),
+        "ANN embedding_a top-1, got {vector_a:?}"
+    );
+
+    let vector_b = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!(["vector", "ANN", "embedding_b", [1.0, 0.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_b.first().map(String::as_str),
+        Some("arch-3"),
+        "ANN embedding_b top-1, got {vector_b:?}"
+    );
+
+    let fts_ids = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!(["BM25", "text", "fullarch alpha"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.contains(&"arch-0".to_string()) && fts_ids.contains(&"arch-2".to_string()),
+        "FTS alpha hits, got {fts_ids:?}"
+    );
+
+    let hybrid_ids = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!([
+            "Sum",
+            ["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]],
+            ["BM25", "text", "fullarch alpha"]
+        ]),
+        None,
+    )
+    .await;
+    assert!(
+        hybrid_ids.contains(&"arch-0".to_string()),
+        "hybrid should include arch-0, got {hybrid_ids:?}"
+    );
+
+    let filter_ids = query_response_ns(
+        &serve.base_url,
+        ns,
+        strong(json!({
+            "rank_by": ["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]],
+            "filters": ["tier", "Eq", "pro"],
+            "top_k": 5
+        })),
+    )
+    .await;
+    let filter_row_ids: Vec<String> = filter_ids["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        filter_row_ids.contains(&"arch-0".to_string())
+            && filter_row_ids.contains(&"arch-2".to_string()),
+        "strong filter tier=pro, got {filter_row_ids:?}"
+    );
+    assert!(
+        !filter_row_ids.contains(&"arch-1".to_string()),
+        "free-tier arch-1 must be excluded by filter, got {filter_row_ids:?}"
+    );
+
+    let patch_resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&json!({
+            "patch_by_filter": {
+                "filters": ["tier", "Eq", "free"],
+                "patch": { "tier": "upgraded", "text": "fullarch upgraded unique" }
+            }
+        }))
+        .send()
+        .await
+        .expect("patch_by_filter");
+    assert_eq!(patch_resp.status(), StatusCode::OK, "patch_by_filter failed");
+    let patch_body: Value = patch_resp.json().await.expect("patch json");
+    assert_eq!(
+        patch_body["rows_patched"].as_u64(),
+        Some(2),
+        "two free-tier docs patched: {patch_body}"
+    );
+    sleep(Duration::from_millis(1200)).await;
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({ "delete_by_filter": ["tier", "Eq", "upgraded"] }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let remaining = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!(["BM25", "text", "fullarch"]),
+        None,
+    )
+    .await;
+    assert!(
+        remaining.contains(&"arch-0".to_string()) && remaining.contains(&"arch-2".to_string()),
+        "pro-tier docs remain after partial delete_by_filter, got {remaining:?}"
+    );
+    assert!(
+        !remaining.contains(&"arch-1".to_string()) && !remaining.contains(&"arch-3".to_string()),
+        "upgraded docs must be deleted, got {remaining:?}"
+    );
+
+    let export_ids = export_all_ids(&serve.base_url, ns, None).await;
+    assert_eq!(export_ids.len(), 2, "export should list 2 docs, got {export_ids:?}");
+    assert!(export_ids.contains(&"arch-0".to_string()));
+    assert!(export_ids.contains(&"arch-2".to_string()));
+
+    for i in 4..18 {
+        upsert_batch(
+            &serve.base_url,
+            ns,
+            json!([{
+                "id": format!("arch-wal-{i}"),
+                "attributes": {
+                    "embedding_a": [0.1 * i as f64, 0.2, 0.3, 0.4],
+                    "embedding_b": [0.4, 0.3, 0.2, 0.1 * i as f64],
+                    "text": format!("fullarch compaction wal filler term {i}"),
+                    "tier": "pro"
+                }
+            }]),
+        )
+        .await;
+    }
+
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(120)).await;
+
+    let snapshot_key = format!("{ROOT_PREFIX}{ns}/wal/snapshot.bin");
+    let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
+    let compact_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+        let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+        let segment_wals: Vec<_> = wal_keys
+            .iter()
+            .filter(|k| k.ends_with(".bin") && !k.ends_with("snapshot.bin"))
+            .collect();
+        if meta.wal_snapshot_seq > 0
+            && meta.index_cursor == meta.wal_commit_seq
+            && s3_object_exists(&fixture.client, &fixture.bucket, &snapshot_key).await
+            && segment_wals.len() <= 3
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= compact_deadline {
+            panic!("wal compaction did not finish: meta={meta:?}");
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let warm2 = client
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve.base_url))
+        .send()
+        .await
+        .expect("warm after compaction");
+    assert_eq!(warm2.status(), StatusCode::OK);
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "arch-unindexed-tail",
+            "attributes": {
+                "embedding_a": [0.0, 1.0, 0.0, 0.0],
+                "embedding_b": [0.0, 0.0, 1.0, 0.0],
+                "text": "fullarch unindexed tail only",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let eventual_resp = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["BM25", "text", "fullarch compaction"],
+            "top_k": 10,
+            "consistency": "eventual"
+        }),
+    )
+    .await;
+    let eventual_ids: Vec<String> = eventual_resp["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        eventual_ids.iter().any(|id| id.starts_with("arch-wal-")),
+        "eventual query must return indexed compaction docs, got {eventual_ids:?}"
+    );
+    assert!(
+        !eventual_ids.contains(&"arch-unindexed-tail".to_string()),
+        "eventual must not see unindexed tail, got {eventual_ids:?}"
+    );
+
+    let stats: Value = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert_eq!(
+        stats["s3_get_count"].as_u64(),
+        Some(0),
+        "eventual query after warm must not S3 GetObject"
+    );
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_FULL_ARCH_BRANCH,
+        json!({"branch_from_namespace": ns}),
+    )
+    .await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_FULL_ARCH_BRANCH,
+        json!([{
+            "id": "arch-branch-only",
+            "attributes": {
+                "embedding_a": [0.0, 1.0, 0.0, 0.0],
+                "embedding_b": [1.0, 0.0, 0.0, 0.0],
+                "text": "fullarch branch exclusive",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_FULL_ARCH_BRANCH,
+        Duration::from_secs(90),
+    )
+    .await;
+
+    let branch_hits = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_FULL_ARCH_BRANCH,
+        json!(["BM25", "text", "exclusive"]),
+        None,
+    )
+    .await;
+    assert!(
+        branch_hits.contains(&"arch-branch-only".to_string()),
+        "branch ns should see branch-only doc, got {branch_hits:?}"
+    );
+
+    let src_exclusive = query_ids_ns(
+        &serve.base_url,
+        ns,
+        json!(["BM25", "text", "exclusive"]),
+        None,
+    )
+    .await;
+    assert!(
+        !src_exclusive.contains(&"arch-branch-only".to_string()),
+        "source must not see branch-only doc, got {src_exclusive:?}"
+    );
+
+    let branch_prefix = format!("{ROOT_PREFIX}{NAMESPACE_FULL_ARCH_BRANCH}/");
+    let branch_keys =
+        list_keys_with_prefix(&fixture.client, &fixture.bucket, &branch_prefix).await;
+    assert!(
+        branch_keys.iter().any(|k| k.contains("/wal/")),
+        "branch namespace must have WAL on S3, keys={branch_keys:?}"
+    );
+}
+
+fn full_arch_upsert_columns(start: usize, count: usize) -> Value {
+    let mut ids = Vec::with_capacity(count);
+    let mut texts = Vec::with_capacity(count);
+    let mut tiers = Vec::with_capacity(count);
+    let mut emb_a = Vec::with_capacity(count);
+    let mut emb_b = Vec::with_capacity(count);
+    for i in start..start + count {
+        ids.push(json!(format!("arch-{i}")));
+        let alpha = i % 2 == 0;
+        texts.push(json!(if alpha {
+            format!("fullarch alpha document {i}")
+        } else {
+            format!("fullarch bravo document {i}")
+        }));
+        tiers.push(json!(if i % 2 == 0 { "pro" } else { "free" }));
+        emb_a.push(json!(if alpha {
+            [1.0, 0.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0, 0.0]
+        }));
+        // arch-3 is nearest to query [1,0,0,0] on embedding_b; arch-1 is farther.
+        emb_b.push(json!(if i == 3 {
+            [1.0, 0.0, 0.0, 0.0]
+        } else if i == 1 {
+            [0.5, 0.5, 0.0, 0.0]
+        } else if alpha {
+            [0.0, 1.0, 0.0, 0.0]
+        } else {
+            [0.0, 0.0, 1.0, 0.0]
+        }));
+    }
+    json!({
+        "id": ids,
+        "text": texts,
+        "tier": tiers,
+        "embedding_a": emb_a,
+        "embedding_b": emb_b
+    })
 }
 
 fn fair_upsert_columns(start: usize, count: usize, dim: usize) -> Value {

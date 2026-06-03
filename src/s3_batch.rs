@@ -306,7 +306,11 @@ pub async fn replay_wal_entries_batched(
         let bytes = raw
             .get(&key)
             .with_context(|| format!("wal segment {seq:08} missing in batch"))?;
-        entries.push(crate::wal::decode(bytes)?);
+        if let Some(entry) =
+            crate::wal::decode_segment_with_policy(bytes, seq, crate::wal::WalCorruptPolicy::current())?
+        {
+            entries.push(entry);
+        }
     }
     Ok(entries)
 }
