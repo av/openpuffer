@@ -31,19 +31,23 @@ Design detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
                            ▼
               S3: openpuffer/{ns}/
               ├── meta.json          ← index_cursor, wal_commit_seq, schema
-              ├── wal/00000001.bin   ← bincode WalEntry batches
+              ├── wal/
+              │   ├── 00000001.bin   ← [0x01][bincode WalEntry][crc32 LE]
+              │   └── snapshot.bin   ← compaction snapshot (optional)
               └── index/             ← async indexer
                   ├── fts-*.bin
-                  ├── centroids.bin + clusters-*.bin
+                  ├── {field}/centroids-l0.bin + centroids-l1-*.bin + clusters-*.bin
                   └── filter-*.bin
 
   POST /v2/.../query
        │
        ├─ load meta + index segments (disk cache if warm)
-       ├─ ANN / BM25 / hybrid candidate generation
+       ├─ ANN (L0/L1 probe) / BM25 / hybrid candidate generation
        ├─ apply filters (intersect before score)
        └─ score unindexed WAL tail (strong) → top_k
 ```
+
+WAL replay verifies CRC on v1 segments; corrupt segments abort by default (`OPENPUFFER_WAL_CORRUPT_POLICY=fail`, or `skip` to continue after prior segments). Legacy segments without the `0x01` prefix remain readable.
 
 **Consistency:** writes are visible after `wal_commit_seq` advances; queries under `consistency: "strong"` also scan WAL entries with `seq > index_cursor` until the indexer catches up.
 
@@ -105,6 +109,8 @@ openpuffer serve \
 | `OPENPUFFER_WRITE_MAX_DELAY_MS` | Group-commit delay (default 1000) |
 | `OPENPUFFER_WRITE_MAX_BATCH_OPS` | Max ops per WAL batch (default 512) |
 | `OPENPUFFER_MAX_PINNED_NAMESPACES` | In-process warm view LRU (default 32) |
+| `OPENPUFFER_WAL_CORRUPT_POLICY` | WAL replay on corrupt segment: `fail` (default) or `skip` |
+| `OPENPUFFER_ANN_COARSE_PROBE` / `OPENPUFFER_ANN_FINE_PROBE` | ANN L0/L1 cluster probe counts (defaults 4 / 2) |
 
 ### Operations guide
 

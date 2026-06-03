@@ -42,6 +42,12 @@
 - label: writes append bincode WAL files at openpuffer/{ns}/wal/{seq:08}.bin before HTTP ACK
   command: test -f src/wal.rs && test -f src/buffer.rs && grep -q 'wal/{seq:08}.bin' src/wal.rs
   tags: [implemented]
+- label: WAL segments encode v1 wire format 0x01 byte bincode payload and ieee crc32 trailer on write
+  command: grep -q 'WAL_FORMAT_CRC32' src/wal.rs && cargo test --lib wal_roundtrip_serialize -q
+  tags: [implemented]
+- label: serve accepts OPENPUFFER_WAL_CORRUPT_POLICY fail or skip on corrupt WAL segment replay
+  command: grep -q 'OPENPUFFER_WAL_CORRUPT_POLICY' src/config.rs && cargo test --lib wal_corrupt_policy_skip_returns_none -q
+  tags: [implemented]
 - label: background indexer merges WAL into FTS vector and filter segments under openpuffer/{ns}/index/
   command: test -f src/indexer.rs && test -f src/index/fts.rs && test -f src/index/vector.rs && test -f src/index/filter.rs
   tags: [implemented]
@@ -296,4 +302,7 @@
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
+  tags: [implemented]
+- label: integration test full_architecture_smoke exercises WAL index dual-vector hybrid filter compaction branch on MinIO
+  command: cargo test -F integration --test integration_s3 full_architecture_smoke -q
   tags: [implemented]
