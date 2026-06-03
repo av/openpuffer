@@ -37,6 +37,9 @@ const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const NAMESPACE_S3_WAL_BYTES: &str = "itest-s3-wal-bytes";
 const NAMESPACE_S3_L1_CENTROIDS: &str = "itest-s3-l1-centroids";
 const NAMESPACE_VEC_B64: &str = "itest-vec-b64";
+const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
+const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
+const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -1979,4 +1982,337 @@ async fn base64_vector_upsert_query_include_vectors_roundtrip() {
         .as_str()
         .expect("base64 embedding");
     assert_eq!(emb, EMB_B64_THREE);
+}
+
+/// Two serve processes on one MinIO bucket: B cold-starts from S3 only; meta ETag and WAL unchanged.
+#[tokio::test]
+async fn s3_two_instances_share_bucket() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_S3_TWO_INST;
+
+    let mut serve_a = ServeHandle::spawn(&fixture, &listen);
+    serve_a.wait_ready().await;
+
+    upsert_batch(
+        &serve_a.base_url,
+        ns,
+        json!([
+            {
+                "id": "doc-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "alpha bravo unique",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "doc-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "charlie delta",
+                    "tier": "free"
+                }
+            },
+            {
+                "id": "doc-c",
+                "attributes": {
+                    "embedding": [0.9, 0.1, 0.0],
+                    "text": "alpha charlie",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve_a.base_url, ns, Duration::from_secs(30)).await;
+
+    let meta_key = openpuffer::meta::meta_key(ns);
+    let etag_before = head_object_etag(&fixture.client, &fixture.bucket, &meta_key).await;
+    let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
+    let wal_keys_before = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+    assert!(
+        wal_keys_before.iter().any(|k| k.ends_with("00000001.bin")),
+        "expected wal/00000001.bin before restart, keys={wal_keys_before:?}"
+    );
+
+    serve_a.stop();
+    drop(serve_a);
+    sleep(Duration::from_millis(500)).await;
+
+    let serve_b = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve_b.wait_ready().await;
+
+    let vector_ids = query_ids_ns(
+        &serve_b.base_url,
+        ns,
+        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_ids.first().map(String::as_str),
+        Some("doc-a"),
+        "instance B cold query from S3, got {vector_ids:?}"
+    );
+
+    let fts_ids = query_ids_ns(
+        &serve_b.base_url,
+        ns,
+        json!(["BM25", "text", "alpha"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.contains(&"doc-a".to_string()) && fts_ids.contains(&"doc-c".to_string()),
+        "FTS via pure S3 on instance B, got {fts_ids:?}"
+    );
+
+    let etag_after = head_object_etag(&fixture.client, &fixture.bucket, &meta_key).await;
+    assert_eq!(
+        etag_before, etag_after,
+        "meta.json ETag must be unchanged across serve restart (read-only on B)"
+    );
+
+    let wal_keys_after = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+    assert!(
+        wal_keys_after.iter().any(|k| k.ends_with("00000001.bin")),
+        "wal segments must remain on S3, keys={wal_keys_after:?}"
+    );
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(meta.wal_commit_seq >= 1, "meta must record WAL commits");
+}
+
+/// Cold query (`--cache-dir=""`) reports batched S3 roundtrips and loads index from MinIO.
+#[tokio::test]
+async fn s3_cold_query_reports_roundtrips_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_S3_COLD_RT;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "cold-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold roundtrip alpha",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "cold-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "cold roundtrip bravo",
+                    "tier": "free"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let l0_key = format!("{ROOT_PREFIX}{ns}/index/centroids-l0.bin");
+    assert_key_exists(&fixture.client, &fixture.bucket, &l0_key).await;
+
+    let client = reqwest::Client::new();
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let resp = client
+        .post(format!("{}/v2/namespaces/{ns}/query", serve.base_url))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 2
+        }))
+        .send()
+        .await
+        .expect("cold query");
+    assert_eq!(resp.status(), StatusCode::OK, "cold query failed");
+    let roundtrips_hdr = resp
+        .headers()
+        .get("x-openpuffer-storage-roundtrips")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok());
+    let body: Value = resp.json().await.expect("query json");
+    let roundtrips_json = body["performance"]["storage_roundtrips"]
+        .as_u64()
+        .expect("performance.storage_roundtrips");
+    assert!(
+        roundtrips_json >= 2,
+        "cold batched load should report >=2 storage roundtrips, got {roundtrips_json}"
+    );
+    if let Some(hdr) = roundtrips_hdr {
+        assert!(
+            hdr >= 2,
+            "X-Openpuffer-Storage-Roundtrips header should be >=2, got {hdr}"
+        );
+    }
+
+    let stats: Value = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats")
+        .json()
+        .await
+        .expect("stats json");
+    // Cold path uses s3_batch parallel GetObject, not segment cache counter.
+    let _ = stats["s3_get_count"].as_u64();
+
+    assert_key_exists(&fixture.client, &fixture.bucket, &l0_key).await;
+    assert_two_level_centroids_on_backend(&fixture.client, &fixture.bucket, ns).await;
+}
+
+/// WAL compaction on MinIO: old segment deleted, snapshot.bin present, decode + query still correct.
+#[tokio::test]
+async fn s3_compaction_removes_old_wal_objects() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_S3_COMPACT;
+
+    let serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        None,
+        Some(1),
+        Some(50),
+    );
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({
+            "schema": {
+                "text": { "type": "string", "full_text_search": true },
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [{
+                "id": "s3c-0",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "s3 compact unique zero"
+                }
+            }]
+        }),
+    )
+    .await;
+
+    for i in 1..12 {
+        upsert_batch(
+            &serve.base_url,
+            ns,
+            json!([{
+                "id": format!("s3c-{i}"),
+                "attributes": {
+                    "embedding": [0.1 * i as f64, 0.2, 0.3],
+                    "text": format!("s3 compact unique term {i}")
+                }
+            }]),
+        )
+        .await;
+    }
+
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(90)).await;
+
+    let snapshot_key = format!("{ROOT_PREFIX}{ns}/wal/snapshot.bin");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let mut meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    loop {
+        if meta.wal_snapshot_seq > 0
+            && s3_object_exists(&fixture.client, &fixture.bucket, &snapshot_key).await
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "wal compaction did not finish, meta={meta:?}"
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+        meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    }
+
+    assert!(
+        meta.wal_commit_seq >= 12,
+        "expected >=12 wal commits, meta={meta:?}"
+    );
+    assert_eq!(meta.index_cursor, meta.wal_commit_seq);
+
+    let wal_prefix = format!("{ROOT_PREFIX}{ns}/wal/");
+    let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+    assert!(
+        wal_keys.iter().any(|k| k == &snapshot_key),
+        "expected wal/snapshot.bin on MinIO, keys={wal_keys:?}"
+    );
+    let first_wal = format!("{wal_prefix}00000001.bin");
+    assert!(
+        !s3_object_exists(&fixture.client, &fixture.bucket, &first_wal).await,
+        "00000001.bin must be deleted after compaction"
+    );
+
+    let snap = decode_wal_snapshot_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(snap.seq, meta.wal_snapshot_seq);
+    let mut doc_ids: std::collections::HashSet<String> =
+        snap.docs.iter().map(|d| d.id.clone()).collect();
+
+    for key in &wal_keys {
+        if !key.starts_with(&wal_prefix) || !key.ends_with(".bin") || key.ends_with("snapshot.bin")
+        {
+            continue;
+        }
+        let seq_str = key
+            .strip_prefix(&wal_prefix)
+            .and_then(|s| s.strip_suffix(".bin"))
+            .expect("wal segment filename");
+        let seq: u64 = seq_str.parse().expect("wal seq");
+        let entry = decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, ns, seq).await;
+        for id in wal_upsert_ids(&entry) {
+            doc_ids.insert(id);
+        }
+    }
+    for i in 0..12 {
+        assert!(
+            doc_ids.contains(&format!("s3c-{i}")),
+            "snapshot + tail WAL must cover s3c-{i}, have {doc_ids:?}"
+        );
+    }
+
+    let serve_cold = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve_cold.wait_ready().await;
+
+    let fts_ids = query_ids_ns(
+        &serve_cold.base_url,
+        ns,
+        json!(["BM25", "text", "compact unique"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.iter().any(|id| id.starts_with("s3c-")),
+        "query after compaction via cold S3 load, ids={fts_ids:?}"
+    );
 }
