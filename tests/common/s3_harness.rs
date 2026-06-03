@@ -7,7 +7,8 @@
 use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
-use openpuffer::meta::{meta_key, NamespaceMeta};
+use openpuffer::index::vector::CentroidIndexL0;
+use openpuffer::meta::{effective_vector_fields, meta_key, NamespaceMeta};
 use openpuffer::models::ROOT_PREFIX;
 use openpuffer::wal::{decode, decode_snapshot, wal_key, WalEntry, WalSnapshot};
 use reqwest::StatusCode;
@@ -186,6 +187,25 @@ pub async fn fetch_meta_from_s3(
     serde_json::from_slice(&bytes).expect("parse NamespaceMeta")
 }
 
+/// S3 key for L0 centroids (`index/{field}/centroids-l0.bin` or legacy `index/centroids-l0.bin`).
+pub async fn centroids_l0_key_for_namespace(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+) -> String {
+    let meta = fetch_meta_from_s3(client, bucket, namespace).await;
+    if let Some(cfg) = effective_vector_fields(&meta).first() {
+        CentroidIndexL0::key(namespace, &cfg.name)
+    } else {
+        CentroidIndexL0::legacy_key(namespace)
+    }
+}
+
+/// True if any centroids-l0.bin exists under `index/` (per-field or legacy layout).
+pub fn index_has_centroids_l0(keys: &[String]) -> bool {
+    keys.iter().any(|k| k.ends_with("centroids-l0.bin"))
+}
+
 pub async fn list_namespace_keys(client: &Client, bucket: &str, namespace: &str) -> Vec<String> {
     let prefix = format!("{ROOT_PREFIX}{namespace}/");
     list_keys_with_prefix(client, bucket, &prefix).await
@@ -291,12 +311,15 @@ pub async fn assert_index_objects(client: &Client, bucket: &str, namespace: &str
     let index_prefix = format!("{ROOT_PREFIX}{namespace}/index/");
     let keys = list_keys_with_prefix(client, bucket, &index_prefix).await;
     let has_fts = keys.iter().any(|k| k.contains("/index/fts-") && k.ends_with(".bin"));
-    let has_centroids = keys.iter().any(|k| k.ends_with("/index/centroids-l0.bin"));
+    let has_centroids = keys.iter().any(|k| k.ends_with("centroids-l0.bin"));
     let has_filter = keys
         .iter()
         .any(|k| k.contains("/index/filter-") && k.ends_with(".bin"));
     assert!(has_fts, "expected index/fts-*.bin, keys={keys:?}");
-    assert!(has_centroids, "expected index/centroids-l0.bin, keys={keys:?}");
+    assert!(
+        has_centroids,
+        "expected centroids-l0.bin under index/, keys={keys:?}"
+    );
     assert!(has_filter, "expected index/filter-*.bin, keys={keys:?}");
 }
 
@@ -309,7 +332,7 @@ pub async fn assert_two_level_centroids_on_backend(
     let keys = list_keys_with_prefix(client, bucket, &index_prefix).await;
     let l0_key = keys
         .iter()
-        .find(|k| k.ends_with("/index/centroids-l0.bin"))
+        .find(|k| k.ends_with("centroids-l0.bin"))
         .expect("centroids-l0.bin missing");
     assert!(
         object_size(client, bucket, l0_key).await > 0,
@@ -318,7 +341,7 @@ pub async fn assert_two_level_centroids_on_backend(
 
     let l1_keys: Vec<_> = keys
         .iter()
-        .filter(|k| k.contains("/index/centroids-l1-") && k.ends_with(".bin"))
+        .filter(|k| k.contains("centroids-l1-") && k.ends_with(".bin"))
         .collect();
     assert!(
         !l1_keys.is_empty(),

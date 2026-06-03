@@ -47,7 +47,7 @@ pub struct LoadedNamespace {
     pub meta: NamespaceMeta,
     pub meta_etag: Option<String>,
     pub fts: Option<FtsSegment>,
-    pub vector: Option<VectorIndex>,
+    pub vectors: HashMap<String, VectorIndex>,
     pub filter_index: Option<FilterSegment>,
     pub tail_doc_ids: HashSet<String>,
     /// Logical S3 roundtrips for cold load (index batch plan + optional WAL batch).
@@ -295,7 +295,7 @@ impl Storage {
         wal_roundtrips: u32,
         skip_wal_tail: bool,
     ) -> Result<LoadedNamespace> {
-        let (fts, vector, filter_index, index_roundtrips) = if cold_batch {
+        let (fts, vectors, filter_index, index_roundtrips) = if cold_batch {
             let art = crate::s3_batch::fetch_cold_index_artifacts(
                 &self.client,
                 &self.bucket,
@@ -303,7 +303,7 @@ impl Storage {
                 &view.meta,
             )
             .await?;
-            (art.fts, art.vector, art.filter, art.storage_roundtrips)
+            (art.fts, art.vectors, art.filter, art.storage_roundtrips)
         } else {
             let fts = crate::indexer::load_fts_segment_for_query(
                 &self.client,
@@ -313,7 +313,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            let vector = crate::indexer::load_vector_index_for_query(
+            let vectors = crate::indexer::load_vector_indexes_for_query(
                 &self.client,
                 &self.bucket,
                 name,
@@ -329,7 +329,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            (fts, vector, filter_index, 0)
+            (fts, vectors, filter_index, 0)
         };
 
         let mut storage_roundtrips = if cold_batch {
@@ -373,7 +373,7 @@ impl Storage {
             meta: view.meta.clone(),
             meta_etag: view.meta_etag.clone(),
             fts,
-            vector,
+            vectors,
             filter_index,
             tail_doc_ids,
             storage_roundtrips,
@@ -604,7 +604,7 @@ impl Storage {
             docs: &loaded.docs,
             meta: &loaded.meta,
             fts: loaded.fts.as_ref(),
-            vector: loaded.vector.as_ref(),
+            vectors: &loaded.vectors,
             filter_index: loaded.filter_index.as_ref(),
             tail_doc_ids: &loaded.tail_doc_ids,
             consistency: QueryConsistency::Strong,

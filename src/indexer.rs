@@ -8,9 +8,13 @@ use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{
-    primary_vector_field, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
+    vector_fields_to_index, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
 };
-use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
+use crate::meta::{
+    meta_key, push_segment_id, sync_legacy_vector_fields, vector_index_uses_legacy_paths,
+    NamespaceMeta, VectorFieldConfig, META_RETRIES,
+};
+use crate::schema::vector_element_for_field;
 use crate::namespace::{
     docs_at_index_cursor, fetch_meta, read_wal_entry, replay_wal_entries,
 };
@@ -115,16 +119,26 @@ pub async fn index_wal_range(
             .with_context(|| format!("put fts segment {to:08}"))?;
         cache.populate_after_put(bucket, &key, &body, fts_resp.e_tag());
 
-        let mut vector_segment_id = meta.vector_segment_id;
-        let mut vector_field = meta.vector_field.clone();
-        let mut dimensions = meta.dimensions;
+        let mut vector_fields = meta.vector_fields.clone();
+        if vector_fields.is_empty() && !meta.vector_field.is_empty() && meta.dimensions > 0 {
+            vector_fields.push(VectorFieldConfig {
+                name: meta.vector_field.clone(),
+                dimensions: meta.dimensions,
+                element: vector_element_for_field(&meta.schema, &meta.vector_field),
+                segment_id: meta.vector_segment_id,
+                segment_ids: meta.vector_segment_ids.clone(),
+            });
+        }
 
-        if let Some(vfield) = primary_vector_field(&meta.schema, upserts.first().map(|(_, d)| d)) {
-            let mut vindex = load_vector_index_for_query(
+        for vfield_name in
+            vector_fields_to_index(&meta.schema, &meta, upserts.first().map(|(_, d)| d))
+        {
+            let mut vindex = load_vector_index_for_field(
                 client,
                 bucket,
                 namespace,
                 &meta,
+                &vfield_name,
                 cache,
             )
             .await?
@@ -134,7 +148,7 @@ pub async fn index_wal_range(
                 let pairs: Vec<(String, crate::models::Document)> = upserts.clone();
                 if let Some(built) = VectorIndex::build(
                     to,
-                    &vfield,
+                    &vfield_name,
                     meta.distance_metric,
                     &pairs,
                     &meta.schema,
@@ -149,7 +163,7 @@ pub async fn index_wal_range(
                         all_docs.into_iter().collect();
                     if let Some(built) = VectorIndex::build(
                         to,
-                        &vfield,
+                        &vfield_name,
                         meta.distance_metric,
                         &pairs,
                         &meta.schema,
@@ -167,10 +181,35 @@ pub async fn index_wal_range(
                 for cluster in vindex.clusters.values_mut() {
                     cluster.segment_id = to;
                 }
-                write_vector_index(client, bucket, namespace, &vindex, cache).await?;
-                vector_segment_id = to;
-                vector_field = vfield;
-                dimensions = vindex.l0.dimensions;
+                write_vector_index(client, bucket, namespace, &vfield_name, &vindex, cache)
+                    .await?;
+                let element = vector_element_for_field(&meta.schema, &vfield_name);
+                let entry = vector_fields
+                    .iter_mut()
+                    .find(|f| f.name == vfield_name)
+                    .map(|f| {
+                        f.dimensions = vindex.l0.dimensions;
+                        f.element = element;
+                        f.segment_id = to;
+                        push_segment_id(&mut f.segment_ids, to);
+                        f.clone()
+                    })
+                    .unwrap_or_else(|| {
+                        let mut ids = Vec::new();
+                        push_segment_id(&mut ids, to);
+                        VectorFieldConfig {
+                            name: vfield_name.clone(),
+                            dimensions: vindex.l0.dimensions,
+                            element,
+                            segment_id: to,
+                            segment_ids: ids,
+                        }
+                    });
+                if let Some(slot) = vector_fields.iter_mut().find(|f| f.name == vfield_name) {
+                    *slot = entry;
+                } else if vector_fields.len() < crate::meta::MAX_VECTOR_FIELDS {
+                    vector_fields.push(entry);
+                }
             }
         }
 
@@ -200,15 +239,7 @@ pub async fn index_wal_range(
             continue;
         }
 
-        let next_meta = meta_after_index_commit(
-            &fresh_meta,
-            to,
-            to,
-            to,
-            vector_segment_id,
-            vector_field,
-            dimensions,
-        )?;
+        let next_meta = meta_after_index_commit(&fresh_meta, to, to, to, vector_fields)?;
 
         let meta_body = serde_json::to_vec(&next_meta)?;
         let mkey = meta_key(namespace);
@@ -258,10 +289,11 @@ async fn write_vector_index(
     client: &Client,
     bucket: &str,
     namespace: &str,
+    field: &str,
     vindex: &VectorIndex,
     cache: &Arc<SegmentCache>,
 ) -> Result<()> {
-    let l0_key = CentroidIndexL0::key(namespace);
+    let l0_key = CentroidIndexL0::key(namespace, field);
     let l0_body = vindex.l0.encode()?;
     let l0_resp = client
         .put_object()
@@ -274,7 +306,7 @@ async fn write_vector_index(
     cache.populate_after_put(bucket, &l0_key, &l0_body, l0_resp.e_tag());
 
     for l1 in vindex.l1.values() {
-        let key = CentroidIndexL1::key(namespace, l1.coarse_id);
+        let key = CentroidIndexL1::key(namespace, field, l1.coarse_id);
         let body = l1.encode()?;
         let resp = client
             .put_object()
@@ -288,7 +320,7 @@ async fn write_vector_index(
     }
 
     for (fine_id, cluster) in &vindex.clusters {
-        let key = ClusterSegment::key(namespace, *fine_id);
+        let key = ClusterSegment::key(namespace, field, *fine_id);
         let body = cluster.encode()?;
         let resp = client
             .put_object()
@@ -734,9 +766,7 @@ pub fn meta_after_index_commit(
     index_cursor: u64,
     fts_segment_id: u64,
     filter_segment_id: u64,
-    vector_segment_id: u64,
-    vector_field: String,
-    dimensions: u32,
+    vector_fields: Vec<VectorFieldConfig>,
 ) -> Result<NamespaceMeta> {
     if index_cursor > meta.wal_commit_seq {
         return Err(anyhow!(
@@ -756,10 +786,8 @@ pub fn meta_after_index_commit(
     push_segment_id(&mut next.fts_segment_ids, fts_segment_id);
     next.filter_segment_id = filter_segment_id;
     push_segment_id(&mut next.filter_segment_ids, filter_segment_id);
-    next.vector_segment_id = vector_segment_id;
-    push_segment_id(&mut next.vector_segment_ids, vector_segment_id);
-    next.vector_field = vector_field;
-    next.dimensions = dimensions;
+    next.vector_fields = vector_fields;
+    sync_legacy_vector_fields(&mut next);
     Ok(next)
 }
 
@@ -799,28 +827,46 @@ pub async fn load_fts_segment_for_query(
     .await
 }
 
-/// Load vector ANN index (centroids + all cluster segments) for queries.
-pub async fn load_vector_index_for_query(
+/// Load vector ANN index for one field (centroids + all cluster segments).
+pub async fn load_vector_index_for_field(
     client: &Client,
     bucket: &str,
     namespace: &str,
     meta: &NamespaceMeta,
+    field: &str,
     cache: &Arc<SegmentCache>,
 ) -> Result<Option<VectorIndex>> {
-    if meta.vector_segment_id == 0 || meta.index_cursor == 0 || meta.dimensions == 0 {
+    let cfg = crate::meta::effective_vector_fields(meta)
+        .into_iter()
+        .find(|f| f.name == field);
+    let Some(cfg) = cfg else {
+        return Ok(None);
+    };
+    if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
         return Ok(None);
     }
-    let l0_key = CentroidIndexL0::key(namespace);
-    let Some(l0_bytes) = cache.get_bytes(client, bucket, &l0_key).await? else {
+
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
+    let l0_key = CentroidIndexL0::key(namespace, field);
+    let l0_bytes = if let Some(b) = cache.get_bytes(client, bucket, &l0_key).await? {
+        Some(b)
+    } else if use_legacy {
+        cache
+            .get_bytes(client, bucket, &CentroidIndexL0::legacy_key(namespace))
+            .await?
+    } else {
+        None
+    };
+    let Some(l0_bytes) = l0_bytes else {
         return Ok(None);
     };
     let l0 = CentroidIndexL0::decode(&l0_bytes)?;
 
     if cache.enabled() {
         let prefetch_keys: Vec<String> = (0..l0.num_coarse)
-            .map(|c| CentroidIndexL1::key(namespace, c))
+            .map(|c| CentroidIndexL1::key(namespace, field, c))
             .chain(
-                (0..l0.num_fine_total).map(|fid| ClusterSegment::key(namespace, fid)),
+                (0..l0.num_fine_total).map(|fid| ClusterSegment::key(namespace, field, fid)),
             )
             .collect();
         Arc::clone(cache).prefetch_background(
@@ -832,8 +878,21 @@ pub async fn load_vector_index_for_query(
 
     let mut l1 = HashMap::new();
     for coarse_id in 0..l0.num_coarse {
-        let key = CentroidIndexL1::key(namespace, coarse_id);
-        let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+        let key = CentroidIndexL1::key(namespace, field, coarse_id);
+        let bytes = if let Some(b) = cache.get_bytes(client, bucket, &key).await? {
+            Some(b)
+        } else if use_legacy {
+            cache
+                .get_bytes(
+                    client,
+                    bucket,
+                    &CentroidIndexL1::legacy_key(namespace, coarse_id),
+                )
+                .await?
+        } else {
+            None
+        };
+        let Some(bytes) = bytes else {
             continue;
         };
         let seg = CentroidIndexL1::decode(&bytes)?;
@@ -842,8 +901,17 @@ pub async fn load_vector_index_for_query(
 
     let mut clusters = HashMap::new();
     for fine_id in 0..l0.num_fine_total {
-        let key = ClusterSegment::key(namespace, fine_id);
-        let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+        let key = ClusterSegment::key(namespace, field, fine_id);
+        let bytes = if let Some(b) = cache.get_bytes(client, bucket, &key).await? {
+            Some(b)
+        } else if use_legacy {
+            cache
+                .get_bytes(client, bucket, &ClusterSegment::legacy_key(namespace, fine_id))
+                .await?
+        } else {
+            None
+        };
+        let Some(bytes) = bytes else {
             continue;
         };
         let seg = ClusterSegment::decode(&bytes)?;
@@ -851,6 +919,43 @@ pub async fn load_vector_index_for_query(
     }
 
     Ok(Some(VectorIndex { l0, l1, clusters }))
+}
+
+/// Load all indexed vector columns for queries.
+pub async fn load_vector_indexes_for_query(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
+) -> Result<HashMap<String, VectorIndex>> {
+    let mut out = HashMap::new();
+    for cfg in crate::meta::effective_vector_fields(meta) {
+        if let Some(idx) =
+            load_vector_index_for_field(client, bucket, namespace, meta, &cfg.name, cache).await?
+        {
+            out.insert(cfg.name.clone(), idx);
+        }
+    }
+    Ok(out)
+}
+
+/// Load primary vector index (first column) — legacy helper.
+pub async fn load_vector_index_for_query(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
+) -> Result<Option<VectorIndex>> {
+    let field = crate::meta::effective_vector_fields(meta)
+        .first()
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| meta.vector_field.clone());
+    if field.is_empty() {
+        return Ok(None);
+    }
+    load_vector_index_for_field(client, bucket, namespace, meta, &field, cache).await
 }
 
 /// Replay WAL `from..=to` one segment at a time; apply FTS/filter deltas per batch.
@@ -932,7 +1037,14 @@ mod tests {
             index_cursor: 2,
             ..Default::default()
         };
-        let next = meta_after_index_commit(&meta, 5, 5, 5, 5, "emb".into(), 3).unwrap();
+        let vf = VectorFieldConfig {
+            name: "emb".into(),
+            dimensions: 3,
+            segment_id: 5,
+            segment_ids: vec![5],
+            ..Default::default()
+        };
+        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![vf]).unwrap();
         assert_eq!(next.index_cursor, 5);
         assert_eq!(next.fts_segment_id, 5);
         assert_eq!(next.fts_segment_ids, vec![5]);
@@ -942,6 +1054,7 @@ mod tests {
         assert_eq!(next.vector_segment_ids, vec![5]);
         assert_eq!(next.vector_field, "emb");
         assert_eq!(next.dimensions, 3);
+        assert_eq!(next.vector_fields.len(), 1);
     }
 
     #[test]
@@ -951,7 +1064,7 @@ mod tests {
             index_cursor: 4,
             ..Default::default()
         };
-        let next = meta_after_index_commit(&meta, 5, 5, 5, 0, String::new(), 0).unwrap();
+        let next = meta_after_index_commit(&meta, 5, 5, 5, vec![]).unwrap();
         assert_eq!(next.wal_commit_seq, 10);
         assert_eq!(next.index_cursor, 5);
     }
@@ -963,7 +1076,7 @@ mod tests {
             wal_commit_seq: 5,
             ..Default::default()
         };
-        assert!(meta_after_index_commit(&meta, 5, 5, 5, 0, String::new(), 0).is_err());
+        assert!(meta_after_index_commit(&meta, 5, 5, 5, vec![]).is_err());
     }
 
     #[test]

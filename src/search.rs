@@ -46,7 +46,8 @@ pub struct QueryContext<'a> {
     pub docs: &'a HashMap<String, Document>,
     pub meta: &'a NamespaceMeta,
     pub fts: Option<&'a FtsSegment>,
-    pub vector: Option<&'a VectorIndex>,
+    /// ANN indexes keyed by vector attribute name (up to 2 columns).
+    pub vectors: &'a HashMap<String, VectorIndex>,
     pub filter_index: Option<&'a FilterSegment>,
     pub tail_doc_ids: &'a HashSet<String>,
     pub consistency: QueryConsistency,
@@ -125,7 +126,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         docs: ctx.docs,
         meta: ctx.meta,
         fts: ctx.fts,
-        vector: ctx.vector,
+        vectors: ctx.vectors,
         filter_index: ctx.filter_index,
         tail_doc_ids: ctx.tail_doc_ids,
         consistency,
@@ -381,12 +382,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
 
     fn collect_vector_candidates(&mut self, field: &str, query: &[f64]) -> Result<HashSet<String>> {
         let mut ids = HashSet::new();
-        if let Some(vindex) = self.ctx.vector {
-            let _vfield = if vindex.l0.vector_field.is_empty() {
-                field
-            } else {
-                &vindex.l0.vector_field
-            };
+        if let Some(vindex) = self.ctx.vectors.get(field) {
             if query.len() == vindex.l0.dimensions as usize {
                 for id in vindex.candidate_doc_ids(query) {
                     if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
@@ -411,7 +407,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
                 }
             }
         });
-        if self.ctx.vector.is_none() && ids.is_empty() {
+        if !self.ctx.vectors.contains_key(field) && ids.is_empty() {
             self.stats.full_scan_docs += self.ctx.docs.len() as u64;
             for (id, doc) in self.ctx.docs {
                 if extract_vector(&doc.attributes, field)
@@ -546,7 +542,7 @@ fn parse_top_k(v: Option<u32>) -> Result<usize> {
 /// Reject vector queries whose length disagrees with the indexed dimensionality.
 fn validate_ranker_vector_dims(ctx: &QueryContext<'_>, ranker: &Ranker) -> Result<()> {
     match ranker {
-        Ranker::Vector { query, .. } => validate_query_vector_dims(ctx, query)?,
+        Ranker::Vector { field, query } => validate_query_vector_dims(ctx, field, query)?,
         Ranker::Sum(subs) | Ranker::Product(subs) => {
             for sub in subs {
                 validate_ranker_vector_dims(ctx, sub)?;
@@ -557,21 +553,39 @@ fn validate_ranker_vector_dims(ctx: &QueryContext<'_>, ranker: &Ranker) -> Resul
     Ok(())
 }
 
-fn validate_query_vector_dims(ctx: &QueryContext<'_>, query: &[f64]) -> Result<()> {
-    if let Some(vindex) = ctx.vector {
+fn validate_query_vector_dims(ctx: &QueryContext<'_>, field: &str, query: &[f64]) -> Result<()> {
+    if query.is_empty() {
+        return Ok(());
+    }
+    if let Some(vindex) = ctx.vectors.get(field) {
         let dim = vindex.l0.dimensions as usize;
-        if dim > 0 && !query.is_empty() && query.len() != dim {
+        if dim > 0 && query.len() != dim {
             bail!(
-                "query vector length {} does not match index dimensions {}",
+                "query vector length {} does not match index dimensions {} for field '{field}'",
                 query.len(),
                 dim
             );
         }
-    } else if ctx.meta.dimensions > 0 && !query.is_empty() {
+        return Ok(());
+    }
+    if let Some(cfg) = ctx
+        .meta
+        .vector_fields
+        .iter()
+        .find(|f| f.name == field)
+    {
+        if cfg.dimensions > 0 && query.len() as u32 != cfg.dimensions {
+            bail!(
+                "query vector length {} does not match index dimensions {} for field '{field}'",
+                query.len(),
+                cfg.dimensions
+            );
+        }
+    } else if ctx.meta.vector_field == field && ctx.meta.dimensions > 0 {
         let dim = ctx.meta.dimensions as usize;
         if query.len() != dim {
             bail!(
-                "query vector length {} does not match namespace dimensions {}",
+                "query vector length {} does not match namespace dimensions {} for field '{field}'",
                 query.len(),
                 dim
             );
@@ -790,7 +804,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -841,7 +855,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -945,11 +959,12 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
             docs: &map,
             meta: &meta,
             fts: Some(&fts),
-            vector: Some(&vindex),
+            vectors: &vectors,
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -996,7 +1011,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
@@ -1038,7 +1053,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1083,7 +1098,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1176,7 +1191,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: Some(&vindex),
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
             filter_index: Some(&filter_seg),
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1204,7 +1219,7 @@ mod tests {
             docs: &HashMap::new(),
             meta: &NamespaceMeta::default(),
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &HashSet::new(),
             consistency: QueryConsistency::Strong,
@@ -1267,7 +1282,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: Some(&vindex),
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1306,7 +1321,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1338,7 +1353,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1368,7 +1383,7 @@ mod tests {
             docs: &docs,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1434,7 +1449,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: Some(&vindex),
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1495,7 +1510,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: Some(&vindex),
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
             filter_index: Some(&filter_seg),
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1539,7 +1554,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1584,7 +1599,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: Some(&seg),
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
@@ -1619,7 +1634,7 @@ mod tests {
             docs: &map,
             meta: &meta,
             fts: None,
-            vector: None,
+            vectors: &HashMap::new(),
             filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,

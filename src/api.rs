@@ -436,13 +436,23 @@ async fn write_namespace(
         },
     };
 
-    let effective_schema = effective_write_schema(
+    let effective_schema = match effective_write_schema(
         &state,
         &name,
         body.schema.as_ref(),
         !patches.is_empty() || patch_by_filter.is_some(),
     )
-    .await;
+    .await
+    {
+        Ok(s) => s,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    };
 
     if let Some((_, ref patch_attrs)) = patch_by_filter {
         if let Err(msg) = validate_patch_attributes(patch_attrs, &effective_schema) {
@@ -581,9 +591,9 @@ async fn effective_write_schema(
     namespace: &str,
     request_schema: Option<&serde_json::Value>,
     needs_existing_schema: bool,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     if request_schema.is_none() && !needs_existing_schema {
-        return serde_json::json!({});
+        return Ok(serde_json::json!({}));
     }
     let base = match crate::namespace::fetch_meta(
         state.storage.client(),
@@ -596,8 +606,8 @@ async fn effective_write_schema(
         _ => serde_json::json!({}),
     };
     match request_schema {
-        Some(patch) => merge_schema(&base, patch),
-        None => base,
+        Some(patch) => merge_schema(&base, patch).map_err(|e| format!("{e:#}")),
+        None => Ok(base),
     }
 }
 
@@ -701,7 +711,7 @@ async fn query_namespace(
                 docs: &loaded.docs,
                 meta: &loaded.meta,
                 fts: loaded.fts.as_ref(),
-                vector: loaded.vector.as_ref(),
+                vectors: &loaded.vectors,
                 filter_index: loaded.filter_index.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
                 consistency,

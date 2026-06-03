@@ -4,7 +4,29 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::index::vector::vector_fields_from_schema;
+use crate::schema::{vector_dimensions_for_field, vector_element_for_field, VectorElement};
+
 pub const META_RETRIES: u32 = 8;
+
+/// turbopuffer allows at most two vector columns per namespace.
+pub const MAX_VECTOR_FIELDS: usize = 2;
+
+/// One indexed vector column (ANN centroid tree on S3 under `index/{name}/`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VectorFieldConfig {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub dimensions: u32,
+    #[serde(default)]
+    pub element: VectorElement,
+    /// Latest WAL seq when this field's centroids/clusters were written.
+    #[serde(default)]
+    pub segment_id: u64,
+    #[serde(default)]
+    pub segment_ids: Vec<u64>,
+}
 
 /// ANN distance metric stored in namespace metadata.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,10 +95,13 @@ pub struct NamespaceMeta {
     /// Filter segment generation chain.
     #[serde(default)]
     pub filter_segment_ids: Vec<u64>,
-    /// Indexed vector attribute name (e.g. `embedding`).
+    /// Indexed vector columns (max 2). Preferred over legacy `vector_field` / `dimensions`.
+    #[serde(default)]
+    pub vector_fields: Vec<VectorFieldConfig>,
+    /// Primary indexed vector attribute (first entry in `vector_fields`; legacy compat).
     #[serde(default)]
     pub vector_field: String,
-    /// Vector dimensions for the ANN index (0 if no vector index).
+    /// Dimensions of `vector_field` (0 if no ANN index).
     #[serde(default)]
     pub dimensions: u32,
     /// Last committed WAL file sequence (`wal/{seq:08}.bin`).
@@ -100,6 +125,7 @@ impl Default for NamespaceMeta {
             vector_segment_ids: Vec::new(),
             filter_segment_id: 0,
             filter_segment_ids: Vec::new(),
+            vector_fields: Vec::new(),
             vector_field: String::new(),
             dimensions: 0,
             wal_commit_seq: 0,
@@ -159,10 +185,95 @@ pub fn meta_after_wal_commit_options(
     let mut next = meta.clone();
     next.wal_commit_seq = seq;
     if let Some(patch) = schema_patch {
-        next.schema = crate::schema::merge_schema(&next.schema, patch);
+        next.schema = crate::schema::merge_schema(&next.schema, patch)?;
     }
+    hydrate_vector_fields_from_schema(&mut next);
+    sync_legacy_vector_fields(&mut next);
     next.distance_metric = resolve_distance_metric(meta, distance_metric)?;
     Ok(next)
+}
+
+/// Effective vector field configs (new `vector_fields` or legacy single-field meta).
+pub fn effective_vector_fields(meta: &NamespaceMeta) -> Vec<VectorFieldConfig> {
+    if !meta.vector_fields.is_empty() {
+        return meta.vector_fields.clone();
+    }
+    if meta.vector_field.is_empty() || meta.dimensions == 0 {
+        return Vec::new();
+    }
+    vec![VectorFieldConfig {
+        name: meta.vector_field.clone(),
+        dimensions: meta.dimensions,
+        element: VectorElement::default(),
+        segment_id: meta.vector_segment_id,
+        segment_ids: meta.vector_segment_ids.clone(),
+    }]
+}
+
+/// Ensure `vector_fields` reflects vector columns declared in `schema` (pre-index).
+pub fn hydrate_vector_fields_from_schema(meta: &mut NamespaceMeta) {
+    let names: Vec<String> = vector_fields_from_schema(&meta.schema)
+        .into_iter()
+        .take(MAX_VECTOR_FIELDS)
+        .collect();
+    for name in names {
+        let dims = vector_dimensions_for_field(&meta.schema, &name).unwrap_or(0);
+        let element = vector_element_for_field(&meta.schema, &name);
+        if let Some(slot) = meta.vector_fields.iter_mut().find(|f| f.name == name) {
+            if slot.segment_id == 0 {
+                slot.dimensions = dims;
+            }
+            slot.element = element;
+            continue;
+        }
+        if meta.vector_fields.len() < MAX_VECTOR_FIELDS {
+            meta.vector_fields.push(VectorFieldConfig {
+                name,
+                dimensions: dims,
+                element,
+                segment_id: 0,
+                segment_ids: Vec::new(),
+            });
+        }
+    }
+}
+
+/// Keep legacy `vector_field` / `dimensions` / `vector_segment_id` aligned with the first column.
+pub fn sync_legacy_vector_fields(meta: &mut NamespaceMeta) {
+    if let Some(first) = meta.vector_fields.first() {
+        meta.vector_field = first.name.clone();
+        meta.dimensions = first.dimensions;
+        meta.vector_segment_id = first.segment_id;
+        meta.vector_segment_ids = first.segment_ids.clone();
+    } else if !meta.vector_field.is_empty() && meta.dimensions > 0 {
+        // Legacy meta without `vector_fields` populated yet.
+    } else {
+        meta.vector_field.clear();
+        meta.dimensions = 0;
+        meta.vector_segment_id = 0;
+        meta.vector_segment_ids.clear();
+    }
+}
+
+/// Lookup indexed config for a vector attribute name.
+pub fn vector_field_config<'a>(meta: &'a NamespaceMeta, name: &str) -> Option<&'a VectorFieldConfig> {
+    meta.vector_fields
+        .iter()
+        .find(|f| f.name == name)
+        .or_else(|| {
+            if meta.vector_field == name && meta.dimensions > 0 {
+                None // caller should use effective_vector_fields for legacy-only meta
+            } else {
+                None
+            }
+        })
+}
+
+/// True when this field's index lives at legacy `index/centroids-l0.bin` (pre multi-column).
+pub fn vector_index_uses_legacy_paths(meta: &NamespaceMeta, field: &str) -> bool {
+    meta.vector_fields.is_empty()
+        && meta.vector_field == field
+        && meta.vector_segment_id > 0
 }
 
 #[cfg(test)]
@@ -177,6 +288,7 @@ mod tests {
             fts_segment_ids: vec![3],
             filter_segment_id: 3,
             filter_segment_ids: vec![3],
+            vector_fields: Vec::new(),
             vector_segment_id: 3,
             vector_segment_ids: vec![3],
             vector_field: "embedding".into(),
@@ -185,6 +297,7 @@ mod tests {
             wal_snapshot_seq: 0,
             schema: serde_json::json!({"embedding": {"type": "[]f32"}}),
             distance_metric: DistanceMetric::EuclideanSquared,
+            ..Default::default()
         };
         let json = serde_json::to_vec(&meta).unwrap();
         let back: NamespaceMeta = serde_json::from_slice(&json).unwrap();
@@ -207,6 +320,8 @@ mod tests {
             "embedding": "[128]f32"
         });
         let next = meta_after_wal_commit_with_schema(&meta, 1, Some(&patch)).unwrap();
+        assert_eq!(next.vector_field, "embedding");
+        assert_eq!(next.dimensions, 128);
         assert_eq!(next.schema["text"]["full_text_search"], serde_json::json!(true));
         assert_eq!(next.schema["embedding"], serde_json::json!("[128]f32"));
     }

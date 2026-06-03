@@ -4,7 +4,7 @@ use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{CentroidIndexL0, CentroidIndexL1, ClusterSegment};
-use crate::meta::meta_key;
+use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_paths};
 use crate::namespace::fetch_meta;
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
@@ -42,8 +42,14 @@ pub fn index_keys_for_warm(namespace: &str, meta: &crate::meta::NamespaceMeta) -
     if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
     }
-    if meta.vector_segment_id > 0 && meta.index_cursor > 0 && meta.dimensions > 0 {
-        keys.push(CentroidIndexL0::key(namespace));
+    for cfg in effective_vector_fields(meta) {
+        if cfg.segment_id > 0 && meta.index_cursor > 0 && cfg.dimensions > 0 {
+            if vector_index_uses_legacy_paths(meta, &cfg.name) {
+                keys.push(CentroidIndexL0::legacy_key(namespace));
+            } else {
+                keys.push(CentroidIndexL0::key(namespace, &cfg.name));
+            }
+        }
     }
     keys
 }
@@ -100,13 +106,39 @@ pub async fn warm_namespace(
         if key.ends_with("centroids-l0.bin") {
             if let Some(bytes) = cache.get_bytes(client, bucket, &key).await? {
                 if let Ok(l0) = CentroidIndexL0::decode(&bytes) {
+                    let field = if l0.vector_field.is_empty() {
+                        meta.vector_field.clone()
+                    } else {
+                        l0.vector_field.clone()
+                    };
+                    let use_legacy = vector_index_uses_legacy_paths(&meta, &field);
                     for coarse_id in 0..l0.num_coarse {
-                        let l1_key = CentroidIndexL1::key(namespace, coarse_id);
+                        let l1_key = CentroidIndexL1::key(namespace, &field, coarse_id);
                         let _ = cache.get_bytes(client, bucket, &l1_key).await?;
+                        if use_legacy {
+                            let _ = cache
+                                .get_bytes(
+                                    client,
+                                    bucket,
+                                    &CentroidIndexL1::legacy_key(namespace, coarse_id),
+                                )
+                                .await?;
+                        }
                     }
                     for fine_id in 0..l0.num_fine_total {
-                        let ckey = ClusterSegment::key(namespace, fine_id);
+                        let ckey = ClusterSegment::key(namespace, &field, fine_id);
                         if cache.get_bytes(client, bucket, &ckey).await?.is_some() {
+                            cluster_segments += 1;
+                        } else if use_legacy
+                            && cache
+                                .get_bytes(
+                                    client,
+                                    bucket,
+                                    &ClusterSegment::legacy_key(namespace, fine_id),
+                                )
+                                .await?
+                                .is_some()
+                        {
                             cluster_segments += 1;
                         }
                     }
@@ -153,7 +185,7 @@ pub async fn warm_namespace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::meta::NamespaceMeta;
+    use crate::meta::{NamespaceMeta, VectorFieldConfig};
 
     #[test]
     fn wal_keys_caps_recent_tail() {
@@ -205,7 +237,15 @@ mod tests {
             fts_segment_id: 5,
             filter_segment_id: 5,
             vector_segment_id: 5,
+            vector_field: "embedding".into(),
             dimensions: 3,
+            vector_fields: vec![VectorFieldConfig {
+                name: "embedding".into(),
+                dimensions: 3,
+                segment_id: 5,
+                segment_ids: vec![5],
+                ..Default::default()
+            }],
             wal_commit_seq: 5,
             ..Default::default()
         };

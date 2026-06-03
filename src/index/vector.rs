@@ -1,9 +1,11 @@
 //! Vector ANN index: SPFresh-style two-level centroid / cluster layout on S3.
 //!
-//! Layout:
-//! - `openpuffer/{ns}/index/centroids-l0.bin` — coarse centroid table + metadata
-//! - `openpuffer/{ns}/index/centroids-l1-{coarse_id:08}.bin` — fine centroids per coarse cell
-//! - `openpuffer/{ns}/index/clusters-{fine_id:08}.bin` — doc ids + vectors per fine centroid
+//! Layout (per vector column `field`, max 2 per namespace):
+//! - `openpuffer/{ns}/index/{field}/centroids-l0.bin` — coarse centroid table + metadata
+//! - `openpuffer/{ns}/index/{field}/centroids-l1-{coarse_id:08}.bin` — fine centroids per coarse cell
+//! - `openpuffer/{ns}/index/{field}/clusters-{fine_id:08}.bin` — doc ids + vectors per fine centroid
+//!
+//! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
 use crate::meta::DistanceMetric;
 use crate::models::Document;
@@ -106,12 +108,26 @@ impl Default for CentroidIndexL0 {
     }
 }
 
-impl CentroidIndexL0 {
-    pub fn key(namespace: &str) -> String {
+/// S3 prefix for one vector column's index tree (`index/` or `index/{field}/`).
+pub fn vector_index_prefix(namespace: &str, field: &str) -> String {
+    if field.is_empty() {
+        format!("{}{namespace}/index/", crate::models::ROOT_PREFIX)
+    } else {
         format!(
-            "{}{namespace}/index/centroids-l0.bin",
+            "{}{namespace}/index/{field}/",
             crate::models::ROOT_PREFIX
         )
+    }
+}
+
+impl CentroidIndexL0 {
+    pub fn key(namespace: &str, field: &str) -> String {
+        format!("{}centroids-l0.bin", vector_index_prefix(namespace, field))
+    }
+
+    /// Pre–multi-column layout (`index/centroids-l0.bin`).
+    pub fn legacy_key(namespace: &str) -> String {
+        Self::key(namespace, "")
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -189,11 +205,15 @@ pub struct CentroidIndexL1 {
 }
 
 impl CentroidIndexL1 {
-    pub fn key(namespace: &str, coarse_id: u32) -> String {
+    pub fn key(namespace: &str, field: &str, coarse_id: u32) -> String {
         format!(
-            "{}{namespace}/index/centroids-l1-{coarse_id:08}.bin",
-            crate::models::ROOT_PREFIX
+            "{}centroids-l1-{coarse_id:08}.bin",
+            vector_index_prefix(namespace, field)
         )
+    }
+
+    pub fn legacy_key(namespace: &str, coarse_id: u32) -> String {
+        Self::key(namespace, "", coarse_id)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -238,11 +258,15 @@ pub struct ClusterSegment {
 }
 
 impl ClusterSegment {
-    pub fn key(namespace: &str, fine_id: u32) -> String {
+    pub fn key(namespace: &str, field: &str, fine_id: u32) -> String {
         format!(
-            "{}{namespace}/index/clusters-{fine_id:08}.bin",
-            crate::models::ROOT_PREFIX
+            "{}clusters-{fine_id:08}.bin",
+            vector_index_prefix(namespace, field)
         )
+    }
+
+    pub fn legacy_key(namespace: &str, fine_id: u32) -> String {
+        Self::key(namespace, "", fine_id)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -558,17 +582,46 @@ impl VectorIndex {
 
     /// S3 keys for all L1 segments.
     pub fn all_l1_keys(&self, namespace: &str) -> Vec<String> {
+        let field = &self.l0.vector_field;
         (0..self.l0.num_coarse)
-            .map(|c| CentroidIndexL1::key(namespace, c))
+            .map(|c| CentroidIndexL1::key(namespace, field, c))
             .collect()
     }
 
     /// S3 keys for all cluster segments.
     pub fn all_cluster_keys(&self, namespace: &str) -> Vec<String> {
+        let field = &self.l0.vector_field;
         (0..self.l0.num_fine_total)
-            .map(|fid| ClusterSegment::key(namespace, fid))
+            .map(|fid| ClusterSegment::key(namespace, field, fid))
             .collect()
     }
+}
+
+/// Vector field names to build ANN indexes for (schema order, max 2).
+pub fn vector_fields_to_index(
+    schema: &Value,
+    meta: &crate::meta::NamespaceMeta,
+    sample: Option<&Document>,
+) -> Vec<String> {
+    let mut fields: Vec<String> = meta
+        .vector_fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    if fields.is_empty() {
+        fields = vector_fields_from_schema(schema);
+    }
+    if fields.len() > crate::meta::MAX_VECTOR_FIELDS {
+        fields.truncate(crate::meta::MAX_VECTOR_FIELDS);
+    }
+    if fields.is_empty() {
+        if !meta.vector_field.is_empty() {
+            fields.push(meta.vector_field.clone());
+        } else if let Some(name) = primary_vector_field(schema, sample) {
+            fields.push(name);
+        }
+    }
+    fields
 }
 
 fn num_coarse(n: usize) -> usize {
@@ -1003,7 +1056,8 @@ mod tests {
 
     #[test]
     fn l1_key_format() {
-        assert!(CentroidIndexL1::key("ns", 3).contains("centroids-l1-00000003"));
+        assert!(CentroidIndexL1::key("ns", "emb", 3).contains("centroids-l1-00000003"));
+        assert!(CentroidIndexL1::key("ns", "emb", 3).contains("/index/emb/"));
     }
 
     #[test]

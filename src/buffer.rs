@@ -140,7 +140,7 @@ impl WriteBufferManager {
             st.deletes.extend(deletes);
             if let Some(patch) = schema_patch {
                 st.schema_patch = Some(match st.schema_patch.take() {
-                    Some(existing) => crate::schema::merge_schema(&existing, &patch),
+                    Some(existing) => crate::schema::merge_schema(&existing, &patch)?,
                     None => patch,
                 });
             }

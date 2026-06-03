@@ -58,6 +58,7 @@ const NAMESPACE_BB3_BRANCH_DEST: &str = "itest-bb3-branch-patch";
 const NAMESPACE_BB3_F16_HYBRID: &str = "itest-bb3-f16-hybrid";
 const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
+const NAMESPACE_TWO_VEC: &str = "itest-two-vector-cols";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -1539,7 +1540,7 @@ async fn ten_thousand_docs_indexed_query() {
     assert_eq!(meta.index_cursor, meta.wal_commit_seq);
     assert!(meta.wal_commit_seq >= 1);
 
-    let l0_key = format!("{ROOT_PREFIX}{ns}/index/centroids-l0.bin");
+    let l0_key = format!("{ROOT_PREFIX}{ns}/index/embedding/centroids-l0.bin");
     let l0_size = object_size(&fixture.client, &fixture.bucket, &l0_key).await;
     assert!(
         l0_size > 0,
@@ -2480,7 +2481,7 @@ async fn s3_cold_query_reports_roundtrips_on_minio() {
     .await;
     wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
 
-    let l0_key = format!("{ROOT_PREFIX}{ns}/index/centroids-l0.bin");
+    let l0_key = format!("{ROOT_PREFIX}{ns}/index/embedding/centroids-l0.bin");
     assert_key_exists(&fixture.client, &fixture.bucket, &l0_key).await;
 
     let client = reqwest::Client::new();
@@ -3388,6 +3389,93 @@ async fn copy_from_namespace_hybrid_filter_query_cross_feature() {
     assert!(
         !hybrid_pro.contains(&"copy-hybrid-b".to_string()),
         "filter tier=pro must exclude free-tier doc on dest, got {hybrid_pro:?}"
+    );
+}
+
+/// Two vector columns: separate centroid trees on S3; `rank_by` selects field.
+#[tokio::test]
+async fn two_vector_columns_query_each_field() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_TWO_VEC,
+        json!({
+            "schema": {
+                "emb_a": "[2]f32",
+                "emb_b": "[2]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "near-a",
+                    "attributes": {
+                        "emb_a": [1.0, 0.0],
+                        "emb_b": [0.0, 1.0]
+                    }
+                },
+                {
+                    "id": "near-b",
+                    "attributes": {
+                        "emb_a": [0.0, 1.0],
+                        "emb_b": [1.0, 0.0]
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_TWO_VEC, Duration::from_secs(60)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_TWO_VEC).await;
+    assert!(
+        meta.vector_fields.len() >= 2
+            || (meta.vector_field.len() > 0 && meta.dimensions > 0),
+        "meta should record vector index: {:?}",
+        meta.vector_fields
+    );
+
+    let l0_a = format!("{ROOT_PREFIX}{NAMESPACE_TWO_VEC}/index/emb_a/centroids-l0.bin");
+    let l0_b = format!("{ROOT_PREFIX}{NAMESPACE_TWO_VEC}/index/emb_b/centroids-l0.bin");
+    let size_a = object_size(&fixture.client, &fixture.bucket, &l0_a).await;
+    let size_b = object_size(&fixture.client, &fixture.bucket, &l0_b).await;
+    assert!(size_a > 0, "emb_a centroids-l0 must exist on MinIO");
+    assert!(size_b > 0, "emb_b centroids-l0 must exist on MinIO");
+
+    let ids_a = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_TWO_VEC,
+        json!(["vector", "ANN", "emb_a", [1.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(ids_a.first().map(String::as_str), Some("near-a"));
+
+    let ids_b = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_TWO_VEC,
+        json!(["vector", "ANN", "emb_b", [1.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(ids_b.first().map(String::as_str), Some("near-b"));
+
+    let bad_resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_TWO_VEC
+        ))
+        .json(&json!({ "schema": { "emb_c": "[2]f32" } }))
+        .send()
+        .await
+        .expect("schema write");
+    assert_eq!(
+        bad_resp.status(),
+        StatusCode::BAD_REQUEST,
+        "third vector field in schema must be rejected: {}",
+        bad_resp.text().await.unwrap_or_default()
     );
 }
 

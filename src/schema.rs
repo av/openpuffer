@@ -1,7 +1,11 @@
 //! turbopuffer-style namespace schema: merge on write, drive indexer field selection.
 
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::index::vector::vector_fields_from_schema;
+use crate::meta::MAX_VECTOR_FIELDS;
 
 /// Element type for `[N]f32` vs `[N]f16` vector columns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,9 +61,10 @@ pub fn vector_dimensions_for_field(schema: &Value, field: &str) -> Option<u32> {
 ///
 /// Field specs from the request overwrite existing entries (turbopuffer shape:
 /// shorthand `"[128]f32"`, or objects with `type`, `full_text_search`, `filterable`).
-pub fn merge_schema(existing: &Value, patch: &Value) -> Value {
+/// Rejects more than [`MAX_VECTOR_FIELDS`] vector columns (turbopuffer limit).
+pub fn merge_schema(existing: &Value, patch: &Value) -> Result<Value> {
     let Some(patch_obj) = patch.as_object() else {
-        return existing.clone();
+        return Ok(existing.clone());
     };
     let mut out = match existing.as_object() {
         Some(m) => m.clone(),
@@ -68,7 +73,14 @@ pub fn merge_schema(existing: &Value, patch: &Value) -> Value {
     for (name, spec) in patch_obj {
         out.insert(name.clone(), spec.clone());
     }
-    Value::Object(out)
+    let merged = Value::Object(out);
+    let vector_count = vector_fields_from_schema(&merged).len();
+    if vector_count > MAX_VECTOR_FIELDS {
+        return Err(anyhow!(
+            "namespace schema has {vector_count} vector fields; maximum is {MAX_VECTOR_FIELDS}"
+        ));
+    }
+    Ok(merged)
 }
 
 /// Normalize a field spec to an object for introspection (type string + flags).
@@ -183,7 +195,7 @@ mod tests {
             "text": {"type": "string", "full_text_search": true},
             "tier": {"type": "string", "filterable": true}
         });
-        let merged = merge_schema(&existing, &patch);
+        let merged = merge_schema(&existing, &patch).unwrap();
         assert_eq!(
             merged["text"]["full_text_search"],
             json!(true)
@@ -216,6 +228,16 @@ mod tests {
             vector_element_for_field(&json!({"emb": "[4]f16"}), "emb"),
             VectorElement::F16
         );
+    }
+
+    #[test]
+    fn merge_schema_rejects_third_vector_field() {
+        let existing = json!({
+            "emb_a": "[4]f32",
+            "emb_b": "[8]f32"
+        });
+        let patch = json!({"emb_c": "[2]f32"});
+        assert!(merge_schema(&existing, &patch).is_err());
     }
 
     #[test]

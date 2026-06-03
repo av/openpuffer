@@ -70,7 +70,7 @@ fn perf_indexed_vector_query_candidate_ratio_and_latency() {
         docs: &map,
         meta: &meta,
         fts: None,
-        vector: Some(&vindex),
+        vectors: &HashMap::from([("embedding".to_string(), vindex)]),
         filter_index: None,
         tail_doc_ids: &tail,
         consistency: QueryConsistency::Strong,
