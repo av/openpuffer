@@ -75,11 +75,16 @@ jobs:
       - name: Build openpuffer (release, bench)
         run: cargo build --release --features bench
 
-      # 10k cold baseline + storage_roundtrips ≤ 4 (non-ignored bench tests).
+      # 10k cold gates (non-ignored): baseline, warm_vs_cold, storage_roundtrips ≤ 4.
       - name: cargo test -F bench --test bench_cold
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: cargo test -F bench --test bench_cold -- --nocapture
+
+      - name: bench_cold_10k_warm_vs_cold (explicit CI gate)
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: cargo test -F bench --test bench_cold bench_cold_10k_warm_vs_cold -- --nocapture
 
       # Phase B ANN gates on 10k fixture (lib, non-ignored).
       - name: cargo test --lib (10k ANN gates)

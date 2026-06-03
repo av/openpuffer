@@ -18,6 +18,7 @@ use crate::index::vector::{
     probe_fine_centroids_parts, CentroidIndexL0, CentroidIndexL1, CentroidIndexL2,
     CentroidRouting, ClusterSegment, VectorIndex,
 };
+use crate::limits::{validate_namespace_name, validate_s3_object_key, validate_s3_path_segment};
 use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_paths, NamespaceMeta};
 use crate::namespace::fetch_meta;
 use anyhow::{Context, Result};
@@ -100,6 +101,21 @@ pub struct ColdPlanOpts {
     pub include_wal_tail: bool,
 }
 
+fn validate_cold_namespace(namespace: &str) -> Result<()> {
+    validate_namespace_name(namespace).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn validate_cold_vector_field(field: &str) -> Result<()> {
+    validate_s3_path_segment(field, "vector field name").map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn validate_cold_s3_keys(keys: &[String]) -> Result<()> {
+    for key in keys {
+        validate_s3_object_key(key).map_err(|e| anyhow::anyhow!("{e}: {key}"))?;
+    }
+    Ok(())
+}
+
 /// Plan cold-query S3 rounds. Pass `l0_by_field` and optional `l1_by_field` (synthetic or
 /// decoded) so round-3 cluster keys reflect the probe plan, not `num_fine_total`.
 pub fn plan_cold_query(
@@ -110,6 +126,7 @@ pub fn plan_cold_query(
     l1_by_field: Option<&HashMap<String, HashMap<u32, CentroidIndexL1>>>,
     opts: ColdPlanOpts,
 ) -> ColdQueryPlan {
+    let _ = validate_cold_namespace(namespace);
     let mut plan = ColdQueryPlan::default();
 
     if opts.include_wal_round {
@@ -119,6 +136,9 @@ pub fn plan_cold_query(
     plan.round2_keys = round2_bootstrap_keys(namespace, meta);
 
     for (field, query) in vector_probes {
+        if validate_cold_vector_field(field).is_err() {
+            continue;
+        }
         let Some(l0) = l0_by_field.get(field) else {
             continue;
         };
@@ -126,7 +146,7 @@ pub fn plan_cold_query(
         let l1_loaded = l1_by_field
             .and_then(|m| m.get(field))
             .unwrap_or(&empty_l1);
-        plan.round3_keys.extend(round3_keys_for_query(
+        if let Ok(r3) = round3_keys_for_query(
             namespace,
             meta,
             field,
@@ -135,7 +155,9 @@ pub fn plan_cold_query(
             query,
             None,
             &HashMap::new(),
-        ));
+        ) {
+            plan.round3_keys.extend(r3);
+        }
     }
     plan.round3_keys.sort();
     plan.round3_keys.dedup();
@@ -195,8 +217,10 @@ pub fn round3_keys_for_query(
     query: &[f64],
     routing: Option<&CentroidRouting>,
     l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
-) -> Vec<String> {
-    let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query);
+) -> Result<Vec<String>> {
+    validate_cold_namespace(namespace)?;
+    validate_cold_vector_field(field)?;
+    let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query)?;
     if l0.has_routing {
         keys.push(CentroidRouting::key(namespace, field));
         if let Some(routing) = routing {
@@ -205,10 +229,11 @@ pub fn round3_keys_for_query(
     }
     keys.extend(cluster_keys_for_query(
         namespace, meta, field, l0, l1_loaded, query, routing, l2_loaded,
-    ));
+    )?);
     keys.sort();
     keys.dedup();
-    keys
+    validate_cold_s3_keys(&keys)?;
+    Ok(keys)
 }
 
 /// WAL keys for round 1 (meta is fetched separately in [`cold_load_meta_and_wal`]).
@@ -297,7 +322,9 @@ pub fn round2_keys_for_field(
     meta: &NamespaceMeta,
     field: &str,
     l0: &CentroidIndexL0,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
+    validate_cold_namespace(namespace)?;
+    validate_cold_vector_field(field)?;
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let mut keys = Vec::new();
     for coarse_id in 0..l0.num_coarse {
@@ -314,7 +341,8 @@ pub fn round2_keys_for_field(
             keys.push(ClusterSegment::key(namespace, field, fine_id));
         }
     }
-    keys
+    validate_cold_s3_keys(&keys)?;
+    Ok(keys)
 }
 
 /// Keys for round 2 cold load: filter + all L1 + all cluster files (all vector columns).
@@ -328,7 +356,9 @@ pub fn round2_keys(
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
     }
     for (field, l0) in l0_by_field {
-        keys.extend(round2_keys_for_field(namespace, meta, field, l0));
+        if let Ok(field_keys) = round2_keys_for_field(namespace, meta, field, l0) {
+            keys.extend(field_keys);
+        }
     }
     keys.sort();
     keys.dedup();
@@ -342,7 +372,9 @@ pub fn l1_keys_for_query_probe(
     field: &str,
     l0: &CentroidIndexL0,
     query: &[f64],
-) -> Vec<String> {
+) -> Result<Vec<String>> {
+    validate_cold_namespace(namespace)?;
+    validate_cold_vector_field(field)?;
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let mut keys = Vec::new();
     for coarse_id in l0.nearest_coarse(query, l0.probe_coarse_count()) {
@@ -352,7 +384,8 @@ pub fn l1_keys_for_query_probe(
             keys.push(CentroidIndexL1::key(namespace, field, coarse_id));
         }
     }
-    keys
+    validate_cold_s3_keys(&keys)?;
+    Ok(keys)
 }
 
 /// Upper bound on cluster `GetObject` calls for one probed vector query (spec slack +4).
@@ -372,7 +405,9 @@ pub fn cluster_keys_for_query(
     query: &[f64],
     routing: Option<&CentroidRouting>,
     l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
+    validate_cold_namespace(namespace)?;
+    validate_cold_vector_field(field)?;
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let mut keys = Vec::new();
     for fine_id in probe_fine_centroids_parts(l0, l1_loaded, routing, l2_loaded, query) {
@@ -382,7 +417,8 @@ pub fn cluster_keys_for_query(
             keys.push(ClusterSegment::key(namespace, field, fine_id));
         }
     }
-    keys
+    validate_cold_s3_keys(&keys)?;
+    Ok(keys)
 }
 
 /// `centroids-routing.bin` key when L0 marks v3 routing.
@@ -422,12 +458,13 @@ pub fn round2_keys_for_query_probe(
     field: &str,
     l0: &CentroidIndexL0,
     query: &[f64],
-) -> Vec<String> {
-    let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query);
+) -> Result<Vec<String>> {
+    let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query)?;
     if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
     }
-    keys
+    validate_cold_s3_keys(&keys)?;
+    Ok(keys)
 }
 
 /// Record cold-query S3 key volume (Prometheus + per-query accounting).
@@ -451,6 +488,7 @@ pub async fn fetch_round(
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
+    validate_cold_s3_keys(keys)?;
     let max = cold_max_keys_per_round();
     let mut out = HashMap::with_capacity(keys.len());
     for chunk in keys.chunks(max) {
@@ -469,6 +507,7 @@ pub async fn fetch_round_optional(
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
+    validate_cold_s3_keys(keys)?;
     let max = cold_max_keys_per_round();
     let mut out = HashMap::with_capacity(keys.len());
     for chunk in keys.chunks(max) {
@@ -637,7 +676,9 @@ pub async fn fetch_cold_vector_probed(
     let mut fetched = HashMap::new();
     let mut s3_keys_fetched = 0u32;
 
-    let l1_keys = l1_keys_for_query_probe(namespace, meta, field, &l0, query);
+    validate_cold_namespace(namespace)?;
+    validate_cold_vector_field(field)?;
+    let l1_keys = l1_keys_for_query_probe(namespace, meta, field, &l0, query)?;
     if !l1_keys.is_empty() {
         storage_roundtrips = 1;
         s3_keys_fetched = s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(l1_keys.len()));
@@ -773,9 +814,9 @@ pub fn cluster_keys_for_query_after_l1(
         .map(|r| l2_keys_for_query_probe(namespace, field, l0, r, query))
         .unwrap_or_default();
     let l2 = decode_l2_probed(namespace, field, fetched, &l2_key_list)?;
-    Ok(cluster_keys_for_query(
+    cluster_keys_for_query(
         namespace, meta, field, l0, &l1, query, routing.as_ref(), &l2,
-    ))
+    )
 }
 
 pub(crate) fn decode_l1_probed(
@@ -1181,7 +1222,7 @@ mod tests {
             ..Default::default()
         };
         let query = vec![1.0, 0.0];
-        let keys = round2_keys_for_query_probe("ns", &meta, "emb", &l0, &query);
+        let keys = round2_keys_for_query_probe("ns", &meta, "emb", &l0, &query).unwrap();
         assert!(
             keys.iter().filter(|k| k.contains("centroids-l1-")).count()
                 <= DEFAULT_PROBE_COARSE as usize
@@ -1315,7 +1356,8 @@ mod tests {
         }
         let probed = cluster_keys_for_query(
             "ns", &meta, "emb", &l0, &l1_loaded, &query, None, &HashMap::new(),
-        );
+        )
+        .unwrap();
         let full_clusters = (0..l0.num_fine_total)
             .map(|fid| ClusterSegment::key("ns", "emb", fid))
             .count();
@@ -1529,6 +1571,34 @@ mod tests {
         assert!(r3 < 4000, "round-3 must not scale with num_fine_total");
         assert!(plan.round3_keys.iter().any(|k| k.contains("centroids-l1-")));
         assert!(plan.round3_keys.iter().any(|k| k.contains("clusters-")));
+    }
+
+    #[test]
+    fn cold_vector_field_path_traversal_rejected_in_probe_keys() {
+        let meta = NamespaceMeta::default();
+        let l0 = CentroidIndexL0::default();
+        let query = vec![1.0, 0.0];
+        assert!(l1_keys_for_query_probe("ns", &meta, "../other", &l0, &query).is_err());
+        assert!(round3_keys_for_query(
+            "ns",
+            &meta,
+            "../../escape",
+            &l0,
+            &HashMap::new(),
+            &query,
+            None,
+            &HashMap::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cold_s3_keys_with_dot_dot_fail_validation_before_fetch() {
+        let bad = format!(
+            "{}ns/index/../../other-ns/index/emb/centroids-l0.bin",
+            crate::models::ROOT_PREFIX
+        );
+        assert!(validate_cold_s3_keys(&[bad]).is_err());
     }
 
     #[test]

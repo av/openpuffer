@@ -18,6 +18,46 @@ fn namespace_name_char_ok(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
 }
 
+/// Reject path traversal and slash characters in S3 key path segments (namespace, vector field, etc.).
+pub fn validate_s3_path_segment(segment: &str, label: &str) -> Result<(), String> {
+    if segment.is_empty() {
+        return Ok(());
+    }
+    if segment.contains("..") {
+        return Err(format!("{label} must not contain '..'"));
+    }
+    if segment.contains('/') || segment.contains('\\') {
+        return Err(format!("{label} must not contain path separators"));
+    }
+    if segment.chars().any(|c| c.is_control()) {
+        return Err(format!("{label} must not contain control characters"));
+    }
+    Ok(())
+}
+
+/// Validate a full S3 object key before `GetObject` / `PutObject` (cold batch and index paths).
+pub fn validate_s3_object_key(key: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("S3 object key must not be empty".into());
+    }
+    if !key.starts_with(crate::models::ROOT_PREFIX) {
+        return Err(format!(
+            "S3 object key must start with '{}'",
+            crate::models::ROOT_PREFIX
+        ));
+    }
+    if key.contains("..") {
+        return Err("S3 object key must not contain '..'".into());
+    }
+    if key.contains('\\') {
+        return Err("S3 object key must not contain backslashes".into());
+    }
+    if key.contains("//") {
+        return Err("S3 object key must not contain empty path segments".into());
+    }
+    Ok(())
+}
+
 /// Validate a namespace path segment before S3 key use.
 pub fn validate_namespace_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -92,6 +132,25 @@ mod tests {
         assert!(validate_namespace_name("bad space").is_err());
         let long = "a".repeat(MAX_NAMESPACE_NAME_LEN + 1);
         assert!(validate_namespace_name(&long).is_err());
+    }
+
+    #[test]
+    fn rejects_path_traversal_in_s3_path_segments() {
+        assert!(validate_s3_path_segment("../escape", "vector field name").is_err());
+        assert!(validate_s3_path_segment("emb/foo", "vector field name").is_err());
+        assert!(validate_s3_path_segment("ok_field", "vector field name").is_ok());
+        assert!(validate_s3_path_segment("", "vector field name").is_ok());
+    }
+
+    #[test]
+    fn rejects_traversal_in_s3_object_keys() {
+        let bad = format!(
+            "{}ns/index/../../other-ns/index/emb/centroids-l0.bin",
+            crate::models::ROOT_PREFIX
+        );
+        assert!(validate_s3_object_key(&bad).is_err());
+        let ok = format!("{}ns/index/emb/centroids-l0.bin", crate::models::ROOT_PREFIX);
+        assert!(validate_s3_object_key(&ok).is_ok());
     }
 
     #[test]

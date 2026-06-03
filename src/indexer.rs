@@ -969,7 +969,7 @@ pub async fn load_vector_index_probed_for_query(
     query: &[f64],
     cache: &Arc<SegmentCache>,
 ) -> Result<(VectorIndex, u32)> {
-    let l1_keys = crate::s3_batch::l1_keys_for_query_probe(namespace, meta, field, &l0, query);
+    let l1_keys = crate::s3_batch::l1_keys_for_query_probe(namespace, meta, field, &l0, query)?;
     let mut fetched = fetch_index_objects_from_cache(client, bucket, cache, &l1_keys).await?;
     if let Some(routing_key) = crate::s3_batch::routing_key_for_field(namespace, field, &l0) {
         if let Some(bytes) = cache.get_bytes(client, bucket, &routing_key).await? {

@@ -81,7 +81,7 @@ cargo test --lib recall_at_10_10k_with_rerank_at_least_point_nine_two -- --nocap
 cargo test --lib ann_v3_index_object_count_100k_under_five_hundred -- --nocapture
 ```
 
-Non-ignored bench tests: `bench_cold_10k_baseline`, `bench_cold_10k_storage_roundtrips_at_most_four`.
+Non-ignored bench tests: `bench_cold_10k_baseline`, `bench_cold_10k_warm_vs_cold`, `bench_cold_10k_storage_roundtrips_at_most_four`.
 
 ### Nightly (100k + lib ignored)
 
