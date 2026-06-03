@@ -2243,12 +2243,19 @@ mod tests {
         )
         .unwrap()
         .expect("v3 100k index");
+        let count = index.index_object_count();
         assert!(
-            index.index_object_count() < V3_INDEX_OBJECT_CAP,
-            "built v3 100k index_object_count {} must be < {}",
-            index.index_object_count(),
-            V3_INDEX_OBJECT_CAP
+            count < V3_INDEX_OBJECT_CAP,
+            "built v3 100k index_object_count {count} must be < {V3_INDEX_OBJECT_CAP}"
         );
+        let report = serde_json::json!({
+            "benchmark": "ann_v3_built_index_100k",
+            "environment": "in-memory-lib",
+            "namespace_docs": N,
+            "index_object_count": count,
+            "v3_index_object_cap": V3_INDEX_OBJECT_CAP,
+        });
+        println!("{}", report);
     }
 
     #[test]
@@ -2280,6 +2287,15 @@ mod tests {
         .expect("100k v3 index");
 
         let recall = recall_at_10(&index, &vectors, QUERIES);
+        let report = serde_json::json!({
+            "benchmark": "recall_at_10_100k",
+            "environment": "in-memory-lib",
+            "namespace_docs": N,
+            "recall_at_10": recall,
+            "queries": QUERIES,
+            "min_recall_gate": MIN_RECALL,
+        });
+        println!("{}", report);
         assert!(
             recall >= MIN_RECALL,
             "recall@10 {recall} should be >= {MIN_RECALL} on 100k synthetic (v3)"

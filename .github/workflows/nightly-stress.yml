@@ -1,4 +1,4 @@
-# Nightly 50k-document namespace stress (MinIO via testcontainers; requires Docker).
+# Nightly scale: 50k stress, 100k cold bench, 100k ANN lib gates (MinIO / in-memory).
 name: Nightly large stress
 
 on:
@@ -12,6 +12,34 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  bench-100k:
+    name: bench 100k + ANN lib (ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-nightly
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test -F bench --test bench_cold (100k ignored)
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: cargo test --release -F bench --test bench_cold -- --ignored --nocapture
+
+      - name: cargo test --lib (100k ANN ignored)
+        run: >-
+          cargo test --release --lib
+          recall_at_10_100k_synthetic_at_least_point_nine
+          ann_v3_built_index_object_count_100k_under_five_hundred
+          -- --ignored --nocapture
+
   stress-50k:
     name: stress_50k (50k docs, MinIO)
     runs-on: ubuntu-latest

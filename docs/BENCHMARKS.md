@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md). Work is fact-driven: `@spec` facts under `index/ann` and `query/cold` in `.facts` are checked with `facts check --tags cold,ann` (expect failures until Phases A/B land).
+Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md). Work is fact-driven: `@spec` facts under `index/ann` and `query/cold` in `.facts` are checked with `facts check --tags cold,ann`.
 
 ## Feature: `bench`
 
@@ -8,47 +8,117 @@ Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFR
 # Build integration + bench tests (needs Docker for MinIO testcontainers)
 cargo build --features bench -q
 
-# 10k cold baseline (CI-friendly; ~2–4 min on a dev machine with --release serve binary)
-cargo test -F bench bench_cold_10k_baseline --test bench_cold -- --nocapture
+# 10k cold baseline + roundtrip gate (CI; non-ignored)
+cargo test -F bench --test bench_cold -- --nocapture
 
 # Regenerate committed baseline artifact
 OPENPUFFER_BENCH_WRITE_BASELINE=1 cargo test -F bench bench_cold_10k_baseline --test bench_cold -- --nocapture
 ```
 
-The baseline test prints one JSON line containing:
+### Diffable JSON fields (10k / 100k / 1M)
+
+Bench tests and `scripts/bench-1m.sh` print one JSON object per run with these keys (compare across tiers):
 
 | Field | Meaning |
 |-------|---------|
+| `benchmark` | `cold_10k`, `cold_100k`, or `cold_1m` |
+| `environment` | `minio-testcontainers`, `in-memory-lib`, or `aws-s3` |
+| `namespace_docs` | Indexed document count |
 | `storage_roundtrips` | `performance.storage_roundtrips` on a strong cold vector query |
 | `s3_get_count` | `GET /v1/debug/cache-stats` → `s3_get_count` after the query |
 | `p50_query_latency_ms` | p50 over 7 cold queries (cache reset each run) |
 | `candidates_ratio` | ANN candidate pool fraction |
-| `index_object_count` | S3 keys under `index/` matching `clusters-*` or `centroids-l1-*.bin` |
+| `recall_at_10` | ANN vs brute (100k bench, 1M script via `/recall`) |
+| `index_object_count` | S3 keys under `index/` matching `clusters-*` or `centroids-l1-*.bin` (MinIO benches) |
 
-Committed snapshot: [`benchmarks/results/baseline-10k.json`](../benchmarks/results/baseline-10k.json).
+Committed 10k snapshot: [`benchmarks/results/baseline-10k.json`](../benchmarks/results/baseline-10k.json).
 
-Phase A gate (ignored until implemented):
-
-```bash
-cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four --test bench_cold -- --include-ignored
-```
+Optional nightly artifact: set `OPENPUFFER_BENCH_WRITE_RESULTS=1` on `bench_cold_100k_nightly` → `benchmarks/results/nightly-100k.json`.
 
 ## Tiers
 
 | Tier | Size | Command | Environment |
 |------|------|---------|-------------|
-| CI baseline | 10k | `cargo test -F bench bench_cold_10k_baseline` | MinIO testcontainers |
-| Nightly | 100k | `cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture` | MinIO (`#[ignore]`, ~15–30 min) |
-| Nightly (lib) | 100k ANN | `cargo test --lib 'recall_at_10_100k|ann_v3_built_index' -- --ignored --nocapture` | In-memory v3 (`#[ignore]`, ~4 min each) |
-| Manual | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
+| **CI** | 10k | `cargo test -F bench --test bench_cold` + lib 10k ANN gates | MinIO testcontainers (`.github/workflows/ci.yml` job `bench-10k`) |
+| **Nightly** | 100k | `cargo test -F bench --test bench_cold -- --ignored` + lib `--ignored` | MinIO + in-memory v3 (`.github/workflows/nightly-stress.yml` job `bench-100k`) |
+| **Manual** | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
+
+### CI (10k gates)
+
+GitHub Actions job **`bench-10k`** runs:
+
+```bash
+cargo test -F bench --test bench_cold -- --nocapture
+cargo test --lib recall_v3_at_least_five_points_above_v2_on_10k_fixture -- --nocapture
+cargo test --lib recall_at_10_10k_with_rerank_at_least_point_nine_two -- --nocapture
+cargo test --lib ann_v3_index_object_count_100k_under_five_hundred -- --nocapture
+```
+
+Non-ignored bench tests: `bench_cold_10k_baseline`, `bench_cold_10k_storage_roundtrips_at_most_four`.
+
+### Nightly (100k + lib ignored)
+
+Scheduled **03:00 UTC** (or `workflow_dispatch`):
+
+```bash
+cargo test --release -F bench --test bench_cold -- --ignored --nocapture
+cargo test --release --lib \
+  recall_at_10_100k_synthetic_at_least_point_nine \
+  ann_v3_built_index_object_count_100k_under_five_hundred \
+  -- --ignored --nocapture
+```
+
+Gates: `recall@10 ≥ 0.88`, `candidates_ratio < 0.20`, `storage_roundtrips ≤ 4` (100k MinIO); lib recall ≥ 0.90, built index objects < 500.
 
 ## 1M manual (AWS)
 
-1. Configure `OPENPUFFER_S3_*` for AWS.
-2. Ingest 1M × 128-dim f32 with `upsert_columns` batches (respect ~1 WAL commit/s; see README 50k stress notes, scaled up).
-3. Wait for `index_cursor == wal_commit_seq`.
-4. Run `scripts/bench-1m.sh` or cold-query with `--cache-dir=""`.
-5. Record `benchmarks/results/1m-aws.json`: `storage_roundtrips ≤ 4`, `recall@10 ≥ 0.85`, p50 **< 600ms**.
+**Prerequisites**
+
+1. AWS S3 bucket in the target region; IAM user or role with read/write on the bucket.
+2. **Ingest out of band:** 1M × 128-dim `f32` via `upsert_columns` batches (~1 WAL commit/s — see README 50k stress notes, scaled up). Namespace must reach `index_cursor == wal_commit_seq`.
+3. Tools on the runner: `bash`, `curl`, `jq`, `python3`, release `openpuffer` binary (script builds via `cargo build --release`).
+4. Do **not** use MinIO timings for the p50 SLO; AWS WAN latency is the gate.
+
+**Environment variables**
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `OPENPUFFER_S3_ENDPOINT` | yes | — | AWS S3 endpoint URL |
+| `OPENPUFFER_S3_BUCKET` | yes | — | Bucket name |
+| `OPENPUFFER_S3_ACCESS_KEY` | yes | — | Access key |
+| `OPENPUFFER_S3_SECRET_KEY` | yes | — | Secret key |
+| `OPENPUFFER_S3_REGION` | no | `us-east-1` | Region passed to `serve` |
+| `OPENPUFFER_BENCH_NAMESPACE` | no | `bench-1m-cold` | Namespace to benchmark |
+| `OPENPUFFER_BENCH_DOCS` | no | `1000000` | Expected doc count (metadata only) |
+| `OPENPUFFER_BENCH_LISTEN` | no | `127.0.0.1:8080` | `serve` listen address |
+| `OPENPUFFER_BENCH_RESULTS` | no | `benchmarks/results/1m-aws.json` | Output path |
+| `OPENPUFFER_BENCH_COLD_RUNS` | no | `7` | Cold query samples for p50 |
+| `OPENPUFFER_BENCH_RECALL_NUM` | no | `20` | `/recall` query count |
+| `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC` | no | `7200` | Wait for indexer catch-up |
+| `OPENPUFFER_BENCH_SKIP_SERVE` | no | — | Set if `serve` already running |
+| `OPENPUFFER_BENCH_SKIP_INDEX_WAIT` | no | — | Set if namespace already caught up |
+| `OPENPUFFER_BENCH_ENFORCE_GATES` | no | `1` | Exit 1 if SLOs fail |
+| `OPENPUFFER_ANN_VERSION` | no | — | e.g. `3` for v3 index on `serve` |
+
+**Run**
+
+```bash
+export OPENPUFFER_S3_ENDPOINT=...
+export OPENPUFFER_S3_BUCKET=...
+export OPENPUFFER_S3_ACCESS_KEY=...
+export OPENPUFFER_S3_SECRET_KEY=...
+
+# After ingest + index catch-up:
+./scripts/bench-1m.sh
+# or record without failing on SLO:
+OPENPUFFER_BENCH_ENFORCE_GATES=0 ./scripts/bench-1m.sh
+```
+
+**Targets** (written to `benchmarks/results/1m-aws.json`):
+
+- `storage_roundtrips ≤ 4`
+- `recall_at_10 ≥ 0.85` (from `POST /v1/namespaces/{name}/recall`)
+- `p50_query_latency_ms < 600` on AWS
 
 ## Phase B ANN gates (lib, CI + nightly)
 

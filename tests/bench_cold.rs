@@ -304,23 +304,72 @@ async fn bench_cold_100k_nightly() {
     )
     .await;
 
+    let index_prefix = format!("{ROOT_PREFIX}{NAMESPACE_100K}/index/");
+    let index_keys =
+        list_keys_with_prefix(&fixture.client, &fixture.bucket, &index_prefix).await;
+    let index_object_count = count_ann_index_objects(&index_keys);
+
     let recall = recall_at_10_on_namespace(&serve, NAMESPACE_100K, DOCS_100K).await;
-    let (_, body) = cold_vector_query_ms(&serve, NAMESPACE_100K).await;
-    let perf = body["performance"].as_object().expect("performance");
+
+    let mut latencies_ms = Vec::with_capacity(COLD_QUERY_RUNS);
+    let mut last_body = json!(null);
+    for _ in 0..COLD_QUERY_RUNS {
+        let (ms, body) = cold_vector_query_ms(&serve, NAMESPACE_100K).await;
+        latencies_ms.push(ms);
+        last_body = body;
+    }
+    let p50_query_latency_ms = p50_ms(&mut latencies_ms);
+
+    let perf = last_body["performance"].as_object().expect("performance");
     let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
     let roundtrips = perf["storage_roundtrips"]
         .as_u64()
         .expect("storage_roundtrips");
 
+    let client = reqwest::Client::new();
+    let stats: Value = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats")
+        .json()
+        .await
+        .expect("stats json");
+    let s3_get_count = stats["s3_get_count"].as_u64().expect("s3_get_count");
+
     let report = json!({
         "benchmark": "cold_100k",
         "environment": "minio-testcontainers",
         "namespace_docs": DOCS_100K,
-        "recall_at_10": recall,
-        "candidates_ratio": ratio,
+        "dimensions": DIM,
+        "cache_dir": "",
+        "consistency": "strong",
+        "index_cursor_eq_wal_commit_seq": true,
         "storage_roundtrips": roundtrips,
+        "s3_get_count": s3_get_count,
+        "p50_query_latency_ms": p50_query_latency_ms,
+        "candidates_ratio": ratio,
+        "recall_at_10": recall,
+        "index_object_count": index_object_count,
+        "index_keys_total": index_keys.len(),
+        "cold_query_runs": COLD_QUERY_RUNS,
+        "notes": "Nightly 100k gate. Regenerate: cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture"
     });
     println!("{}", serde_json::to_string(&report).expect("bench json"));
+
+    if std::env::var_os("OPENPUFFER_BENCH_WRITE_RESULTS").is_some() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/results/nightly-100k.json");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create benchmarks/results");
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).expect("pretty json"),
+        )
+        .expect("write nightly-100k.json");
+        eprintln!("wrote {}", path.display());
+    }
 
     assert!(
         recall >= 0.88,
