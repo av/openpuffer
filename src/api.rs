@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::export::MAX_EXPORT_LIMIT;
+use crate::limits::{self, validate_namespace_name};
 use crate::models::{
     validate_doc_id, Document, ExportRequest, ExportResponse, HealthResponse, NamespaceSummary,
     NamespacesResponse, QueryRequest, WriteRequest,
@@ -11,15 +12,14 @@ use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
-    response::IntoResponse,
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
-
-/// Max JSON write body (large `upsert_columns` batches, e.g. 2k × 128-dim vectors).
-const MAX_WRITE_BODY_BYTES: usize = 64 * 1024 * 1024;
 use crate::models::QueryPerformance;
 use std::sync::Arc;
 use tracing::error;
@@ -49,8 +49,44 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/debug/cache-stats", get(cache_stats_debug))
         .route("/v1/debug/cache-stats/reset", post(cache_stats_reset_debug));
 
-    r.layer(DefaultBodyLimit::max(MAX_WRITE_BODY_BYTES))
+    r.layer(middleware::from_fn(reject_oversized_write_body))
+        .layer(DefaultBodyLimit::max(limits::MAX_WRITE_BODY_BYTES))
         .with_state(state)
+}
+
+async fn reject_oversized_write_body(req: Request<Body>, next: Next) -> Response {
+    if let Some(v) = req.headers().get(header::CONTENT_LENGTH) {
+        if let Ok(s) = v.to_str() {
+            if let Ok(n) = s.parse::<usize>() {
+                if n > limits::MAX_WRITE_BODY_BYTES {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "request body exceeds maximum write size of {} MiB",
+                                limits::MAX_WRITE_BODY_BYTES / (1024 * 1024)
+                            )
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    next.run(req).await
+}
+
+fn namespace_name_error_response(name: &str) -> Option<axum::response::Response> {
+    if let Err(msg) = validate_namespace_name(name) {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response(),
+        );
+    }
+    None
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -175,6 +211,9 @@ async fn export_namespace_impl(
     limit: Option<usize>,
     format: Option<&str>,
 ) -> axum::response::Response {
+    if let Some(resp) = namespace_name_error_response(name) {
+        return resp;
+    }
     if let Some(id) = last_id {
         if let Err(msg) = validate_doc_id(id) {
             return (
@@ -255,6 +294,9 @@ async fn warm_namespace_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
     match state.storage.warm_namespace(&name).await {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(e) => {
@@ -294,6 +336,9 @@ async fn get_namespace_metadata(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
     match state.storage.namespace_metadata(&name).await {
         Ok(meta) => (StatusCode::OK, Json(meta)).into_response(),
         Err(e) => {
@@ -332,6 +377,10 @@ async fn write_namespace(
     Path(name): Path<String>,
     Json(body): Json<WriteRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
+
     if body.copy_from_namespace.is_some() && body.branch_from_namespace.is_some() {
         return (
             StatusCode::BAD_REQUEST,
@@ -343,6 +392,9 @@ async fn write_namespace(
     }
 
     if let Some(source) = body.branch_from_namespace.as_deref() {
+        if let Some(resp) = namespace_name_error_response(source) {
+            return resp;
+        }
         return handle_namespace_s3_clone(
             &state,
             &name,
@@ -355,6 +407,9 @@ async fn write_namespace(
     }
 
     if let Some(source) = body.copy_from_namespace.as_deref() {
+        if let Some(resp) = namespace_name_error_response(source) {
+            return resp;
+        }
         return handle_namespace_s3_clone(
             &state,
             &name,
@@ -364,6 +419,20 @@ async fn write_namespace(
             NamespaceS3CloneOp::Copy,
         )
         .await;
+    }
+
+    let explicit_rows = limits::count_explicit_write_rows(&body);
+    if explicit_rows > state.config.limits.max_upsert_rows {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "write request has {explicit_rows} rows; maximum is {}",
+                    state.config.limits.max_upsert_rows
+                )
+            })),
+        )
+            .into_response();
     }
 
     let mut upserts = Vec::new();
@@ -560,7 +629,9 @@ async fn write_namespace(
             body.deletes,
             body.schema,
             body.delete_by_filter,
+            body.delete_by_filter_allow_partial,
             patch_by_filter,
+            body.patch_by_filter_allow_partial,
             upsert_condition,
             distance_metric,
             body.return_affected_ids,
@@ -574,10 +645,11 @@ async fn write_namespace(
             .into_response(),
         Err(e) => {
             error!("write namespace {name}: {e:#}");
-            if e.to_string().contains("distance_metric") {
+            let msg = e.to_string();
+            if msg.contains("distance_metric") || msg.contains("filter matched") {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("{e:#}")})),
+                    Json(serde_json::json!({"error": msg})),
                 )
                     .into_response();
             }
@@ -691,6 +763,9 @@ async fn query_namespace(
     Path(name): Path<String>,
     Json(body): Json<QueryRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
     let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
         Ok(c) => c,
         Err(e) => {
@@ -740,6 +815,9 @@ async fn delete_namespace(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
     match state.storage.delete_namespace(&name).await {
         Ok(()) => (
             StatusCode::OK,

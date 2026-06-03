@@ -1,4 +1,6 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
+use crate::config::LimitsConfig;
+use crate::limits::cap_filter_batch;
 use crate::cache::SegmentCache;
 use crate::filter::{parse_filter, should_apply_upsert};
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
@@ -40,6 +42,7 @@ pub struct Storage {
     cache: Arc<SegmentCache>,
     write_buffer: WriteBufferManager,
     views: Arc<Mutex<ViewCache>>,
+    limits: LimitsConfig,
 }
 
 pub struct LoadedNamespace {
@@ -61,6 +64,7 @@ impl Storage {
         cache: Arc<SegmentCache>,
         max_pinned_namespaces: usize,
         write_buffer_config: WriteBufferConfig,
+        limits: LimitsConfig,
     ) -> Arc<Self> {
         let background_indexer =
             BackgroundIndexer::spawn(client.clone(), bucket.clone(), Arc::clone(&cache));
@@ -76,6 +80,7 @@ impl Storage {
             cache,
             write_buffer,
             views: Arc::new(Mutex::new(ViewCache::new(max_pinned_namespaces))),
+            limits,
         })
     }
 
@@ -472,17 +477,26 @@ impl Storage {
         mut deletes: Vec<String>,
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
+        delete_by_filter_allow_partial: bool,
         patch_by_filter: Option<(serde_json::Value, HashMap<String, serde_json::Value>)>,
+        patch_by_filter_allow_partial: bool,
         upsert_condition: Option<serde_json::Value>,
         distance_metric: Option<crate::meta::DistanceMetric>,
         return_affected_ids: bool,
     ) -> Result<crate::models::WriteStats> {
+        let max_filter = self.limits.max_filter_batch_rows;
+        let mut rows_remaining = false;
+
         if let Some(filter_val) = delete_by_filter {
             if !filter_val.is_null() {
                 let resolved = self
                     .resolve_ids_for_filter(namespace, &filter_val)
                     .await?;
-                for id in resolved {
+                let (capped, remaining) =
+                    cap_filter_batch(resolved, delete_by_filter_allow_partial, max_filter)
+                        .map_err(anyhow::Error::msg)?;
+                rows_remaining |= remaining;
+                for id in capped {
                     if !deletes.contains(&id) {
                         deletes.push(id);
                     }
@@ -494,7 +508,11 @@ impl Storage {
             let resolved = self
                 .resolve_ids_for_filter(namespace, &filter_val)
                 .await?;
-            for id in resolved {
+            let (capped, remaining) =
+                cap_filter_batch(resolved, patch_by_filter_allow_partial, max_filter)
+                    .map_err(anyhow::Error::msg)?;
+            rows_remaining |= remaining;
+            for id in capped {
                 if let Some(existing) = patches.iter_mut().find(|p| p.id == id) {
                     for (k, v) in &patch_attrs {
                         existing.attributes.insert(k.clone(), v.clone());
@@ -520,6 +538,7 @@ impl Storage {
             rows_deleted: deletes.len() as u64,
             upserted_ids: return_affected_ids.then_some(upserted_ids),
             deleted_ids: return_affected_ids.then_some(deleted_ids),
+            rows_remaining: rows_remaining.then_some(true),
         };
 
         let committed = self

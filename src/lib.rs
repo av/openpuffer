@@ -30,6 +30,7 @@ pub mod filter;
 pub mod health;
 pub mod index;
 pub mod indexer;
+pub mod limits;
 pub mod meta;
 pub mod models;
 pub mod namespace;

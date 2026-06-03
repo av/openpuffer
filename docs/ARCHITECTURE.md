@@ -64,7 +64,11 @@ Aligned with [turbopuffer limits](https://turbopuffer.com/docs/limits) (per-name
 | Meta CAS retries | 8 | Exponential backoff 50ms × attempt; orphan WAL segment deleted on conflict |
 | Concurrent HTTP writers | Serialized per namespace | Commit lock + S3 `If-Match` on `meta.json`; safe parallel clients, one WAL seq at a time |
 | Practical throughput | ~1 WAL commit / s / ns | Raising `OPENPUFFER_WRITE_MAX_DELAY_MS` lowers commit rate; lowering it below 1000ms also lowers `min_commit_interval` (same env var drives both today) |
-| Payload size | No explicit cap in openpuffer | turbopuffer allows up to 512 MiB per write request |
+| Max write body | **64 MiB** | HTTP `400` with clear JSON error if exceeded |
+| Max upsert rows / request | **10,000** (`OPENPUFFER_MAX_UPSERT_ROWS`) | Counts `upsert_rows`, `upsert_columns`, `patch_rows`, `patch_columns`, `deletes`; filter ops excluded |
+| Max namespace name | **128** chars, `[A-Za-z0-9-_.]{1,128}` | Validated on all namespace path routes |
+| `delete_by_filter` / `patch_by_filter` batch | **5,000** docs (`OPENPUFFER_MAX_FILTER_BATCH_ROWS`) | Default fails with `400` if more matches; `delete_by_filter_allow_partial` / `patch_by_filter_allow_partial` truncates and sets `rows_remaining: true` |
+| Payload size (turbopuffer prod) | — | turbopuffer allows up to 512 MiB per write request |
 
 ## Local disk cache (index segments)
 

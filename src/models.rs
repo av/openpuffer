@@ -49,9 +49,15 @@ pub struct WriteRequest {
     /// Delete all documents matching this filter (same syntax as query `filters`).
     #[serde(default)]
     pub delete_by_filter: Option<Value>,
+    /// When true, delete up to the server filter batch limit and set `rows_remaining`.
+    #[serde(default)]
+    pub delete_by_filter_allow_partial: bool,
     /// Patch all documents matching `filters` with `patch` attributes (`{ filters, patch }`).
     #[serde(default)]
     pub patch_by_filter: Option<Value>,
+    /// When true, patch up to the server filter batch limit and set `rows_remaining`.
+    #[serde(default)]
+    pub patch_by_filter_allow_partial: bool,
     /// Copy all S3 objects from another namespace (destination must be empty).
     #[serde(default)]
     pub copy_from_namespace: Option<String>,
@@ -87,6 +93,9 @@ pub struct WriteStats {
     pub upserted_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_ids: Option<Vec<String>>,
+    /// True when a filter-based write hit the batch cap and more rows may match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_remaining: Option<bool>,
 }
 
 impl WriteStats {
@@ -120,6 +129,8 @@ pub struct WriteResponse {
     pub upserted_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_remaining: Option<bool>,
     pub billing: WriteBilling,
 }
 
@@ -136,6 +147,7 @@ impl WriteResponse {
             rows_deleted: (stats.rows_deleted > 0).then_some(stats.rows_deleted),
             upserted_ids: stats.upserted_ids,
             deleted_ids: stats.deleted_ids,
+            rows_remaining: stats.rows_remaining,
             billing: WriteBilling {
                 billable_logical_bytes_written: billing_bytes,
             },
@@ -318,6 +330,7 @@ mod tests {
             rows_deleted: 2,
             upserted_ids: None,
             deleted_ids: None,
+            rows_remaining: None,
         };
         assert_eq!(stats.rows_affected(), 6);
         assert_eq!(stats.billable_logical_bytes_written(), 384);

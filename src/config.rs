@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::buffer::WriteBufferConfig;
+use crate::limits::{DEFAULT_MAX_FILTER_BATCH_ROWS, DEFAULT_MAX_UPSERT_ROWS};
 
 #[derive(Parser, Debug)]
 #[command(name = "openpuffer", about = "S3-backed vector and FTS search")]
@@ -55,6 +56,29 @@ pub struct ServeArgs {
     /// Group-commit flush when pending upserts+patches+deletes reach this count.
     #[arg(long, env = "OPENPUFFER_WRITE_MAX_BATCH_OPS", default_value = "512")]
     pub write_max_batch_ops: usize,
+
+    /// Max upsert/patch/delete rows per write request (filter-based ops excluded).
+    #[arg(long, env = "OPENPUFFER_MAX_UPSERT_ROWS", default_value = "10000")]
+    pub max_upsert_rows: usize,
+
+    /// Max documents per `delete_by_filter` / `patch_by_filter` batch.
+    #[arg(long, env = "OPENPUFFER_MAX_FILTER_BATCH_ROWS", default_value = "5000")]
+    pub max_filter_batch_rows: usize,
+}
+
+#[derive(Clone)]
+pub struct LimitsConfig {
+    pub max_upsert_rows: usize,
+    pub max_filter_batch_rows: usize,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_upsert_rows: DEFAULT_MAX_UPSERT_ROWS,
+            max_filter_batch_rows: DEFAULT_MAX_FILTER_BATCH_ROWS,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -64,6 +88,7 @@ pub struct AppConfig {
     pub cache_dir: Option<PathBuf>,
     pub max_pinned_namespaces: usize,
     pub write_buffer: WriteBufferConfig,
+    pub limits: LimitsConfig,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -105,6 +130,10 @@ impl ServeArgs {
             cache_dir,
             max_pinned_namespaces: self.max_pinned_namespaces,
             write_buffer: self.write_buffer_config(),
+            limits: LimitsConfig {
+                max_upsert_rows: self.max_upsert_rows,
+                max_filter_batch_rows: self.max_filter_batch_rows,
+            },
         }
     }
 

@@ -22,6 +22,11 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::minio::MinIO;
 use tokio::time::sleep;
 
+/// Percent-encode a namespace for use as a single URL path segment (e.g. `bad/name` → `bad%2Fname`).
+pub fn namespace_path_segment(name: &str) -> String {
+    urlencoding::encode(name).into_owned()
+}
+
 pub const MINIO_USER: &str = "minioadmin";
 pub const MINIO_PASSWORD: &str = "minioadmin";
 pub const DEFAULT_BUCKET: &str = "openpuffer-integration";
@@ -401,6 +406,26 @@ impl ServeHandle {
         write_max_batch_ops: Option<usize>,
         write_max_delay_ms: Option<u64>,
     ) -> Self {
+        Self::spawn_with_limits(
+            fixture,
+            listen,
+            cache_dir,
+            write_max_batch_ops,
+            write_max_delay_ms,
+            None,
+            None,
+        )
+    }
+
+    pub fn spawn_with_limits(
+        fixture: &S3Fixture,
+        listen: &str,
+        cache_dir: Option<PathBuf>,
+        write_max_batch_ops: Option<usize>,
+        write_max_delay_ms: Option<u64>,
+        max_upsert_rows: Option<usize>,
+        max_filter_batch_rows: Option<usize>,
+    ) -> Self {
         let bin = openpuffer_bin();
         assert!(
             bin.exists(),
@@ -433,6 +458,14 @@ impl ServeHandle {
         if let Some(ms) = write_max_delay_ms {
             args.push("--write-max-delay-ms".to_string());
             args.push(ms.to_string());
+        }
+        if let Some(rows) = max_upsert_rows {
+            args.push("--max-upsert-rows".to_string());
+            args.push(rows.to_string());
+        }
+        if let Some(batch) = max_filter_batch_rows {
+            args.push("--max-filter-batch-rows".to_string());
+            args.push(batch.to_string());
         }
         let child = Command::new(&bin)
             .args(&args)
@@ -501,7 +534,10 @@ pub async fn upsert_batch(base_url: &str, namespace: &str, rows: Value) {
 
 pub async fn write_batch(base_url: &str, namespace: &str, body: Value) {
     let resp = reqwest::Client::new()
-        .post(format!("{base_url}/v2/namespaces/{namespace}"))
+        .post(format!(
+            "{base_url}/v2/namespaces/{}",
+            namespace_path_segment(namespace)
+        ))
         .json(&body)
         .send()
         .await
@@ -516,7 +552,10 @@ pub async fn write_batch(base_url: &str, namespace: &str, body: Value) {
 
 pub async fn query_response_ns(base_url: &str, namespace: &str, body: Value) -> Value {
     let resp = reqwest::Client::new()
-        .post(format!("{base_url}/v2/namespaces/{namespace}/query"))
+        .post(format!(
+            "{base_url}/v2/namespaces/{}/query",
+            namespace_path_segment(namespace)
+        ))
         .json(&body)
         .send()
         .await

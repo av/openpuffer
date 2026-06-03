@@ -3479,6 +3479,143 @@ async fn two_vector_columns_query_each_field() {
     );
 }
 
+/// POST write and return HTTP status + JSON body (for limit violation tests).
+async fn write_expect(base_url: &str, namespace: &str, body: Value) -> (StatusCode, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{base_url}/v2/namespaces/{}",
+            namespace_path_segment(namespace)
+        ))
+        .json(&body)
+        .send()
+        .await
+        .expect("write request");
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let parsed = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+    (status, parsed)
+}
+
+/// Server-side turbopuffer-style limits return 400 on violation.
+#[tokio::test]
+async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn_with_limits(
+        &fixture,
+        &listen,
+        None,
+        None,
+        Some(50),
+        Some(2),
+        Some(2),
+    );
+    serve.wait_ready().await;
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        "bad!namespace",
+        json!({ "upsert_rows": [{ "id": "a", "attributes": {} }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "invalid namespace: {body:?}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("namespace name"),
+        "expected namespace error, got {body:?}"
+    );
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        "itest-limits-upsert",
+        json!({
+            "upsert_rows": [
+                { "id": "u1", "attributes": {} },
+                { "id": "u2", "attributes": {} },
+                { "id": "u3", "attributes": {} }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "upsert batch: {body:?}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("maximum"),
+        "expected upsert row limit error, got {body:?}"
+    );
+
+    write_batch(
+        &serve.base_url,
+        "itest-limits-filter",
+        json!({
+            "schema": {
+                "tag": { "type": "string", "filterable": true },
+                "text": { "type": "string", "full_text_search": true }
+            },
+            "upsert_rows": [
+                { "id": "f1", "attributes": { "tag": "bulk", "text": "doc one" } },
+                { "id": "f2", "attributes": { "tag": "bulk", "text": "doc two" } }
+            ]
+        }),
+    )
+    .await;
+    write_batch(
+        &serve.base_url,
+        "itest-limits-filter",
+        json!({
+            "upsert_rows": [
+                { "id": "f3", "attributes": { "tag": "bulk", "text": "doc three" } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        "itest-limits-filter",
+        json!({ "delete_by_filter": ["tag", "Eq", "bulk"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "delete_by_filter cap: {body:?}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("filter matched"),
+        "expected filter batch error, got {body:?}"
+    );
+
+    let (status, body) = write_expect(
+        &serve.base_url,
+        "itest-limits-filter",
+        json!({
+            "delete_by_filter": ["tag", "Eq", "bulk"],
+            "delete_by_filter_allow_partial": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "partial delete: {body:?}");
+    assert_eq!(body["rows_deleted"].as_u64(), Some(2));
+    assert_eq!(body["rows_remaining"].as_bool(), Some(true));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let meta_resp = reqwest::Client::new()
+        .get(format!(
+            "{}/v1/namespaces/{}",
+            serve.base_url, "itest-limits-filter"
+        ))
+        .send()
+        .await
+        .expect("metadata");
+    assert_eq!(meta_resp.status(), StatusCode::OK);
+    let meta: Value = meta_resp.json().await.expect("metadata json");
+    assert_eq!(
+        meta["approx_row_count"].as_u64(),
+        Some(1),
+        "one doc should remain after partial delete, meta={meta:?}"
+    );
+}
+
 fn fair_upsert_columns(start: usize, count: usize, dim: usize) -> Value {
     let mut ids = Vec::with_capacity(count);
     let mut texts = Vec::with_capacity(count);
