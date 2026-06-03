@@ -32,6 +32,7 @@ const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
+const NAMESPACE_DATETIME_UPSERT_COND: &str = "itest-datetime-upsert-cond";
 const NAMESPACE_ORDER_BY: &str = "itest-order-by";
 const NAMESPACE_QUERY_BILLING: &str = "itest-query-billing";
 const NAMESPACE_DISTANCE_METRIC: &str = "itest-distance-metric";
@@ -1847,6 +1848,200 @@ async fn wal_compaction_after_full_index_query_still_works() {
     assert!(
         vector_ids.contains(&"compact-0".to_string()),
         "vector query after compaction, ids={vector_ids:?}"
+    );
+}
+
+/// Schema `datetime` + `upsert_condition` newer-timestamp pattern with `$ref_new`.
+#[tokio::test]
+async fn upsert_condition_newer_timestamp_with_datetime() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    const T1: &str = "2024-06-01T12:00:00.000000000Z";
+    const T2: &str = "2024-12-01T12:00:00.000000000Z";
+    const T0: &str = "2024-01-01T00:00:00.000000000Z";
+
+    let newer_ts_condition = json!([
+        "Or",
+        [
+            ["updated_at", "Lt", {"$ref_new": "updated_at"}],
+            ["updated_at", "Eq", null]
+        ]
+    ]);
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_DATETIME_UPSERT_COND,
+        json!({
+            "schema": {
+                "title": {
+                    "type": "string",
+                    "filterable": true,
+                    "full_text_search": true
+                },
+                "updated_at": "datetime"
+            },
+            "upsert_rows": [{
+                "id": "doc-1",
+                "attributes": {
+                    "title": "v1",
+                    "updated_at": "2024-06-01T12:00:00Z"
+                }
+            }]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!(
+        "{}/v2/namespaces/{NAMESPACE_DATETIME_UPSERT_COND}",
+        serve.base_url
+    );
+
+    let resp_newer = http
+        .post(&write_url)
+        .json(&json!({
+            "upsert_condition": newer_ts_condition,
+            "upsert_rows": [{
+                "id": "doc-1",
+                "attributes": {
+                    "title": "v2",
+                    "updated_at": "2024-12-01T12:00:00Z"
+                }
+            }]
+        }))
+        .send()
+        .await
+        .expect("newer conditional upsert");
+    assert_eq!(resp_newer.status(), StatusCode::OK);
+    let body_newer: Value = resp_newer.json().await.expect("write json");
+    assert_eq!(
+        body_newer["rows_upserted"].as_u64(),
+        Some(1),
+        "newer timestamp must apply, body={body_newer}"
+    );
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let resp_older = http
+        .post(&write_url)
+        .json(&json!({
+            "upsert_condition": newer_ts_condition,
+            "upsert_rows": [{
+                "id": "doc-1",
+                "attributes": {
+                    "title": "stale",
+                    "updated_at": "2024-01-01T00:00:00Z"
+                }
+            }]
+        }))
+        .send()
+        .await
+        .expect("older conditional upsert");
+    assert_eq!(resp_older.status(), StatusCode::OK);
+    let body_older: Value = resp_older.json().await.expect("write json");
+    assert_eq!(
+        body_older["rows_upserted"].as_u64().unwrap_or(0),
+        0,
+        "older timestamp must be skipped, body={body_older}"
+    );
+    assert_eq!(body_older["rows_affected"].as_u64(), Some(0));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let export = http
+        .get(format!(
+            "{}/v1/namespaces/{NAMESPACE_DATETIME_UPSERT_COND}/export",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("export");
+    assert_eq!(export.status(), StatusCode::OK);
+    let exported: Value = export.json().await.expect("export json");
+    let row = exported["rows"]
+        .as_array()
+        .and_then(|r| r.first())
+        .expect("one row");
+    assert_eq!(row["id"], "doc-1");
+    assert_eq!(row["attributes"]["title"], "v2");
+    assert_eq!(row["attributes"]["updated_at"], T2);
+
+    let wal_entry = decode_wal_entry_from_s3(
+        &fixture.client,
+        &fixture.bucket,
+        NAMESPACE_DATETIME_UPSERT_COND,
+        1,
+    )
+    .await;
+    let wal_docs = wal_entry.into_documents().expect("decode WAL");
+    let doc = wal_docs
+        .iter()
+        .find(|d| d.id == "doc-1")
+        .expect("doc-1 in WAL");
+    assert_eq!(
+        doc.attributes.get("updated_at").and_then(|v| v.as_str()),
+        Some(T1),
+        "WAL must store canonical datetime"
+    );
+
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_DATETIME_UPSERT_COND,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let filter_gt = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_DATETIME_UPSERT_COND,
+        json!(["BM25", "title", "v2"]),
+        Some(json!(["updated_at", "Gt", T1])),
+    )
+    .await;
+    assert_eq!(
+        filter_gt,
+        vec!["doc-1".to_string()],
+        "datetime Gt filter should match doc-1, got {filter_gt:?}"
+    );
+
+    let filter_lt = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_DATETIME_UPSERT_COND,
+        json!(["BM25", "title", "v2"]),
+        Some(json!(["updated_at", "Lt", "2025-01-01T00:00:00.000000000Z"])),
+    )
+    .await;
+    assert_eq!(
+        filter_lt,
+        vec!["doc-1".to_string()],
+        "datetime Lt filter should match doc-1, got {filter_lt:?}"
+    );
+
+    let bad = http
+        .post(&write_url)
+        .json(&json!({
+            "upsert_rows": [{
+                "id": "doc-bad",
+                "attributes": {
+                    "title": "bad time",
+                    "updated_at": "yesterday"
+                }
+            }]
+        }))
+        .send()
+        .await
+        .expect("invalid datetime upsert");
+    assert_eq!(
+        bad.status(),
+        StatusCode::BAD_REQUEST,
+        "invalid datetime must be rejected: {}",
+        bad.text().await.unwrap_or_default()
     );
 }
 

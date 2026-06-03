@@ -34,6 +34,8 @@ pub enum FilterValue {
     Number(f64),
     Bool(bool),
     Null,
+    /// turbopuffer `upsert_condition` only: `{"$ref_new": "field"}` reads from the incoming row.
+    RefNew(String),
 }
 
 impl FilterValue {
@@ -46,8 +48,19 @@ impl FilterValue {
                 .map(FilterValue::Number)
                 .ok_or_else(|| anyhow!("filter number must be finite")),
             Value::Null => Ok(FilterValue::Null),
+            Value::Object(m) => {
+                if m.len() == 1 {
+                    if let Some(field) = m.get("$ref_new").and_then(|f| f.as_str()) {
+                        return Ok(FilterValue::RefNew(field.to_string()));
+                    }
+                }
+                bail!(
+                    "filter value object must be {{\"$ref_new\": \"field\"}} (got {})",
+                    v
+                );
+            }
             _ => bail!(
-                "filter value must be string, number, or bool (got {})",
+                "filter value must be string, number, bool, null, or $ref_new (got {})",
                 v.to_string()
             ),
         }
@@ -142,66 +155,100 @@ fn parse_cmp_op(s: &str) -> Result<CmpOp> {
 
 /// Evaluate filter against one document (WAL tail / exhaustive fallback).
 pub fn eval_filter(expr: &FilterExpr, doc: &Document) -> bool {
+    eval_filter_with_new(expr, doc, None)
+}
+
+/// Evaluate filter; when `new_doc` is set, `FilterValue::RefNew` reads from the incoming row.
+pub fn eval_filter_with_new(
+    expr: &FilterExpr,
+    doc: &Document,
+    new_doc: Option<&Document>,
+) -> bool {
     match expr {
-        FilterExpr::And(subs) => subs.iter().all(|s| eval_filter(s, doc)),
-        FilterExpr::Or(subs) => subs.iter().any(|s| eval_filter(s, doc)),
-        FilterExpr::Cmp { field, op, value } => eval_cmp(doc, field, *op, value),
+        FilterExpr::And(subs) => subs
+            .iter()
+            .all(|s| eval_filter_with_new(s, doc, new_doc)),
+        FilterExpr::Or(subs) => subs
+            .iter()
+            .any(|s| eval_filter_with_new(s, doc, new_doc)),
+        FilterExpr::Cmp { field, op, value } => {
+            eval_cmp(doc, field, *op, value, new_doc)
+        }
     }
 }
 
 /// turbopuffer `upsert_condition`: create if missing; otherwise evaluate on current doc.
-pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, _new: &Document) -> bool {
+pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, new: &Document) -> bool {
     match current {
         None => true,
-        Some(doc) => eval_filter(expr, doc),
+        Some(doc) => eval_filter_with_new(expr, doc, Some(new)),
     }
 }
 
-fn eval_cmp(doc: &Document, field: &str, op: CmpOp, rhs: &FilterValue) -> bool {
+fn eval_cmp(
+    doc: &Document,
+    field: &str,
+    op: CmpOp,
+    rhs: &FilterValue,
+    new_doc: Option<&Document>,
+) -> bool {
     let lhs = doc_field_value(doc, field);
+    let rhs = resolve_rhs(rhs, new_doc);
     match op {
-        CmpOp::Eq => match (&lhs, rhs) {
-            (None, FilterValue::Null) => true,
+        CmpOp::Eq => match (&lhs, &rhs) {
+            (None, Some(FilterValue::Null)) => true,
             (None, _) => false,
-            (Some(_lhs), FilterValue::Null) => false,
-            (Some(lhs), rhs) => *lhs == *rhs,
+            (Some(_lhs), Some(FilterValue::Null)) => false,
+            (Some(lhs), Some(rhs)) => *lhs == *rhs,
+            (_, None) => false,
         },
-        CmpOp::Ne => match (&lhs, rhs) {
-            (None, FilterValue::Null) => false,
+        CmpOp::Ne => match (&lhs, &rhs) {
+            (None, Some(FilterValue::Null)) => false,
             (None, _) => true,
-            (Some(_lhs), FilterValue::Null) => true,
-            (Some(lhs), rhs) => *lhs != *rhs,
+            (Some(_lhs), Some(FilterValue::Null)) => true,
+            (Some(lhs), Some(rhs)) => *lhs != *rhs,
+            (_, None) => false,
         },
         CmpOp::Gt => {
-            let Some(lhs) = lhs else {
+            let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                 return false;
             };
-            compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Greater)
+            compare_values(&lhs, &rhs) == Some(std::cmp::Ordering::Greater)
         }
         CmpOp::Gte => {
-            let Some(lhs) = lhs else {
+            let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                 return false;
             };
             matches!(
-                compare_values(&lhs, rhs),
+                compare_values(&lhs, &rhs),
                 Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
             )
         }
         CmpOp::Lt => {
-            let Some(lhs) = lhs else {
+            let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                 return false;
             };
-            compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Less)
+            compare_values(&lhs, &rhs) == Some(std::cmp::Ordering::Less)
         }
         CmpOp::Lte => {
-            let Some(lhs) = lhs else {
+            let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
                 return false;
             };
             matches!(
-                compare_values(&lhs, rhs),
+                compare_values(&lhs, &rhs),
                 Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
             )
         }
+    }
+}
+
+fn resolve_rhs(rhs: &FilterValue, new_doc: Option<&Document>) -> Option<FilterValue> {
+    match rhs {
+        FilterValue::RefNew(field) => {
+            let new = new_doc?;
+            doc_field_value(new, field)
+        }
+        other => Some(other.clone()),
     }
 }
 
@@ -328,6 +375,74 @@ mod tests {
         let cond = parse_filter(&json!(["id", "Eq", null])).unwrap();
         assert!(!should_apply_upsert(&cond, Some(&existing), &new));
         assert!(should_apply_upsert(&cond, None, &new));
+    }
+
+    #[test]
+    fn datetime_gt_lt_lexicographic() {
+        let doc = Document {
+            id: "1".into(),
+            attributes: HashMap::from([(
+                "updated_at".into(),
+                json!("2024-06-01T12:00:00.000000000Z"),
+            )]),
+        };
+        assert!(eval_filter(
+            &parse_filter(&json!(["updated_at", "Gt", "2024-01-01T00:00:00.000000000Z"])).unwrap(),
+            &doc
+        ));
+        assert!(eval_filter(
+            &parse_filter(&json!(["updated_at", "Lt", "2024-12-01T12:00:00.000000000Z"])).unwrap(),
+            &doc
+        ));
+        assert!(!eval_filter(
+            &parse_filter(&json!(["updated_at", "Lt", "2024-01-01T00:00:00.000000000Z"])).unwrap(),
+            &doc
+        ));
+    }
+
+    #[test]
+    fn newer_timestamp_upsert_condition_with_ref_new() {
+        let existing = Document {
+            id: "a".into(),
+            attributes: HashMap::from([
+                (
+                    "updated_at".into(),
+                    json!("2024-06-01T12:00:00.000000000Z"),
+                ),
+                ("title".into(), json!("old")),
+            ]),
+        };
+        let newer = Document {
+            id: "a".into(),
+            attributes: HashMap::from([
+                (
+                    "updated_at".into(),
+                    json!("2024-12-01T12:00:00.000000000Z"),
+                ),
+                ("title".into(), json!("new")),
+            ]),
+        };
+        let older = Document {
+            id: "a".into(),
+            attributes: HashMap::from([
+                (
+                    "updated_at".into(),
+                    json!("2024-01-01T00:00:00.000000000Z"),
+                ),
+                ("title".into(), json!("stale")),
+            ]),
+        };
+        let cond = parse_filter(&json!([
+            "Or",
+            [
+                ["updated_at", "Lt", {"$ref_new": "updated_at"}],
+                ["updated_at", "Eq", null]
+            ]
+        ]))
+        .unwrap();
+        assert!(should_apply_upsert(&cond, Some(&existing), &newer));
+        assert!(!should_apply_upsert(&cond, Some(&existing), &older));
+        assert!(should_apply_upsert(&cond, None, &newer));
     }
 
     #[test]

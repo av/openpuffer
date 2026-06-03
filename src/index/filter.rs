@@ -16,6 +16,9 @@ pub fn value_key(v: &FilterValue) -> String {
         FilterValue::Bool(b) => format!("b:{b}"),
         FilterValue::Number(n) => format!("n:{n}"),
         FilterValue::Null => "null".to_string(),
+        FilterValue::RefNew(_) => {
+            unreachable!("$ref_new is only valid in upsert_condition, not filter index")
+        }
     }
 }
 

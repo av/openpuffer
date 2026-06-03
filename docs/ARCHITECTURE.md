@@ -61,6 +61,40 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
+### Schema types (`schema` on write)
+
+Declared in `meta.json` and merged on each write. Inferred types work for strings and vectors; non-inferrable types must be declared explicitly (turbopuffer [`write` schema](https://turbopuffer.com/docs/write#param-schema)):
+
+| Type | Write validation | Filters |
+|------|------------------|---------|
+| `uuid` | Canonical lowercase RFC 4122 string | `Eq`, `Ne`, `In`, … |
+| `[]uuid` | Array of canonical UUID strings | — |
+| `datetime` | RFC3339 / ISO8601 string → canonical UTC `YYYY-MM-DDTHH:MM:SS.fffffffffZ` (9-digit subseconds) | `Eq`, `Gt`, `Lt`, … (lexicographic on canonical form) |
+
+### Conditional upserts (`upsert_condition`)
+
+Optional filter evaluated per row against the **committed** doc map (plus unflushed buffer overlay). Missing ids are always inserted; existing ids are updated only when the condition passes on the current row ([turbopuffer `upsert_condition`](https://turbopuffer.com/docs/write#param-upsert_condition)).
+
+**Insert if not exists** (skip overwrites):
+
+```json
+["id", "Eq", null]
+```
+
+**Newer timestamp** (only apply when incoming `updated_at` is newer; requires `updated_at` in schema as `datetime`):
+
+```json
+[
+  "Or",
+  [
+    ["updated_at", "Lt", {"$ref_new": "updated_at"}],
+    ["updated_at", "Eq", null]
+  ]
+]
+```
+
+`{"$ref_new": "field"}` resolves the comparison value from the incoming upsert row (v1: `upsert_condition` only). With canonical `datetime` strings, `Lt` is chronological order.
+
 **Write response** (turbopuffer [`write` response](https://turbopuffer.com/docs/write) subset): `rows_affected`, optional `rows_upserted` / `rows_patched` / `rows_deleted`, and `billing.billable_logical_bytes_written` (v1 estimate: 64 bytes × affected rows per request).
 
 ### Write throughput limits (v1)

@@ -4,6 +4,8 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::index::vector::vector_fields_from_schema;
@@ -197,6 +199,11 @@ pub fn field_type_name(spec: &Value) -> Option<String> {
     }
 }
 
+/// Scalar `datetime` column (turbopuffer `datetime` schema type; RFC3339 / ISO8601 strings).
+pub fn field_is_datetime_scalar(spec: &Value) -> bool {
+    field_type_name(spec).as_deref() == Some("datetime")
+}
+
 /// Scalar `uuid` column (turbopuffer `uuid` schema type).
 pub fn field_is_uuid_scalar(spec: &Value) -> bool {
     field_type_name(spec).as_deref() == Some("uuid")
@@ -205,6 +212,20 @@ pub fn field_is_uuid_scalar(spec: &Value) -> bool {
 /// `[]uuid` column (array of UUID strings).
 pub fn field_is_uuid_array(spec: &Value) -> bool {
     field_type_name(spec).as_deref() == Some("[]uuid")
+}
+
+/// Canonical UTC datetime string for filter `Gt`/`Lt` (fixed-width subseconds, `Z` suffix).
+pub fn canonicalize_datetime_str(raw: &str) -> Result<String, String> {
+    let dt = OffsetDateTime::parse(raw.trim(), &Rfc3339)
+        .map_err(|e| format!("invalid datetime '{raw}': {e}"))?;
+    dt.to_utc()
+        .format(
+            &time::format_description::parse(
+                "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z",
+            )
+            .map_err(|e| format!("datetime format error: {e}"))?,
+        )
+        .map_err(|e| format!("datetime format error: {e}"))
 }
 
 /// Parse and canonicalize a UUID string (lowercase hyphenated RFC 4122).
@@ -226,13 +247,24 @@ pub fn validate_and_normalize_document_attributes(
         let Some(spec) = schema_obj.get(key) else {
             continue;
         };
-        if field_is_uuid_scalar(spec) {
+        if field_is_datetime_scalar(spec) {
+            *value = normalize_datetime_scalar_value(value, key)?;
+        } else if field_is_uuid_scalar(spec) {
             *value = normalize_uuid_scalar_value(value, key)?;
         } else if field_is_uuid_array(spec) {
             *value = normalize_uuid_array_value(value, key)?;
         }
     }
     Ok(())
+}
+
+fn normalize_datetime_scalar_value(value: &Value, field: &str) -> Result<Value, String> {
+    let Some(s) = value.as_str() else {
+        return Err(format!(
+            "attribute '{field}' has type datetime; value must be an ISO8601/RFC3339 string"
+        ));
+    };
+    Ok(Value::String(canonicalize_datetime_str(s)?))
 }
 
 fn normalize_uuid_scalar_value(value: &Value, field: &str) -> Result<Value, String> {
@@ -326,6 +358,41 @@ mod tests {
         assert!(validate_patch_attributes(&attrs, &schema).is_err());
         let ok = [("text".into(), json!("hi"))].into();
         assert!(validate_patch_attributes(&ok, &schema).is_ok());
+    }
+
+    #[test]
+    fn datetime_schema_type() {
+        assert!(field_is_datetime_scalar(&json!("datetime")));
+        assert!(field_filterable(&json!("datetime")));
+        let canon = canonicalize_datetime_str("2024-06-03T09:10:54Z").unwrap();
+        assert_eq!(canon, "2024-06-03T09:10:54.000000000Z");
+        let with_frac = canonicalize_datetime_str("2024-01-02T03:04:05.123456789+00:00").unwrap();
+        assert_eq!(with_frac, "2024-01-02T03:04:05.123456789Z");
+    }
+
+    #[test]
+    fn validate_datetime_attributes_on_write() {
+        let schema = json!({ "updated_at": "datetime" });
+        let mut attrs = HashMap::from([("updated_at".into(), json!("2024-06-03T09:10:54Z"))]);
+        validate_and_normalize_document_attributes(&mut attrs, &schema).unwrap();
+        assert_eq!(
+            attrs["updated_at"],
+            json!("2024-06-03T09:10:54.000000000Z")
+        );
+    }
+
+    #[test]
+    fn validate_datetime_rejects_invalid() {
+        let schema = json!({ "updated_at": "datetime" });
+        let mut bad = HashMap::from([("updated_at".into(), json!("not-a-date"))]);
+        assert!(validate_and_normalize_document_attributes(&mut bad, &schema).is_err());
+    }
+
+    #[test]
+    fn datetime_lexicographic_order_matches_chronological() {
+        let a = canonicalize_datetime_str("2024-01-01T00:00:00Z").unwrap();
+        let b = canonicalize_datetime_str("2024-12-01T12:00:00Z").unwrap();
+        assert!(a < b);
     }
 
     #[test]
