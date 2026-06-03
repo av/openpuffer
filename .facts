@@ -48,14 +48,44 @@
 - label: per-namespace commit_lock serializes concurrent WAL appends and meta CAS for one namespace
   command: test -f src/commit_lock.rs && grep -q 'commit_lock' src/namespace.rs
   tags: [implemented]
+- label: vector ANN index uses two-level centroids-l0.bin and centroids-l1-* segments on S3
+  command: grep -q 'CentroidIndexL0' src/index/vector.rs && grep -q 'centroids-l1' src/index/vector.rs && cargo test --lib recall_at_10_1k_docs_32dim_above_point_seven -q
+  tags: [implemented]
+- label: WAL compaction writes wal/snapshot.bin CAS wal_snapshot_seq and prunes superseded wal segments
+  command: test -f src/wal_compaction.rs && grep -q 'maybe_compact_wal' src/indexer.rs
+  tags: [implemented]
+- label: cold namespace load uses s3_batch two-round parallel fetch with storage_roundtrips in query performance
+  command: test -f src/s3_batch.rs && grep -q 'fetch_cold_index_artifacts' src/s3_batch.rs && cargo test --lib query_performance_includes_storage_roundtrips -q
+  tags: [implemented]
 
 # write
 
 - label: write path group-commits upserts patches and deletes into one WalEntry per flush
   command: grep -q 'WalEntry' src/wal.rs && grep -q 'group-commit' src/buffer.rs
   tags: [implemented]
-- label: write accepts patch_rows patch_columns schema and delete_by_filter
-  command: grep -q 'patch_rows' src/models.rs && grep -q 'delete_by_filter' src/models.rs && grep -q 'schema' src/schema.rs
+- label: write accepts patch_rows and patch_columns merged on WAL replay
+  command: grep -q 'patch_rows' src/models.rs && grep -q 'patches' src/wal.rs
+  tags: [implemented]
+- label: write accepts schema hints merged into NamespaceMeta.schema on commit
+  command: grep -q 'merge_schema' src/schema.rs && grep -q 'schema' src/models.rs
+  tags: [implemented]
+- label: write accepts delete_by_filter resolving ids via filter index and WAL tail
+  command: grep -q 'delete_by_filter' src/models.rs && grep -q 'matching_doc_ids_for_filter' src/search.rs
+  tags: [implemented]
+- label: write enforces at most one durable WAL commit per namespace per second
+  command: grep -q 'min_commit_interval' src/buffer.rs && grep -q 'wal_commit_rate_max_one_per_second' tests/integration_s3.rs
+  tags: [implemented]
+- label: write accepts copy_from_namespace to clone source S3 prefix into empty destination
+  command: grep -q 'copy_from_namespace' src/models.rs && grep -q 'copy_from_namespace' src/storage.rs
+  tags: [implemented]
+- label: write accepts distance_metric cosine_distance or euclidean_squared stored in meta.json
+  command: grep -q 'distance_metric' src/meta.rs && grep -q 'resolve_distance_metric' src/meta.rs
+  tags: [implemented]
+- label: write accepts return_affected_ids returning upserted_ids and deleted_ids lists
+  command: grep -q 'return_affected_ids' src/models.rs && grep -q 'upserted_ids' src/models.rs
+  tags: [implemented]
+- label: write accepts upsert_condition evaluated against committed WAL and pending buffer
+  command: grep -q 'upsert_condition' src/models.rs && grep -q 'overlay_pending_writes' src/buffer.rs
   tags: [implemented]
 
 # query
@@ -66,14 +96,14 @@
 - label: query accepts rank_by BM25 over FTS inverted index postings
   command: cargo test --lib bm25_indexed_query_returns_top_doc -q
   tags: [implemented]
-- label: write accepts upsert_condition evaluated against committed WAL and pending buffer
-  command: grep -q 'upsert_condition' src/models.rs && grep -q 'overlay_pending_writes' src/buffer.rs
-  tags: [implemented]
 - label: query accepts hybrid rank_by Sum and Product combining vector and BM25
   command: grep -q 'Ranker::Sum' src/search.rs && grep -q 'Ranker::Product' src/search.rs
   tags: [implemented]
 - label: query accepts attribute filters intersected before scoring
   command: test -f src/filter.rs && grep -q 'eval_filter' src/search.rs
+  tags: [implemented]
+- label: query accepts order_by field and asc or desc as tie-break after rank_by scoring
+  command: grep -q 'parse_order_by' src/search.rs && cargo test --lib order_by_priority_desc_breaks_score_ties -q
   tags: [implemented]
 - label: query returns performance.candidates_ratio for indexed ANN regression guard
   command: cargo test --lib indexed_vector_candidates_ratio_under_ten_percent -q
@@ -113,8 +143,10 @@
   tags: [implemented]
 - label: GET /v1/namespaces and GET /v1/namespaces/{name} expose index_cursor and wal_commit_seq
   command: grep -q '/v1/namespaces' src/api.rs && grep -q 'index_cursor' src/meta.rs
+  tags: [implemented]
 - label: GET /health?deep=1 probes S3 and returns degraded when unavailable
   command: grep -q 'deep_health_probe' src/storage.rs && grep -q 'probe_s3_storage' src/health.rs
+  tags: [implemented]
 - label: GET /v1/namespaces/{name} exposes approx_row_count index_status and unindexed_bytes
   command: grep -q 'approx_row_count' src/models.rs && grep -q 'IndexStatus' src/models.rs
   tags: [implemented]
@@ -142,11 +174,47 @@
 - label: integration test proves meta.json and wal/00000001.bin exist after write with no legacy docs/*.json
   command: cargo test -F integration --test integration_s3 minio_wal_index_layout -q
   tags: [implemented]
-- label: integration test proves background indexer writes fts centroids and filter index segments
+- label: integration test proves background indexer writes fts centroids-l0 and filter index segments
   command: cargo test -F integration --test integration_s3 minio_wal_index_layout -q
   tags: [implemented]
 - label: integration test proves data survives serve process restart with only S3 backing
   command: cargo test -F integration --test integration_s3 write_after_restart -q
+  tags: [implemented]
+- label: integration test warm_cache_then_query_zero_s3_gets pins view and avoids cold S3 gets
+  command: cargo test -F integration --test integration_s3 warm_cache_then_query -q
+  tags: [implemented]
+- label: integration test export_after_writes_returns_all_doc_ids paginates namespace export
+  command: cargo test -F integration --test integration_s3 export_after_writes -q
+  tags: [implemented]
+- label: integration test deep_health_and_namespace_metadata_fields probes S3 and metadata fields
+  command: cargo test -F integration --test integration_s3 deep_health_and_namespace_metadata -q
+  tags: [implemented]
+- label: integration test wal_commit_rate_max_one_per_second enforces one WAL commit per second
+  command: cargo test -F integration --test integration_s3 wal_commit_rate_max_one_per_second -q
+  tags: [implemented]
+- label: integration test copy_from_namespace_returns_same_docs_on_dest clones S3 layout
+  command: cargo test -F integration --test integration_s3 copy_from_namespace_returns_same_docs -q
+  tags: [implemented]
+- label: integration test wal_compaction_after_full_index_query_still_works snapshots and prunes WAL
+  command: cargo test -F integration --test integration_s3 wal_compaction_after_full_index -q
+  tags: [implemented]
+- label: integration test schema_on_write_and_delete_by_filter applies schema and filter deletes
+  command: cargo test -F integration --test integration_s3 schema_on_write_and_delete_by_filter -q
+  tags: [implemented]
+- label: integration test patch_rows_updates_fts_after_index merges patches through indexer
+  command: cargo test -F integration --test integration_s3 patch_rows_updates_fts -q
+  tags: [implemented]
+- label: integration test upsert_condition_insert_if_not_exists skips existing rows
+  command: cargo test -F integration --test integration_s3 upsert_condition_insert_if_not_exists -q
+  tags: [implemented]
+- label: integration test order_by_sorts_tied_bm25_results_by_attribute tie-breaks rank_by scores
+  command: cargo test -F integration --test integration_s3 order_by_sorts_tied_bm25 -q
+  tags: [implemented]
+- label: integration test distance_metric_stored_and_enforced_on_write persists metric in meta
+  command: cargo test -F integration --test integration_s3 distance_metric_stored_and_enforced -q
+  tags: [implemented]
+- label: integration test return_affected_ids_lists_upserts_and_deletes returns id lists
+  command: cargo test -F integration --test integration_s3 return_affected_ids_lists_upserts -q
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
