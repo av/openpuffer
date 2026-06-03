@@ -348,7 +348,7 @@ impl CentroidIndexL0 {
             return self;
         }
         self.ann_version = self.ann_version.max(ANN_VERSION_V3);
-        self.has_routing = true;
+        // Preserve on-disk `has_routing` (true only when indexer wrote centroids-routing.bin).
         let probes = build
             .map(|b| b.probes)
             .unwrap_or_else(AnnProbeConfig::default);
@@ -2121,7 +2121,7 @@ mod tests {
         let build = AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3);
         let aligned = l0.align_with_namespace_meta(&meta, Some(build));
         assert_eq!(aligned.ann_version, ANN_VERSION_V3);
-        assert!(aligned.has_routing);
+        assert!(!aligned.has_routing, "legacy L0 without routing table stays false");
         assert_eq!(aligned.probe_coarse, build.probes.coarse);
         assert_eq!(aligned.probe_fine, build.probes.fine);
     }

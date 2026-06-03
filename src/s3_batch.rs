@@ -692,7 +692,7 @@ pub async fn fetch_cold_vector_probed(
             storage_roundtrips = 1;
         }
         s3_keys_fetched = s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(1));
-        let routing_map = fetch_round(client, bucket, std::slice::from_ref(key)).await?;
+        let routing_map = fetch_round_optional(client, bucket, std::slice::from_ref(key)).await?;
         fetched.extend(routing_map);
     }
 
