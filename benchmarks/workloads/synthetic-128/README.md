@@ -36,12 +36,21 @@ python3 benchmarks/workloads/generate_synthetic.py --num-docs 1000000 --output-d
 
 ## Ingest (openpuffer)
 
-1. Set `OPENPUFFER_ANN_VERSION=3` on `serve` before first write.
-2. POST each batch to `/v2/namespaces/{ns}`; first batch includes `schema` from generator.
-3. Sleep **~1.1s** between batches ([`docs/BENCHMARKS.md`](../../../docs/BENCHMARKS.md#1m-ingest-cadence)).
-4. Poll `GET /v1/namespaces/{ns}` until `index_cursor == wal_commit_seq` and `preferred_ann_version == 3`.
+Use [`scripts/ingest-large.sh`](../../../scripts/ingest-large.sh) (A2): generates batches from this manifest, POSTs with cadence, polls meta until indexed.
 
-Example with generated batches:
+```bash
+# L1 (100k) — uses committed l1-100k/manifest.json
+export OPENPUFFER_S3_ENDPOINT=... OPENPUFFER_S3_BUCKET=... OPENPUFFER_S3_ACCESS_KEY=... OPENPUFFER_S3_SECRET_KEY=...
+./scripts/ingest-large.sh --tier l1
+
+# Dry-run (toolchain + plan only)
+./scripts/ingest-large.sh --dry-run
+
+# Re-use pre-generated batch dir
+OPENPUFFER_INGEST_BATCH_DIR=/tmp/synthetic-100k ./scripts/ingest-large.sh
+```
+
+Manual curl loop (same cadence) if needed:
 
 ```bash
 BASE=http://127.0.0.1:8080/v2/namespaces/bench-large-100k
@@ -49,6 +58,7 @@ for f in /tmp/synthetic-100k/batches/batch-*.json; do
   curl -sf -X POST "$BASE" -H 'Content-Type: application/json' -d @"$f"
   sleep 1.1
 done
+# Poll: GET /v1/namespaces/bench-large-100k until index_cursor == wal_commit_seq, preferred_ann_version == 3
 ```
 
 ## Tiers (plan)
