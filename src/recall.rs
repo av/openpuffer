@@ -53,6 +53,7 @@ pub fn measure_recall(
     use_rerank: bool,
     view_vector: impl Fn(&str) -> Option<Vec<f64>>,
     seed: u64,
+    allowed: Option<&HashSet<String>>,
 ) -> RecallMetrics {
     if corpus.is_empty() || num == 0 || top_k == 0 {
         return RecallMetrics {
@@ -68,20 +69,43 @@ pub fn measure_recall(
     let mut ann_count_sum = 0.0f64;
     let mut exhaustive_count_sum = 0.0f64;
 
+    let in_allowed = |id: &str| allowed.map(|a| a.contains(id)).unwrap_or(true);
+
     for idx in samples {
         let query = corpus[idx].1.clone();
         let brute = brute_force_top_k(corpus, &query, metric, top_k);
         let ann_results: Vec<String> = if use_rerank {
-            index
-                .rerank_top_k(&query, top_k, &view_vector)
+            let metric = index.l0.distance_metric;
+            let mut scored: Vec<(String, f64)> = index
+                .ann_pool_doc_ids(&query)
                 .into_iter()
-                .map(|(id, _)| id)
-                .collect()
+                .filter(|id| in_allowed(id))
+                .filter_map(|id| {
+                    let v = view_vector(&id)?;
+                    if v.len() != query.len() {
+                        return None;
+                    }
+                    Some((
+                        id,
+                        crate::index::vector::score_vector(&query, &v, metric),
+                    ))
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            scored.truncate(top_k);
+            scored.into_iter().map(|(id, _)| id).collect()
         } else {
+            let oversample = top_k.saturating_mul(8).max(top_k);
             index
-                .query_ann(&query, top_k)
+                .query_ann(&query, oversample)
                 .into_iter()
+                .filter(|(id, _)| in_allowed(id))
                 .map(|(id, _)| id)
+                .take(top_k)
                 .collect()
         };
         let ann_set: HashSet<_> = ann_results.iter().cloned().collect();
@@ -180,6 +204,7 @@ pub fn measure_recall_for_loaded(
         use_rerank,
         view_vector,
         recall_seed(namespace),
+        allowed.as_ref(),
     ))
 }
 
@@ -217,6 +242,49 @@ mod tests {
     }
 
     #[test]
+    fn measure_recall_respects_allowed_filter_for_ann_and_brute() {
+        let docs: Vec<_> = (0..4)
+            .map(|i| {
+                let mut v = vec![0.0; 4];
+                v[i % 4] = 1.0;
+                vec_doc(&format!("d{i}"), v)
+            })
+            .collect();
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({"embedding": "[4]f32"}),
+            AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("index built");
+        let corpus: Vec<_> = docs
+            .iter()
+            .map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            })
+            .collect();
+        let allowed: HashSet<_> = ["d0".into(), "d1".into()].into_iter().collect();
+        let view = |id: &str| corpus.iter().find(|(i, _)| i == id).map(|(_, v)| v.clone());
+        let m = measure_recall(&index, &corpus, 4, 2, false, view, 1, Some(&allowed));
+        assert!(
+            m.avg_ann_count <= 2.0 + f64::EPSILON,
+            "ANN top-k must be drawn from allowed ids only, got avg_ann_count {}",
+            m.avg_ann_count
+        );
+        assert!(
+            m.avg_exhaustive_count <= 2.0 + f64::EPSILON,
+            "brute top-k must be from filtered corpus, got {}",
+            m.avg_exhaustive_count
+        );
+    }
+
+    #[test]
     fn measure_recall_returns_expected_counts_on_tiny_fixture() {
         let docs: Vec<_> = (0..8)
             .map(|i| {
@@ -245,7 +313,7 @@ mod tests {
             })
             .collect();
         let view = |id: &str| corpus.iter().find(|(i, _)| i == id).map(|(_, v)| v.clone());
-        let m = measure_recall(&index, &corpus, 5, 4, false, view, 42);
+        let m = measure_recall(&index, &corpus, 5, 4, false, view, 42, None);
         assert!(
             m.avg_recall >= 0.5,
             "avg_recall {} on tiny fixture",

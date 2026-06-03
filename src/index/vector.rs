@@ -7,7 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::{AnnBuildConfig, AnnProbeConfig};
+use crate::config::AnnBuildConfig;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
 use crate::schema::{vector_element_for_field, VectorElement};
@@ -1701,6 +1701,7 @@ pub fn brute_force_top_k(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AnnProbeConfig;
     use crate::models::Document;
     use serde_json::json;
     use std::collections::HashSet;

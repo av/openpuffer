@@ -445,7 +445,47 @@ pub async fn fetch_round(
     Ok(out)
 }
 
+/// Like [`fetch_round`], but omits keys that are not present (probed cluster segments may be absent).
+pub async fn fetch_round_optional(
+    client: &Client,
+    bucket: &str,
+    keys: &[String],
+) -> Result<HashMap<String, Vec<u8>>> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut handles = Vec::with_capacity(keys.len());
+    for key in keys {
+        let client = client.clone();
+        let bucket = bucket.to_string();
+        let key = key.clone();
+        handles.push(tokio::spawn(async move {
+            Ok::<Option<(String, Vec<u8>)>, anyhow::Error>(
+                get_object_bytes_optional(&client, &bucket, &key).await?,
+            )
+        }));
+    }
+    let mut out = HashMap::new();
+    for handle in handles {
+        if let Some((key, bytes)) = handle.await.context("fetch_round_optional task join")?? {
+            out.insert(key, bytes);
+        }
+    }
+    Ok(out)
+}
+
 async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Vec<u8>> {
+    get_object_bytes_optional(client, bucket, key)
+        .await?
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| anyhow::anyhow!("object not found: {key}"))
+}
+
+async fn get_object_bytes_optional(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Option<(String, Vec<u8>)>> {
     let out = client.get_object().bucket(bucket).key(key).send().await;
     match out {
         Ok(resp) => {
@@ -457,12 +497,12 @@ async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Ve
                 .into_bytes()
                 .to_vec();
             crate::metrics::inc_s3_get();
-            Ok(bytes)
+            Ok(Some((key.to_string(), bytes)))
         }
         Err(e) => {
             let service = e.into_service_error();
             if service.is_no_such_key() {
-                Err(anyhow::anyhow!("object not found: {key}"))
+                Ok(None)
             } else {
                 Err(anyhow::anyhow!("get object {key}: {service}"))
             }
@@ -552,7 +592,8 @@ pub async fn fetch_cold_vector_probed(
         }
         s3_keys_fetched =
             s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(cluster_keys.len()));
-        let cluster_map = fetch_round(client, bucket, &cluster_keys).await?;
+        // Empty fine centroids have no cluster object on S3 (warm cache skips misses too).
+        let cluster_map = fetch_round_optional(client, bucket, &cluster_keys).await?;
         fetched.extend(cluster_map);
     }
 
