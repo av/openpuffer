@@ -2,7 +2,7 @@ use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::config::{AnnProbeConfig, LimitsConfig};
 use crate::limits::cap_filter_batch;
 use crate::cache::SegmentCache;
-use crate::filter::{parse_filter, should_apply_patch, should_apply_upsert};
+use crate::filter::{parse_filter, should_apply_delete, should_apply_patch, should_apply_upsert};
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
 use crate::models::IndexStatus;
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
@@ -496,6 +496,7 @@ impl Storage {
         patch_by_filter_allow_partial: bool,
         upsert_condition: Option<serde_json::Value>,
         patch_condition: Option<serde_json::Value>,
+        delete_condition: Option<serde_json::Value>,
         distance_metric: Option<crate::meta::DistanceMetric>,
         return_affected_ids: bool,
     ) -> Result<crate::models::WriteStats> {
@@ -546,6 +547,9 @@ impl Storage {
             .await?;
         let patches = self
             .apply_patch_condition(namespace, patches, patch_condition)
+            .await?;
+        let deletes = self
+            .apply_delete_condition(namespace, deletes, delete_condition)
             .await?;
 
         let upserted_ids: Vec<String> = upserts.iter().map(|d| d.id.clone()).collect();
@@ -637,6 +641,31 @@ impl Storage {
             let current = docs.get(&patch.id);
             if should_apply_patch(&expr, current, &patch) {
                 out.push(patch);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Filter `deletes` by `delete_condition` (missing ids skipped; `$ref_new` resolves to null).
+    async fn apply_delete_condition(
+        &self,
+        namespace: &str,
+        deletes: Vec<String>,
+        delete_condition: Option<serde_json::Value>,
+    ) -> Result<Vec<String>> {
+        let Some(cond_val) = delete_condition.filter(|v| !v.is_null()) else {
+            return Ok(deletes);
+        };
+        let expr = parse_filter(&cond_val)?;
+        let mut docs = self.load_docs_for_conditional_write(namespace).await?;
+        self.write_buffer
+            .overlay_pending_writes(namespace, &mut docs)
+            .await?;
+        let mut out = Vec::with_capacity(deletes.len());
+        for id in deletes {
+            let current = docs.get(&id);
+            if should_apply_delete(&expr, current) {
+                out.push(id);
             }
         }
         Ok(out)

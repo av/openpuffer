@@ -33,6 +33,7 @@ const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_PATCH_COND: &str = "itest-patch-cond";
+const NAMESPACE_DELETE_COND: &str = "itest-delete-cond";
 const NAMESPACE_DATETIME_UPSERT_COND: &str = "itest-datetime-upsert-cond";
 const NAMESPACE_ORDER_BY: &str = "itest-order-by";
 const NAMESPACE_QUERY_BILLING: &str = "itest-query-billing";
@@ -2043,6 +2044,79 @@ async fn upsert_condition_newer_timestamp_with_datetime() {
         StatusCode::BAD_REQUEST,
         "invalid datetime must be rejected: {}",
         bad.text().await.unwrap_or_default()
+    );
+}
+
+/// `delete_condition`: delete only when condition passes; missing ids ignored; `$ref_new` is null.
+#[tokio::test]
+async fn delete_condition_deletes_matching_docs_only() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_DELETE_COND,
+        json!({
+            "upsert_rows": [
+                { "id": "active-1", "attributes": { "status": "active" } },
+                { "id": "inactive-1", "attributes": { "status": "inactive" } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!(
+        "{}/v2/namespaces/{NAMESPACE_DELETE_COND}",
+        serve.base_url
+    );
+    let resp = http
+        .post(&write_url)
+        .json(&json!({
+            "delete_condition": ["status", "Eq", "active"],
+            "deletes": ["active-1", "inactive-1", "missing-1"]
+        }))
+        .send()
+        .await
+        .expect("conditional delete");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("write json");
+    assert_eq!(body["rows_deleted"].as_u64(), Some(1), "body={body}");
+    assert_eq!(body["rows_affected"].as_u64(), Some(1));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let export = http
+        .get(format!(
+            "{}/v1/namespaces/{NAMESPACE_DELETE_COND}/export",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("export");
+    assert_eq!(export.status(), StatusCode::OK);
+    let exported: Value = export.json().await.expect("export json");
+    let rows = exported["rows"].as_array().expect("export rows");
+    let ids: Vec<&str> = rows
+        .iter()
+        .map(|row| row["id"].as_str().expect("id"))
+        .collect();
+    assert!(
+        ids.contains(&"inactive-1"),
+        "inactive doc must remain, ids={ids:?}"
+    );
+    assert!(
+        !ids.contains(&"active-1"),
+        "active doc must be deleted, ids={ids:?}"
+    );
+    assert!(
+        !ids.contains(&"missing-1"),
+        "missing id must not create a row, ids={ids:?}"
     );
 }
 

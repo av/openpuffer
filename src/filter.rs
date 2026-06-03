@@ -34,7 +34,8 @@ pub enum FilterValue {
     Number(f64),
     Bool(bool),
     Null,
-    /// turbopuffer `upsert_condition` / `patch_condition`: `{"$ref_new": "field"}` reads from the incoming row.
+    /// turbopuffer conditional writes: `{"$ref_new": "field"}` reads from the incoming row on
+    /// upsert/patch; on `delete_condition` all `$ref_new` values resolve to null.
     RefNew(String),
 }
 
@@ -155,24 +156,26 @@ fn parse_cmp_op(s: &str) -> Result<CmpOp> {
 
 /// Evaluate filter against one document (WAL tail / exhaustive fallback).
 pub fn eval_filter(expr: &FilterExpr, doc: &Document) -> bool {
-    eval_filter_with_new(expr, doc, None)
+    eval_filter_with_new(expr, doc, None, false)
 }
 
 /// Evaluate filter; when `new_doc` is set, `FilterValue::RefNew` reads from the incoming row.
+/// When `ref_new_null` is true (`delete_condition`), every `$ref_new` resolves to null.
 pub fn eval_filter_with_new(
     expr: &FilterExpr,
     doc: &Document,
     new_doc: Option<&Document>,
+    ref_new_null: bool,
 ) -> bool {
     match expr {
         FilterExpr::And(subs) => subs
             .iter()
-            .all(|s| eval_filter_with_new(s, doc, new_doc)),
+            .all(|s| eval_filter_with_new(s, doc, new_doc, ref_new_null)),
         FilterExpr::Or(subs) => subs
             .iter()
-            .any(|s| eval_filter_with_new(s, doc, new_doc)),
+            .any(|s| eval_filter_with_new(s, doc, new_doc, ref_new_null)),
         FilterExpr::Cmp { field, op, value } => {
-            eval_cmp(doc, field, *op, value, new_doc)
+            eval_cmp(doc, field, *op, value, new_doc, ref_new_null)
         }
     }
 }
@@ -181,7 +184,7 @@ pub fn eval_filter_with_new(
 pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, new: &Document) -> bool {
     match current {
         None => true,
-        Some(doc) => eval_filter_with_new(expr, doc, Some(new)),
+        Some(doc) => eval_filter_with_new(expr, doc, Some(new), false),
     }
 }
 
@@ -189,7 +192,15 @@ pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, new: &
 pub fn should_apply_patch(expr: &FilterExpr, current: Option<&Document>, patch: &Document) -> bool {
     match current {
         None => false,
-        Some(doc) => eval_filter_with_new(expr, doc, Some(patch)),
+        Some(doc) => eval_filter_with_new(expr, doc, Some(patch), false),
+    }
+}
+
+/// turbopuffer `delete_condition`: skip missing ids; otherwise evaluate on current doc (`$ref_new` → null).
+pub fn should_apply_delete(expr: &FilterExpr, current: Option<&Document>) -> bool {
+    match current {
+        None => false,
+        Some(doc) => eval_filter_with_new(expr, doc, None, true),
     }
 }
 
@@ -199,9 +210,10 @@ fn eval_cmp(
     op: CmpOp,
     rhs: &FilterValue,
     new_doc: Option<&Document>,
+    ref_new_null: bool,
 ) -> bool {
     let lhs = doc_field_value(doc, field);
-    let rhs = resolve_rhs(rhs, new_doc);
+    let rhs = resolve_rhs(rhs, new_doc, ref_new_null);
     match op {
         CmpOp::Eq => match (&lhs, &rhs) {
             (None, Some(FilterValue::Null)) => true,
@@ -250,9 +262,16 @@ fn eval_cmp(
     }
 }
 
-fn resolve_rhs(rhs: &FilterValue, new_doc: Option<&Document>) -> Option<FilterValue> {
+fn resolve_rhs(
+    rhs: &FilterValue,
+    new_doc: Option<&Document>,
+    ref_new_null: bool,
+) -> Option<FilterValue> {
     match rhs {
         FilterValue::RefNew(field) => {
+            if ref_new_null {
+                return Some(FilterValue::Null);
+            }
             let new = new_doc?;
             doc_field_value(new, field)
         }
@@ -368,6 +387,37 @@ mod tests {
         };
         let cond = parse_filter(&json!(["tag", "Eq", null])).unwrap();
         assert!(eval_filter(&cond, &doc));
+    }
+
+    #[test]
+    fn delete_only_when_status_active() {
+        let active = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("status".into(), json!("active"))]),
+        };
+        let inactive = Document {
+            id: "b".into(),
+            attributes: HashMap::from([("status".into(), json!("inactive"))]),
+        };
+        let cond = parse_filter(&json!(["status", "Eq", "active"])).unwrap();
+        assert!(should_apply_delete(&cond, Some(&active)));
+        assert!(!should_apply_delete(&cond, Some(&inactive)));
+        assert!(!should_apply_delete(&cond, None));
+    }
+
+    #[test]
+    fn delete_condition_ref_new_resolves_to_null() {
+        let tagged = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("tag".into(), json!("keep"))]),
+        };
+        let untagged = Document {
+            id: "b".into(),
+            attributes: HashMap::new(),
+        };
+        let cond = parse_filter(&json!(["tag", "Eq", {"$ref_new": "tag"}])).unwrap();
+        assert!(!should_apply_delete(&cond, Some(&tagged)));
+        assert!(should_apply_delete(&cond, Some(&untagged)));
     }
 
     #[test]

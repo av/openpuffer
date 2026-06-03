@@ -70,6 +70,9 @@ pub struct WriteRequest {
     /// Conditional patches (turbopuffer): same filter DSL; missing ids are ignored without evaluation.
     #[serde(default)]
     pub patch_condition: Option<Value>,
+    /// Conditional deletes (turbopuffer): same filter DSL; missing ids are ignored; `$ref_new` is null.
+    #[serde(default)]
+    pub delete_condition: Option<Value>,
     /// ANN distance for the namespace: `cosine_distance` (default) or `euclidean_squared`.
     /// Stored in `meta.json` on first write; later writes must match.
     #[serde(default)]

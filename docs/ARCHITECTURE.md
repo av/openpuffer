@@ -107,6 +107,18 @@ Same filter DSL as `upsert_condition`, evaluated per `patch_rows` / `patch_colum
 
 `rows_patched` counts only rows where the condition passed and the patch was written.
 
+### Conditional deletes (`delete_condition`)
+
+Same filter DSL, evaluated per id in `deletes` against the **committed** doc map (plus unflushed buffer overlay). Missing ids are **ignored** without evaluating the condition ([turbopuffer `delete_condition`](https://turbopuffer.com/docs/write#param-delete_condition)). Does not apply to `delete_by_filter`. `{"$ref_new": "field"}` always resolves to null (not the delete id).
+
+**Delete only when status matches:**
+
+```json
+["status", "Eq", "archived"]
+```
+
+`rows_deleted` counts only rows where the condition passed and the delete was written.
+
 **Write response** (turbopuffer [`write` response](https://turbopuffer.com/docs/write) subset): `rows_affected`, optional `rows_upserted` / `rows_patched` / `rows_deleted`, and `billing.billable_logical_bytes_written` (v1 estimate: 64 bytes × affected rows per request).
 
 ### Write throughput limits (v1)
