@@ -53,6 +53,9 @@ jobs:
       - name: bench-large dry-run
         run: ./scripts/bench-large.sh --tier ${{ inputs.tier }} --dry-run
 
+      - name: run-aws-large-benchmark dry-run (G3)
+        run: ./scripts/run-aws-large-benchmark.sh --tier ${{ inputs.tier }} --dry-run
+
       - name: id-overlap spotcheck dry-run (Phase 3.3)
         run: ./scripts/run-id-overlap-spotcheck.sh --tier ${{ inputs.tier }} --dry-run
 

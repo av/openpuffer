@@ -4,6 +4,8 @@ End-to-end program to load a **large-ish** namespace (primary target **1M**), pr
 
 This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) and operator runbooks in [BENCHMARKS.md](BENCHMARKS.md). It does not replace them: those docs define *gates*; this doc defines the *full evaluation program* and the *comparison report*.
 
+**Harness status:** automation through Phase 8 A1–A6 and G2 MinIO gates is in-repo (`facts check --tags bench-large` / `bench-tpuf`). Live G3–G5 (AWS + tpuf JSON + measured report) remain operator-owned — see [Unresolved assumptions](#unresolved-assumptions) and [Verification checklist](#verification-checklist-program-complete).
+
 ---
 
 ## Goals and non-goals
@@ -42,7 +44,7 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 
 Use **synthetic, deterministic** data so runs are diffable without storing 100k×128 floats in git:
 
-- **Ids:** `doc-{start + i}` or u64 `start + i` (pick one; document in manifest).
+- **Ids:** `doc-{i}` via `id_scheme: doc-prefix` in committed manifests (generator also supports `u64`; **do not mix** across a comparison run). See `benchmarks/workloads/synthetic-128/*/manifest.json`.
 - **Vectors:** seeded PRNG per id (same seed in generator for openpuffer and tpuf).
 - **Attributes (optional but recommended for hybrid/filter tests):**
   - `category`: one of 8 values (filter `In` tests).
@@ -128,18 +130,22 @@ Record these commit SHAs in every report:
 
 ### Fact sheet
 
-`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` and `facts check --tags bench-tpuf` ([BENCHMARKS.md](BENCHMARKS.md#facts)). They cover A1–A5 scripts, G2 fixture gates, and report merge fixtures—not live AWS/tpuf JSON (still manual).
+`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` (15 facts) and `facts check --tags bench-tpuf` (6 facts, overlap with bench-large) ([BENCHMARKS.md](BENCHMARKS.md#facts)).
 
-**Pending manual facts** (add when artifacts exist):
+**Covered by `@spec` + `@implemented` today:** A1–A5 scripts, G2 gates, G3 `run-aws-large-benchmark.sh`, G4 `run-tpuf-large-benchmark.sh`, MinIO schema example JSON, Phase 3.3 id-overlap dry-run, A6 dispatch id-overlap + tpuf dry-run, report merge fixtures, exemplar `NOT MEASURED` report.
 
-- “100k AWS cold bench JSON exists with `storage_roundtrips ≤ 4`.” (`benchmarks/results/large-aws-l1.json`)
-- “Comparison report documents tpuf region and openpuffer S3 region.” (`docs/reports/BENCHMARK_VS_TURBOPUFFER_*.md` from measured runs)
+**Pending manual facts** (add `@spec` when artifacts exist, then `@implemented` after commit):
+
+- “L1 AWS cold bench JSON exists with `environment=aws-s3`, `storage_roundtrips ≤ 4`, `preferred_ann_version == 3`.” → `benchmarks/results/large-aws-l1.json`
+- “L1 tpuf bench JSON exists with `tpuf_region` set and `cold_query_runs == 7`.” → `benchmarks/results/tpuf-l1.json`
+- “Measured comparison report documents tpuf region and openpuffer S3 region (not NOT MEASURED).” → `docs/reports/BENCHMARK_VS_TURBOPUFFER_YYYY-MM-DD.md`
+- “Live id-overlap JSON from both indexed namespaces.” → `benchmarks/results/id-overlap-l1.json`
 
 ---
 
 ## Phase 1 — Workload generator and manifest
 
-**Deliverable:** `benchmarks/workloads/synthetic-128/` (new directory).
+**Deliverable:** `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/` (committed; seed 42).
 
 ### 1.1 Generator script
 
@@ -283,13 +289,18 @@ Identical client procedure:
 5. **Repeat:** 7 cold runs (match [`bench_cold.rs`](../tests/bench_cold.rs)); report p50 and p95.
 6. **Record** full JSON line per run (latency + performance block).
 
-openpuffer automation:
+openpuffer automation (tiered; **not** `bench-1m.sh` for L1/L2):
 
 ```bash
-# 100k AWS (after ingest) — extend bench-1m.sh or add scripts/bench-large.sh
-OPENPUFFER_BENCH_DOCS=100000 \
-OPENPUFFER_BENCH_NAMESPACE=bench-large-100k \
-./scripts/bench-1m.sh   # today defaults 1M; parameterize per Phase 1 scripts
+# G3 one-shot (recommended): G2 subset → AWS preflight → ingest → bench
+./scripts/run-aws-large-benchmark.sh --tier l1
+# → benchmarks/results/large-aws-l1.json
+
+# Or stepwise:
+./scripts/ingest-large.sh --tier l1
+./scripts/bench-large.sh --tier l1
+
+# L3 (1M) still available via bench-large --tier l3 or legacy bench-1m.sh
 ```
 
 ### 4.3 Warm query protocol
@@ -479,33 +490,90 @@ Ordered work to make this plan one-command reproducible:
 |---|------|--------|
 | A1 | `benchmarks/workloads/generate_synthetic.py` + manifest | Shared data |
 | A2 | `scripts/ingest-large.sh` (wraps generator + meta poll) | openpuffer ingest |
-| A3 | `scripts/bench-large.sh` (generalize `bench-1m.sh` for `OPENPUFFER_BENCH_DOCS`) | `large-aws-100k.json` |
-| A4 | `benchmarks/tpuf_driver/run_benchmark.py` | `tpuf-100k.json` |
-| A5 | `scripts/render-report.sh` (merge JSON → markdown) | Report skeleton |
-| A6 | GitHub Actions `workflow_dispatch` dry-run gates ([`benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml)); live AWS/tpuf secrets optional later | CI not default (cost) |
+| A3 | `scripts/bench-large.sh` (+ G3 [`run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh)) | `benchmarks/results/large-aws-{l1,l2,l3}.json` |
+| A4 | [`run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) → `benchmarks/tpuf_driver/run_benchmark.py` | `benchmarks/results/tpuf-{l1,l2,l3}.json` |
+| A5 | `scripts/render-report.sh` (merge JSON → markdown) | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
+| A6 | [`benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` dry-run | CI not default (cost) |
 
-A1–A5 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) for metrics, cold protocol, debugging, and pass/fail. For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid (`bench-large.sh --tier l3` supersedes for shared workload).
+**Operator wrappers (G3/G4)** — shared preflight in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh):
+
+| Script | Role | Default artifact |
+|--------|------|------------------|
+| [`run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) | G2 subset → AWS S3 check → ingest-large → bench-large | `large-aws-{tier}.json` |
+| [`run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) | G2 subset (optional) → tpuf env → run_benchmark.py | `tpuf-{tier}.json` |
+| [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) | MinIO JSON **shape** only (`environment=minio`) | `large-aws-l1-schema-minio.example.json` |
+| [`run-id-overlap-spotcheck.sh`](../scripts/run-id-overlap-spotcheck.sh) | Phase 3.3 cross-system id overlap | `id-overlap-{tier}.json` |
+| [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | G2 MinIO test subset | (no comparison JSON) |
+
+A1–A6 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
+
+Report fixtures (dry-run only, **not** live AWS): `benchmarks/report/fixtures/large-aws-l1.json`, `tpuf-l1.json`. Exemplar layout: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`](reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md) (`NOT MEASURED`).
+
+---
+
+## Unresolved assumptions
+
+Decisions operators must still make (or accept defaults below) before G3–G5 are “program complete.” Record every choice in the measured report methodology section.
+
+| Topic | Options / tension | **Recommended default** | Where enforced |
+|-------|-------------------|-------------------------|----------------|
+| **AWS region** | Any S3 region vs tpuf region list | `us-east-1` bucket + EC2; `TURBOPUFFER_REGION=aws-us-east-1` | `large-benchmark-preflight.sh` warns on mismatch |
+| **EC2 instance** | CPU vs cost for decode/rerank | `c6i.large` in same AZ as bucket; label via `OPENPUFFER_BENCH_HOST_LABEL` | Report only |
+| **Client placement** | localhost `serve` vs remote client | **localhost on bench EC2** (`OPENPUFFER_BENCH_CLIENT_MODE=localhost`) | Report + JSON `notes` |
+| **S3 bucket naming** | Shared vs per-run | `openpuffer-bench-<account>-<region>` dedicated prefix | Operator env |
+| **Namespace isolation** | Date-stamped vs fixed | openpuffer: `bench-large-{num_docs}` (ingest-large); tpuf: `bench-tpuf-YYYY-MM-DD-{tier}` | Scripts / env override |
+| **Id format** | `doc-prefix` vs `u64` | **`doc-prefix`** (`doc-{i}`) — committed L1–L3 manifests | `manifest.json`; do not regenerate with `u64` mid-program |
+| **Recall billing (tpuf)** | `num=20` on 1M costly | L1/L2: `num=20, top_k=10` from `queries.json`; L3: consider `num=10` with note in report | `recall_defaults` in queries.json |
+| **Warm path** | Optional secondary metrics | **Defer** in first L1 report; cold vector-only is mandatory gate | Phase 4.3 optional |
+| **Hybrid/filter in report** | Scope creep vs G2 coverage | **Defer** beyond recall + cold vector in v1 report; G2 already exercises hybrid on MinIO | Phase 4.4 |
+| **Indexer wait timeout** | Wall clock on large tiers | Poll `index_cursor == wal_commit_seq` + `preferred_ann_version == 3`; allow **≥30 min** L1, **≥2 h** L3 | ingest-large meta poll |
+| **tpuf index wait** | SDK metadata fields vary | Driver polls until row count stable / index status quiescent (mirror openpuffer gate) | `run_benchmark.py` |
+| **MinIO → COMPARISON** | Accidental publish | **Never** — `environment=minio` or path contains `minio`/`example`/`schema`; guard in preflight | `large_preflight_guard_aws_results_path` |
+| **Cost ceiling** | Unbounded recall @ 1M | Start **L1 only**; cap tpuf `num` on L3; delete namespaces in `finally` | Operator |
+| **CI live AWS/tpuf** | Secrets in GitHub | **Manual** `workflow_dispatch` dry-run only (A6); live secrets optional later | `benchmark-large-dispatch.yml` |
+
+---
+
+## Phase completion matrix (evidence)
+
+| Phase / goal | Status | Evidence (representative) |
+|--------------|--------|---------------------------|
+| **G1** workload | Done | `benchmarks/workloads/generate_synthetic.py`, `synthetic-128/l1-100k/` manifests; facts `6m8`, `u2e` @ `bench-large` |
+| **G2** correctness | Done (MinIO) | `scripts/run-minio-correctness-gates.sh`, `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_*`; CI `g2-minio-correctness`; commits `5972ab7`, `67c7050`, `ef4fa97` |
+| **G3** AWS scale proof | Harness only | `scripts/run-aws-large-benchmark.sh`, `bench-large.sh`; **no** `large-aws-l1.json` (live AWS); MinIO shape: `large-aws-l1-schema-minio.example.json` (`bd449b6`) |
+| **G4** tpuf baseline | Harness only | `scripts/run-tpuf-large-benchmark.sh`, `benchmarks/tpuf_driver/run_benchmark.py`; fact `eos`; **no** live `tpuf-l1.json` |
+| **G5** report | Skeleton only | `scripts/render-report.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
+| **G6** regression | Done (dry-run CI) | `.github/workflows/benchmark-large-dispatch.yml` (`1902c62`+); `facts check --tags bench-large,bench-tpuf` |
+| Phase 3.3 overlap | Harness only | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; mock fixture; live `id-overlap-l1.json` pending |
+| Phase 7 COMPARISON | Placeholders | `docs/COMPARISON.md` L1 table — explicit “pending live JSON” (`5ec9851`) |
 
 ---
 
 ## Verification checklist (program complete)
 
-- [x] MinIO G2 subset: `cargo test --test synthetic_workload_gate` + `synthetic_128_g2_correctness_gates_on_minio` + `bench_cold_10k_synthetic_128_workload_gate` (see [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh)).
-- [x] MinIO G2 CI: `.github/workflows/ci.yml` job `g2-minio-correctness` runs `scripts/run-minio-correctness-gates.sh` on push/PR.
-- [x] Phase 4/5/6 operator runbook in [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46) (metrics matrix, cold protocol, debugging, pass/fail vs tpuf).
-- [x] Harness scripts A1–A5: `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `tpuf_driver/run_benchmark.py`, `render-report.sh`.
-- [x] A6: `.github/workflows/benchmark-large-dispatch.yml` (`workflow_dispatch` tier l1/l2/l3; dry-run + `facts check` bench-large/bench-tpuf).
-- [x] Phase 3.3: id overlap spot-check harness (`benchmarks/cross_check/`, `queries.json` `spot_check`, mock fixture for report).
-- [x] MinIO: full `cargo test -F bench` + `integration` green on main (`./scripts/run-integration-s3.sh`; 2026-06-04: lib 200, `integration_s3` 68 incl. `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold` 4 + 1 ignored `bench_cold_100k_nightly`, `synthetic_workload_gate` 2).
-- [x] Workload manifests committed for L1–L3 (`synthetic-128/{l1-100k,l2-500k,l3-1m}/`; seed 42 in manifest).
-- [ ] openpuffer AWS: ingest + index catch-up + `preferred_ann_version == 3` (operator: [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh); preflight lib in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh)).
-- [x] MinIO schema example: `large-aws-l1-schema-minio.example.json` + `ingest-large-l1-schema-minio.example.json` (`environment=minio`; not for tpuf/COMPARISON).
-- [ ] `benchmarks/results/large-aws-<tier>.json` committed or attached to report PR (live AWS measured rows).
-- [x] G4 operator harness: [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) (API key/region preflight, G2 subset, wraps `run_benchmark.py`).
-- [ ] turbopuffer: same tier ingested; `tpuf-<tier>.json` captured (live run with `TURBOPUFFER_API_KEY`).
-- [ ] Report published under `docs/reports/` with methodology section complete.
-- [ ] [COMPARISON.md](COMPARISON.md) updated from measured rows, not docs-only tpuf numbers.
-- [ ] `facts check --tags "ann or cold"` still passes if gates unchanged.
+| Item | Done | Evidence |
+|------|:----:|----------|
+| MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` |
+| MinIO G2 CI job | [x] | `.github/workflows/ci.yml` → `g2-minio-correctness`; `67c7050` |
+| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); `8594099` |
+| A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
+| A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6` |
+| A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |
+| A4 `tpuf_driver/run_benchmark.py` | [x] | fact `uod`; `08e66ce` |
+| A5 `render-report.sh` | [x] | fact `ved`; `59f5822` |
+| G3 `run-aws-large-benchmark.sh` | [x] harness / [ ] live | fact `bue`; `a1b34cc`; **no** `benchmarks/results/large-aws-l1.json` |
+| G4 `run-tpuf-large-benchmark.sh` | [x] harness / [ ] live | fact `eos`; `95197a9`; **no** `benchmarks/results/tpuf-l1.json` |
+| A6 `benchmark-large-dispatch.yml` | [x] | `1902c62`; dry-run ingest/bench/tpuf/id-overlap + `facts check`; run-aws dry-run in workflow |
+| Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
+| MinIO integration + bench green | [x] | `./scripts/run-integration-s3.sh` + `cargo test -F bench`; `ef4fa97` (2026-06-04) |
+| MinIO schema example JSON | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; facts `3np`, `ccb`; `bd449b6` |
+| G5 exemplar report (`NOT MEASURED`) | [x] skeleton | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8` |
+| Live `large-aws-{tier}.json` (AWS) | [ ] | Requires `OPENPUFFER_S3_*` on EC2; `run-aws-large-benchmark.sh --tier l1` |
+| Live `tpuf-{tier}.json` | [ ] | Requires `TURBOPUFFER_API_KEY`; `run-tpuf-large-benchmark.sh --tier l1` |
+| Measured report + COMPARISON rows | [ ] | `render-report.sh` without `--dry-run`; [COMPARISON.md](COMPARISON.md) L1 table still placeholder (`5ec9851`) |
+| `facts check --tags "ann or cold"` | [ ] verify on change | Run before release if ann/cold gates touched |
+
+**Program complete** when the four `[ ]` live/measured rows above are checked and methodology in the dated report matches [Unresolved assumptions](#unresolved-assumptions) defaults (or documents overrides).
 
 ---
 
