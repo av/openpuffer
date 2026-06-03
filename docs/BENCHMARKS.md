@@ -9,7 +9,7 @@ Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN
 | Gate | Command | What it checks |
 |------|---------|----------------|
 | Fixture vectors | `cargo test --test synthetic_workload_gate` | `queries.json` vectors match `bench_sin_v1`; `recall_defaults` num=20, top_k=10 |
-| Integration smoke | `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` | 10k ingest with workload schema; `/recall`, filter, hybrid, cold query from `queries.json` |
+| Integration smoke | `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` | 10k ingest with workload schema; `/recall`, all 6 filter + 4 hybrid queries, cold vector from `queries.json` |
 | Bench cold | `cargo test -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate` | Same workload on bench path; recall ≥ 0.85; `storage_roundtrips ≤ 4` |
 
 **One-shot preflight** (subset; fast path for Phase 2.3):

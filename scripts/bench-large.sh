@@ -194,7 +194,15 @@ run_dry_run() {
   echo "  recall_num=${RECALL_NUM} index_timeout=${INDEX_TIMEOUT_SEC}s"
   echo "  enforce_gates=${ENFORCE_GATES} ann_version=${ANN_VERSION}"
   if [[ -n "$qf" ]]; then
+    local n_filter n_hybrid
+    n_filter="$(jq -r '.filter_queries | length' "$qf")"
+    n_hybrid="$(jq -r '.hybrid_queries | length' "$qf")"
     echo "  queries=${qf}"
+    echo "  filter_queries=${n_filter} hybrid_queries=${n_hybrid} (G2 runs all; bench-large cold vector only)"
+    if [[ "$n_filter" -lt 1 || "$n_hybrid" -lt 1 ]]; then
+      echo "bench-large dry-run: queries.json must include filter_queries and hybrid_queries" >&2
+      exit 1
+    fi
   else
     echo "  queries=(fallback sin vector)"
   fi

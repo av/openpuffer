@@ -7,7 +7,8 @@ mod common;
 
 use common::s3_harness::*;
 use common::synthetic_workload::{
-    cold_query_protocol, load_manifest, load_queries, l1_workload_dir, recall_defaults,
+    assert_workload_filter_hybrid_counts, cold_query_protocol, filter_query_specs,
+    hybrid_query_specs, load_manifest, load_queries, l1_workload_dir, recall_defaults,
     resolve_openpuffer_query, synthetic_128_schema, upsert_columns_batch,
 };
 use openpuffer::models::ROOT_PREFIX;
@@ -1867,7 +1868,7 @@ async fn recall_http_response_shape_on_minio() {
     serve.stop();
 }
 
-/// G2 gate: ingest synthetic-128 column shape, `/recall` defaults from `queries.json`, filter + hybrid smoke.
+/// G2 gate: ingest synthetic-128 column shape, `/recall` defaults from `queries.json`, all filter + hybrid queries, cold vector.
 #[tokio::test]
 async fn synthetic_128_g2_correctness_gates_on_minio() {
     let test_started = std::time::Instant::now();
@@ -1926,53 +1927,75 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
         recall_top_k
     );
 
-    let filter_spec = &queries["filter_queries"][0];
-    let filter_query = resolve_openpuffer_query(
-        filter_spec.get("openpuffer_query").expect("filter openpuffer_query"),
-        filter_spec.get("vector").expect("filter vector"),
+    assert_workload_filter_hybrid_counts(&queries);
+    let query_url = format!(
+        "{}/v2/namespaces/{}/query",
+        serve.base_url,
+        namespace_path_segment(ns)
     );
-    let filter_resp = reqwest::Client::new()
-        .post(format!(
-            "{}/v2/namespaces/{}/query",
-            serve.base_url,
-            namespace_path_segment(ns)
-        ))
-        .json(&filter_query)
-        .send()
-        .await
-        .expect("filter query");
-    assert_eq!(filter_resp.status(), StatusCode::OK, "filter query failed");
-    let filter_body: Value = filter_resp.json().await.expect("filter json");
-    let filter_rows = filter_body["rows"].as_array().expect("filter rows");
-    assert!(
-        !filter_rows.is_empty(),
-        "filter query {} must return rows",
-        filter_spec["name"]
-    );
+    let client = reqwest::Client::new();
 
-    let hybrid_spec = &queries["hybrid_queries"][0];
-    let hybrid_query = resolve_openpuffer_query(
-        hybrid_spec.get("openpuffer_query").expect("hybrid openpuffer_query"),
-        hybrid_spec.get("vector").expect("hybrid vector"),
-    );
-    let hybrid_resp = reqwest::Client::new()
-        .post(format!(
-            "{}/v2/namespaces/{}/query",
-            serve.base_url,
-            namespace_path_segment(ns)
-        ))
-        .json(&hybrid_query)
-        .send()
-        .await
-        .expect("hybrid query");
-    assert_eq!(hybrid_resp.status(), StatusCode::OK, "hybrid query failed");
-    let hybrid_body: Value = hybrid_resp.json().await.expect("hybrid json");
-    let hybrid_rows = hybrid_body["rows"].as_array().expect("hybrid rows");
-    assert!(
-        !hybrid_rows.is_empty(),
-        "hybrid query {} must return rows",
-        hybrid_spec["name"]
-    );
+    for spec in filter_query_specs(&queries) {
+        let name = spec["name"].as_str().unwrap_or("filter");
+        let filter_query = resolve_openpuffer_query(
+            spec.get("openpuffer_query").expect("filter openpuffer_query"),
+            spec.get("vector").expect("filter vector"),
+        );
+        let filter_resp = client
+            .post(&query_url)
+            .json(&filter_query)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("filter query {name}: {e}"));
+        assert_eq!(
+            filter_resp.status(),
+            StatusCode::OK,
+            "filter query {name} failed"
+        );
+        let filter_body: Value = filter_resp.json().await.expect("filter json");
+        let filter_rows = filter_body["rows"].as_array().expect("filter rows");
+        assert!(
+            !filter_rows.is_empty(),
+            "filter query {name} must return rows"
+        );
+    }
+
+    for spec in hybrid_query_specs(&queries) {
+        let name = spec["name"].as_str().unwrap_or("hybrid");
+        client
+            .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+            .send()
+            .await
+            .expect("cache reset before hybrid");
+        let hybrid_query = resolve_openpuffer_query(
+            spec.get("openpuffer_query").expect("hybrid openpuffer_query"),
+            spec.get("vector").expect("hybrid vector"),
+        );
+        let hybrid_resp = client
+            .post(&query_url)
+            .json(&hybrid_query)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("hybrid query {name}: {e}"));
+        assert_eq!(
+            hybrid_resp.status(),
+            StatusCode::OK,
+            "hybrid query {name} failed"
+        );
+        let hybrid_body: Value = hybrid_resp.json().await.expect("hybrid json");
+        let hybrid_rows = hybrid_body["rows"].as_array().expect("hybrid rows");
+        assert!(
+            !hybrid_rows.is_empty(),
+            "hybrid query {name} must return rows"
+        );
+        let roundtrips = hybrid_body["performance"]["storage_roundtrips"]
+            .as_u64()
+            .expect("hybrid storage_roundtrips");
+        assert!(
+            roundtrips <= 4,
+            "hybrid query {name} storage_roundtrips {roundtrips} must be ≤ 4"
+        );
+    }
 
     let cold_proto = cold_query_protocol(&queries);
     let vector_spec = &queries["vector_queries"][0];
@@ -1982,7 +2005,6 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
     );
     assert_eq!(cold_query["top_k"], cold_proto["top_k"]);
     assert_eq!(cold_query["consistency"], cold_proto["consistency"]);
-    let client = reqwest::Client::new();
     client
         .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
         .send()

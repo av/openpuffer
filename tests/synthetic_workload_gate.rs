@@ -29,3 +29,23 @@ fn synthetic_128_l1_recall_defaults_match_plan() {
     assert_eq!(cold["consistency"].as_str(), Some("strong"));
     assert_eq!(cold["runs"].as_u64(), Some(7));
 }
+
+#[test]
+fn synthetic_128_l1_filter_hybrid_query_sets_complete() {
+    let queries = load_queries(&l1_workload_dir());
+    assert_workload_filter_hybrid_counts(&queries);
+    for (i, spec) in filter_query_specs(&queries).iter().enumerate() {
+        assert!(
+            spec.get("openpuffer_query").is_some() && spec.get("vector").is_some(),
+            "filter_queries[{i}] must have openpuffer_query and vector"
+        );
+        assert!(spec.get("name").is_some(), "filter_queries[{i}].name");
+    }
+    for (i, spec) in hybrid_query_specs(&queries).iter().enumerate() {
+        assert!(
+            spec.get("openpuffer_query").is_some() && spec.get("vector").is_some(),
+            "hybrid_queries[{i}] must have openpuffer_query and vector"
+        );
+        assert!(spec.get("name").is_some(), "hybrid_queries[{i}].name");
+    }
+}

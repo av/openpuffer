@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 pub const L1_WORKLOAD_DIR: &str = "benchmarks/workloads/synthetic-128/l1-100k";
 
+/// Fixed counts from `generate_synthetic.py` defaults (PLAN §1.2 query set).
+pub const EXPECTED_FILTER_QUERY_COUNT: usize = 6;
+pub const EXPECTED_HYBRID_QUERY_COUNT: usize = 4;
+
 const CATEGORIES: [&str; 8] = [
     "cat-0", "cat-1", "cat-2", "cat-3", "cat-4", "cat-5", "cat-6", "cat-7",
 ];
@@ -119,6 +123,32 @@ pub fn cold_query_protocol(queries: &Value) -> Value {
         .get("cold_query_protocol")
         .expect("queries.cold_query_protocol")
         .clone()
+}
+
+pub fn filter_query_specs(queries: &Value) -> &[Value] {
+    queries["filter_queries"]
+        .as_array()
+        .expect("queries.filter_queries")
+}
+
+pub fn hybrid_query_specs(queries: &Value) -> &[Value] {
+    queries["hybrid_queries"]
+        .as_array()
+        .expect("queries.hybrid_queries")
+}
+
+/// G2 gate expects the full precomputed filter + hybrid sets (not only `[0]` smoke).
+pub fn assert_workload_filter_hybrid_counts(queries: &Value) {
+    assert_eq!(
+        filter_query_specs(queries).len(),
+        EXPECTED_FILTER_QUERY_COUNT,
+        "filter_queries count"
+    );
+    assert_eq!(
+        hybrid_query_specs(queries).len(),
+        EXPECTED_HYBRID_QUERY_COUNT,
+        "hybrid_queries count"
+    );
 }
 
 /// Assert every precomputed vector in `queries.json` matches `bench_sin_v1` for its doc index.
