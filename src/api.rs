@@ -154,14 +154,22 @@ async fn query_namespace(
     Json(body): Json<QueryRequest>,
 ) -> impl IntoResponse {
     match state.storage.load_namespace(&name).await {
-        Ok(loaded) => match search::execute_query(&loaded.docs, &body) {
+        Ok(loaded) => {
+            let ctx = search::QueryContext {
+                docs: &loaded.docs,
+                meta: &loaded.meta,
+                fts: loaded.fts.as_ref(),
+                tail_doc_ids: &loaded.tail_doc_ids,
+            };
+            match search::execute_query(&ctx, &body) {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
                 .into_response(),
-        },
+            }
+        }
         Err(e) => {
             error!("query load {name}: {e:#}");
             storage_error_response(e)

@@ -186,6 +186,13 @@ impl WriteBufferManager {
         )
         .await?;
 
+        // Index WAL tail synchronously so queries can use FTS + unindexed tail (v1).
+        if let Err(e) =
+            crate::indexer::index_namespace(&self.client, &self.bucket, namespace).await
+        {
+            tracing::warn!("indexer after flush for {namespace}: {e:#}");
+        }
+
         let committed = CommittedBatch {
             seq,
             entry: entry.clone(),

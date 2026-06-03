@@ -1,10 +1,13 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
+use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
+use crate::meta::NamespaceMeta;
 use crate::models::Document;
+use crate::namespace::replay_wal_entries;
 use crate::view::NamespaceView;
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::types::ObjectIdentifier;
 use aws_sdk_s3::Client;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -29,7 +32,10 @@ pub struct Storage {
 
 pub struct LoadedNamespace {
     pub docs: HashMap<String, Document>,
+    pub meta: NamespaceMeta,
     pub meta_etag: Option<String>,
+    pub fts: Option<FtsSegment>,
+    pub tail_doc_ids: HashSet<String>,
 }
 
 impl Storage {
@@ -80,24 +86,53 @@ impl Storage {
     }
 
     /// Load namespace for query: cached [`NamespaceView`] with incremental WAL tail apply.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    pub fn bucket(&self) -> &str {
+        &self.bucket
+    }
+
     pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
         let mut views = self.views.write().await;
         if let Some(view) = views.get_mut(name) {
             view.catch_up(&self.client, &self.bucket, name).await?;
-            return Ok(LoadedNamespace {
-                docs: view.docs.clone(),
-                meta_etag: view.meta_etag.clone(),
-            });
+            return self.loaded_from_view(name, view).await;
         }
 
         let mut view = NamespaceView::load(&self.client, &self.bucket, name).await?;
         view.catch_up(&self.client, &self.bucket, name).await?;
-        let loaded = LoadedNamespace {
-            docs: view.docs.clone(),
-            meta_etag: view.meta_etag.clone(),
-        };
+        let loaded = self.loaded_from_view(name, &view).await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
+    }
+
+    async fn loaded_from_view(&self, name: &str, view: &NamespaceView) -> Result<LoadedNamespace> {
+        let fts =
+            crate::indexer::load_fts_segment_for_query(&self.client, &self.bucket, name, &view.meta)
+                .await?;
+        let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {
+            let from = view.meta.index_cursor.saturating_add(1);
+            let entries = replay_wal_entries(
+                &self.client,
+                &self.bucket,
+                name,
+                from,
+                view.meta.wal_commit_seq,
+            )
+            .await?;
+            wal_touched_doc_ids(&entries)
+        } else {
+            HashSet::new()
+        };
+        Ok(LoadedNamespace {
+            docs: view.docs.clone(),
+            meta: view.meta.clone(),
+            meta_etag: view.meta_etag.clone(),
+            fts,
+            tail_doc_ids,
+        })
     }
 
     pub fn invalidate_cache(&self, name: &str) {
@@ -123,8 +158,12 @@ impl Storage {
         let mut views = self.views.write().await;
         if let Some(view) = views.get_mut(namespace) {
             view.apply_committed(committed.seq, &committed.entry)?;
+            if let Some((meta, _)) =
+                crate::namespace::fetch_meta(&self.client, &self.bucket, namespace).await?
+            {
+                view.meta = meta;
+            }
         } else {
-            // Cold cache: load from S3 (flush already committed `seq` on object storage).
             let view = NamespaceView::load(&self.client, &self.bucket, namespace).await?;
             views.insert(namespace.to_string(), view);
         }

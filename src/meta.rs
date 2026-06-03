@@ -20,6 +20,9 @@ pub enum DistanceMetric {
 pub struct NamespaceMeta {
     /// Last WAL sequence fully merged into `index/` (0 until indexer runs).
     pub index_cursor: u64,
+    /// Latest FTS segment id on S3 (`index/fts-{id:08}.bin`).
+    #[serde(default)]
+    pub fts_segment_id: u64,
     /// Last committed WAL file sequence (`wal/{seq:08}.bin`).
     pub wal_commit_seq: u64,
     #[serde(default)]
@@ -32,6 +35,7 @@ impl Default for NamespaceMeta {
     fn default() -> Self {
         Self {
             index_cursor: 0,
+            fts_segment_id: 0,
             wal_commit_seq: 0,
             schema: Value::Object(serde_json::Map::new()),
             distance_metric: DistanceMetric::default(),
@@ -69,6 +73,7 @@ mod tests {
     fn meta_json_roundtrip() {
         let meta = NamespaceMeta {
             index_cursor: 3,
+            fts_segment_id: 3,
             wal_commit_seq: 10,
             schema: serde_json::json!({"embedding": {"type": "[]f32"}}),
             distance_metric: DistanceMetric::EuclideanSquared,
