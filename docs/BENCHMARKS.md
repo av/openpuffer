@@ -21,7 +21,7 @@ Bench tests and `scripts/bench-1m.sh` print one JSON object per run with these k
 
 | Field | Meaning |
 |-------|---------|
-| `benchmark` | `cold_10k`, `cold_100k`, or `cold_1m` |
+| `benchmark` | `cold_10k`, `cold_50k_v3`, `cold_100k`, or `cold_1m` |
 | `environment` | `minio-testcontainers`, `in-memory-lib`, or `aws-s3` |
 | `namespace_docs` | Indexed document count |
 | `storage_roundtrips` | `performance.storage_roundtrips` on a strong cold vector query |
@@ -40,6 +40,7 @@ Optional nightly artifact: set `OPENPUFFER_BENCH_WRITE_RESULTS=1` on `bench_cold
 | Tier | Size | Command | Environment |
 |------|------|---------|-------------|
 | **CI** | 10k | `cargo test -F bench --test bench_cold` + lib 10k ANN gates | MinIO testcontainers (`.github/workflows/ci.yml` job `bench-10k`) |
+| **Mid-tier** | 50k | `cargo test --release -F large_stress --test stress_50k -- --ignored` | MinIO v3 + cold probed (`fifty_thousand_docs_v3_cold_probed_validation`); optional warm v2 stress |
 | **Nightly** | 100k | `cargo test -F bench --test bench_cold -- --ignored` + lib `--ignored` | MinIO + in-memory v3 (`.github/workflows/nightly-stress.yml` job `bench-100k`) |
 | **Manual** | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
 
@@ -69,6 +70,37 @@ cargo test --release --lib \
 ```
 
 Gates: `recall@10 ≥ 0.88`, `candidates_ratio < 0.20`, `storage_roundtrips ≤ 4` (100k MinIO); lib recall ≥ 0.90, built index objects < 500.
+
+### Mid-tier (50k v3 + cold probed, optional)
+
+Between CI 10k and nightly 100k. Not scheduled in CI by default (`#[ignore]`).
+
+```bash
+cargo build --release --features large_stress
+# v3 index + strong cold probed path (roundtrips, recall, candidates_ratio, object count)
+cargo test --release -F large_stress --test stress_50k \
+  fifty_thousand_docs_v3_cold_probed_validation -- --ignored --nocapture
+
+# v2 default warm ANN candidate-ratio stress (same ingest pattern)
+cargo test --release -F large_stress --test stress_50k \
+  fifty_thousand_docs_indexed_query -- --ignored --nocapture
+
+# Fast wiring when 50k ingest is unavailable (~2k docs, same cold metrics)
+cargo test -F large_stress --test stress_50k v3_cold_probed_wiring_at_2k -- --ignored --nocapture
+```
+
+**Gates @ 50k** (`fifty_thousand_docs_v3_cold_probed_validation`):
+
+| Metric | Target |
+|--------|--------|
+| `ann_version` (L0) | `3` (`--ann-version 3` on `serve`) |
+| `storage_roundtrips` | ≤ 4 (strong cold, empty `--cache-dir`) |
+| `recall_at_10` | ≥ 0.86 (10 synthetic queries vs brute) |
+| `candidates_ratio` | < 0.20 |
+| `index_object_count` | > 0 and < 500 |
+| `cold_s3_keys_fetched` / `ann_probed_clusters` | ≥ 1 |
+
+Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**release**): ~45–90s ingest+index + recall (~1–2 min total); use `--release` or indexing may exceed the 300s wall timeout.
 
 ## 1M manual (AWS)
 
@@ -135,6 +167,7 @@ Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests
 - `cargo test -F perf` — 5k in-memory `candidates_ratio < 0.12`
 - `cargo test -F integration ten_thousand_docs_indexed_query` — 10k indexed ANN smoke (warm path)
 - `cargo test -F integration s3_cold_query_reports_roundtrips_on_minio` — small-namespace cold roundtrips
+- `cargo test --release -F large_stress --test stress_50k -- --ignored` — 50k warm (v2) + v3 cold probed mid-tier
 
 ## Facts
 

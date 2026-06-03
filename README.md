@@ -173,7 +173,7 @@ Query responses include `performance` (`candidates`, `candidates_ratio`, `exhaus
 | **Integration (MinIO)** | `cargo test -F integration` | **51** | Yes | `tests/integration_s3.rs` — testcontainers MinIO; S3 Head/List/Get + WAL decode |
 | **Perf** | `cargo test -F perf` | 1 | Yes | 5k-doc ANN `candidates_ratio` regression |
 | **External S3** | `cargo test -F integration --test integration_external_s3 -- --ignored` | 1 | Optional | Compose MinIO or `OPENPUFFER_TEST_S3_*` |
-| **Large stress** | `cargo test --release -F large_stress --test stress_50k -- --ignored` | 1 | Yes | 50k-doc namespace; not in default CI |
+| **Large stress** | `cargo test --release -F large_stress --test stress_50k -- --ignored` | 3 | Yes | 50k warm + v3 cold probed mid-tier; not in default CI |
 
 Typical dev run (unit + integration + perf):
 
@@ -201,7 +201,13 @@ cargo build --release --features large_stress
 cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
 ```
 
-Upserts **50k** docs in **5×10k** `upsert_columns` batches with **~1.1s** spacing (WAL rate limit), waits for `index_cursor == wal_commit_seq` (300s wall timeout), warms the namespace, and asserts indexed ANN `candidates_ratio < 0.2`. **Use `--release`** — debug builds may not index 50k within 300s. On a typical dev machine (release): **~40–45s** total (writes ~11s, index+query ~39s, 5 WAL commits); debug can take **6+ minutes**.
+Upserts **50k** docs in **5×10k** `upsert_columns` batches with **~1.1s** spacing (WAL rate limit), waits for `index_cursor == wal_commit_seq` (300s wall timeout). Tests:
+
+- `fifty_thousand_docs_indexed_query` — v2 default, warm ANN `candidates_ratio < 0.2`
+- `fifty_thousand_docs_v3_cold_probed_validation` — `--ann-version 3`, strong cold probed path: `storage_roundtrips ≤ 4`, `recall@10 ≥ 0.86`, `candidates_ratio < 0.2` (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) mid-tier)
+- `v3_cold_probed_wiring_at_2k` — fast 2k wiring for the same cold metrics
+
+**Use `--release`** — debug builds may not index 50k within 300s. On a typical dev machine (release): warm stress **~40–45s**; v3 cold gate **~1–2 min** including recall probes.
 
 ### Testing against real S3
 
