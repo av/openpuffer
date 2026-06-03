@@ -4,19 +4,89 @@ This document compares **[openpuffer](https://github.com/av/openpuffer)** (self-
 
 For implementation detail see [ARCHITECTURE.md](ARCHITECTURE.md). For API shapes see [turbopuffer’s docs](https://turbopuffer.com/docs).
 
-**Last refreshed:** `b42f784` (2026-06-03) — SPFresh + cold program Phases 0–C; crate **0.3.0**. Treat as **architecture v0.3** maturity (facts + MinIO artifacts), not a v1.0 product claim.
+**Last refreshed:** see git `HEAD` at last doc edit — SPFresh + cold program Phases 0–C; **large-dataset comparison program** (Phases 2–7, harness A1–A5); crate **0.3.0**. Treat as **architecture v0.3** maturity (facts + MinIO correctness gates), not a v1.0 product claim.
+
+---
+
+## Large-dataset comparison program (L1 @ 100k)
+
+Head-to-head latency and recall against **managed turbopuffer** on a **shared synthetic workload** (128-dim cosine, seed 42). Program spec: [`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md). Operator flow (G2 → ingest → bench → tpuf → report): [`BENCHMARKS.md` § Large-dataset program](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46).
+
+| Item | Detail |
+|------|--------|
+| **Default comparison tier** | **L1** — 100k docs (`benchmarks/workloads/synthetic-128/l1-100k/`) |
+| **Higher tiers** | L2 (500k), L3 (1M) — same harness; report only when JSON exists |
+| **Correctness preflight** | MinIO G2 gates — **not** used in tpuf latency table |
+| **Comparison environments** | openpuffer on **AWS S3** + tpuf namespace in **same region** as bucket |
+| **Artifacts (live)** | `benchmarks/results/large-aws-{tier}.json`, `benchmarks/results/tpuf-{tier}.json`, optional `id-overlap-{tier}.json` |
+| **Report (Phase 7)** | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` via [`scripts/render-report.sh`](../scripts/render-report.sh) |
+| **This doc after a live run** | Copy measured rows from the report into [§ L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf) below ([plan §7.3](PLAN_LARGE_DATASET_BENCHMARK.md#73-updating-comparisonmd)) |
+
+**Methodology (summary — full table in each published report):**
+
+| Field | L1 default |
+|-------|------------|
+| Documents × dims | 100k × 128 f32 |
+| Embedding | `bench_sin_v1` (manifest seed **42**) |
+| Query | strong consistency, vector ANN, `top_k=10`, 7 cold runs, cache cold |
+| Recall | `num=20`, `top_k=10` (`queries.json` `recall_defaults`) |
+| openpuffer | `preferred_ann_version == 3`, `index_cursor == wal_commit_seq`, `serve --cache-dir ""` |
+| Client | Same-region EC2; localhost `serve` vs tpuf SDK (document instance type in report) |
+| Pass/fail rubric | [`BENCHMARKS.md` § Phase 6](BENCHMARKS.md#phase-6--passfail-rubric) (e.g. AWS L1 cold p50 **&lt; 600 ms**, recall **≥ 0.85**, `storage_roundtrips ≤ 4`) |
+
+**Regenerate report skeleton (fixtures only — not comparison numbers):**
+
+```bash
+./scripts/render-report.sh --dry-run --date YYYY-MM-DD
+```
+
+**Publish measured comparison:**
+
+```bash
+./scripts/run-minio-correctness-gates.sh          # G2 — block spend if red
+./scripts/ingest-large.sh --tier l1
+./scripts/bench-large.sh --tier l1                # → benchmarks/results/large-aws-l1.json
+python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1   # → benchmarks/results/tpuf-l1.json
+./scripts/run-id-overlap-spotcheck.sh --tier l1   # optional Phase 3.3
+./scripts/render-report.sh --tier l1 --date YYYY-MM-DD
+# Then fill § L1 measured rows below from the report (Phase 7.3)
+```
+
+---
+
+### L1 @ 100k — measured rows (AWS + managed tpuf)
+
+**Status:** rows below are **placeholders** until operators commit live `large-aws-l1.json` and `tpuf-l1.json` and accept a Phase 7 report. **Do not** substitute MinIO CI numbers (`nightly-100k.json`, etc.) — those are G2/correctness gates only ([`BENCHMARKS.md`](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46)).
+
+| Metric | openpuffer (AWS) | turbopuffer | Ratio (op/tpuf) | Source |
+|--------|------------------|-------------|-------------------|--------|
+| Ingest wall time (s) | _pending_ | _pending_ | _pending_ | `large-aws-l1.json` / `tpuf-l1.json` |
+| Time to indexed | _pending_ | _pending_ | — | ingest + driver JSON |
+| Cold p50 query (ms) | _pending_ | _pending_ | _pending_ | bench + driver JSON → [`render-report.sh`](../scripts/render-report.sh) |
+| Cold p95 query (ms) | _pending_ | _pending_ | _pending_ | same |
+| Warm p50 query (ms) | _pending_ | _pending_ | _pending_ | same (optional) |
+| recall@10 (num=20) | _pending_ | _pending_ | _pending_ | same |
+| `storage_roundtrips` | _pending_ | n/a | — | openpuffer only |
+| `cold_s3_keys_fetched` | _pending_ | n/a | — | openpuffer only |
+| `candidates_ratio` | _pending_ | _pending_ | _pending_ | both where exposed |
+| `index_object_count` | _pending_ | n/a | — | openpuffer S3 listing |
+| Spot-check overlap@10 (10 queries) | _pending_ | _pending_ | — | `id-overlap-l1.json` (Phase 3.3) |
+
+**Accepted report:** _none yet_ — path will be `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` after first live run ([Phase 7](PLAN_LARGE_DATASET_BENCHMARK.md#phase-7--comparison-report-deliverable)).
+
+**Dry-run table shape (fixtures, for harness review only):** [`scripts/render-report.sh --dry-run`](../scripts/render-report.sh) writes a skeleton under `docs/reports/` using `benchmarks/report/fixtures/` — **not** authoritative for this matrix.
 
 ---
 
 ## Maturity vs TurboPuffer (measured)
 
-Honest side-by-side on dimensions we can **prove in-repo** (MinIO testcontainers unless noted). TurboPuffer rows are **product/docs reference**, not reproduced here.
+Honest side-by-side on dimensions we can **prove in-repo** (MinIO testcontainers unless noted). TurboPuffer rows are **product/docs reference**, not reproduced here — except where filled from the [L1 AWS comparison program](#l1--100k--measured-rows-aws--managed-tpuf) after a live run.
 
 | Dimension | TurboPuffer (reference) | openpuffer (measured) | Evidence |
 |-----------|-------------------------|----------------------|----------|
 | **Cold query @ 10k** | Published ~400–874ms class at 1M; no public 10k split | **2** `storage_roundtrips`, p50 **703ms**, **15** `cold_s3_keys_fetched`, `candidates_ratio` **0.008** (strong, empty cache, caught-up index) | [`baseline-10k.json`](../benchmarks/results/baseline-10k.json); CI `bench_cold_10k_baseline` |
-| **Cold query @ 100k** | Same family; fleet-tuned at scale | **2** roundtrips, p50 **828ms**, `recall_at_10` **1.0**, `candidates_ratio` **0.0008** | [`nightly-100k.json`](../benchmarks/results/nightly-100k.json); `bench_cold_100k_nightly` `#[ignore]` |
-| **Cold query @ 1M** | Marketing/docs ~400–500ms cold on AWS | **Manual gate pending** — not validated on AWS in-repo. Run [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) → commit `benchmarks/results/1m-aws.json` | No `1m-aws.json` yet; MinIO is correctness-only per script header |
+| **Cold query @ 100k** | Same family; fleet-tuned at scale | **MinIO (G2, not tpuf comparison):** **2** roundtrips, p50 **828ms**, `recall_at_10` **1.0**, `candidates_ratio` **0.0008**. **AWS L1 vs tpuf:** _pending_ — see [L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf) | [`nightly-100k.json`](../benchmarks/results/nightly-100k.json) (MinIO); target `large-aws-l1.json` + report |
+| **Cold query @ 1M** | Marketing/docs ~400–500ms cold on AWS | **L3 AWS comparison pending** — use [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l3` (or legacy [`bench-1m.sh`](../scripts/bench-1m.sh)) → `large-aws-l3.json` + Phase 7 report | No `large-aws-l3.json` yet; MinIO is correctness-only |
 | **SPFresh ANN recall @ 10k (v3 vs v2)** | Production SPFresh hierarchy | Lib gate: **v3 ≥ v2 + 0.05** recall@10 on identical 10k synthetic fixture (tight probes); optional re-rank **≥ 0.92** @ 10k | `recall_v3_at_least_five_points_above_v2_on_10k_fixture`; `recall_at_10_10k_with_rerank_at_least_point_nine_two` |
 | **SPFresh ANN recall @ 50k** | — | Cold probed v3: **`recall_at_10` 1.0**, `ann_version` **3**, **175** index objects | [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json); `stress_50k` `#[ignore]` |
 | **SPFresh ANN recall @ 100k** | Production recall SLOs | Lib gate **recall@10 ≥ 0.90** (synthetic, `#[ignore]`); nightly cold bench **`recall_at_10` 1.0** on MinIO namespace | `recall_at_10_100k_synthetic_at_least_point_nine`; nightly JSON |
@@ -24,7 +94,7 @@ Honest side-by-side on dimensions we can **prove in-repo** (MinIO testcontainers
 | **`storage_roundtrips`** | Not exposed the same way in public API docs | **≤ 4** spec gate (strong caught-up); **2** measured @ 10k / 50k v3 / 100k vector cold; hybrid 10k **≤ 4** with FTS bootstrap | `plan_cold_query`; baseline + nightly + 50k JSON; `cold_hybrid_10k_fts_vector_filter_on_minio` |
 | **Index object count @ scale** | Object-storage–tuned segment count (undisclosed) | On disk vs cold GET differ: **144** @ 10k (15 keys fetched), **175** @ 50k v3, **274** @ 100k; v3 cap gate **&lt; 500** @ 100k sizing | JSON artifacts; `ann_v3_index_object_count_100k_under_five_hundred` |
 
-**Takeaway:** openpuffer closes the **shape** gap (probed cold load, v3 SPFresh-inspired index, recall HTTP, roundtrip accounting) with MinIO proof through **100k**. **1M AWS cold latency** and production ANN tuning remain **operator-owned** gates—not claimed here until `1m-aws.json` exists.
+**Takeaway:** openpuffer closes the **shape** gap (probed cold load, v3 SPFresh-inspired index, recall HTTP, roundtrip accounting) with MinIO proof through **100k**. **Head-to-head tpuf latency @ L1/L3** is **operator-owned** via the [large-dataset program](#large-dataset-comparison-program-l1--100k)—not claimed here until live JSON + Phase 7 report land; MinIO numbers stay in the G2 column above.
 
 ---
 
@@ -144,7 +214,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 |-----|-------------|------------|
 | **True SPFresh** | Production centroid hierarchy, segment merges, object-storage–tuned layout | **v3** routing + L2 splits + incremental maintenance; still not turbopuffer’s full SPFresh fleet |
 | **Graph ANN** | Centroid-based (not HNSW) by design | Same family; v3 improves recall vs v2 (+0.05 @ 10k gate) but fewer tuning years than prod |
-| **Cold latency at scale** | ~400–500ms class @ 1M (marketing/docs) | **1M AWS: manual gate pending** — [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) → `benchmarks/results/1m-aws.json`. **Measured MinIO:** 10k p50 **703ms**, 100k p50 **828ms** ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json), [`nightly-100k.json`](../benchmarks/results/nightly-100k.json)). **10k hybrid cold:** integration `cold_hybrid_10k_fts_vector_filter_on_minio` — FTS bootstrap, `storage_roundtrips ≤ 4`. **50k v3:** [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json). See [measured table](#maturity-vs-turbopuffer-measured) above. |
+| **Cold latency at scale** | ~400–500ms class @ 1M (marketing/docs) | **tpuf comparison:** L1/L3 via [`bench-large.sh`](../scripts/bench-large.sh) + Phase 7 report ([§ L1 rows](#l1--100k--measured-rows-aws--managed-tpuf)) — _pending_. **MinIO G2 only:** 10k p50 **703ms**, 100k p50 **828ms** ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json), [`nightly-100k.json`](../benchmarks/results/nightly-100k.json)). **50k v3:** [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json). See [measured table](#maturity-vs-turbopuffer-measured). |
 | **FTS sophistication** | Production BM25 + optimizations | BM25 + improved tokenizer; simpler merge chain than turbopuffer at scale |
 | **Filter expressiveness** | Broader DSL (e.g. text ops, more combinators) | v1: scalar compares + `In` + `And`/`Or` only; no `Contains`/`Glob`/etc. |
 | **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | **`POST /v1/namespaces/{name}/recall`** — MinIO **avg_recall ≥ 0.85** @ 10k; not every turbopuffer recall option |
@@ -168,7 +238,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 
 **Do not expect openpuffer to match turbopuffer’s published latencies** without your own tuning and hardware:
 
-- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). Caught-up **10k** MinIO: **2** `storage_roundtrips`, **15** `cold_s3_keys_fetched`, p50 **703ms**, **144** index objects on disk ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)). **50k v3:** **2** roundtrips, **recall@10 1.0**, **175** objects ([`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json)). **100k:** p50 **828ms**, **274** objects ([`nightly-100k.json`](../benchmarks/results/nightly-100k.json)). **1M on AWS:** **manual gate pending** — [`scripts/bench-1m.sh`](../scripts/bench-1m.sh).
+- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). **MinIO G2:** caught-up **10k** — **2** `storage_roundtrips`, p50 **703ms** ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)); **100k** — p50 **828ms** ([`nightly-100k.json`](../benchmarks/results/nightly-100k.json)); **50k v3** — [`cold-50k-v3.json`](../benchmarks/results/cold-50k-v3.json). **AWS vs tpuf @ 100k:** use [L1 program](#large-dataset-comparison-program-l1--100k) — placeholders until `large-aws-l1.json` / report exist.
 - **Warm query** after `POST …/warm` + disk cache can avoid `GetObject` on index segments; `eventual` on a pinned view skips WAL I/O—similar *shape* to turbopuffer’s sub-10ms goal, but measured only in integration tests on MinIO, not at million-doc scale.
 - **ANN recall** — lib gates: v2 `recall@10 > 0.75` (1k×32); v3 ≥ v2 + 0.05 @ 10k; re-rank ≥ 0.92 @ 10k; 100k ≥ 0.90 (`#[ignore]`); HTTP recall ≥ 0.85 @ 10k MinIO. Production recall still depends on probes, `ann_version`, and rebuild cadence.
 - **Indexing lag** under load: fair scheduler + 2s slices mean multi-namespace workloads share indexer time; a 10k-doc namespace can take ~30s+ to catch up on MinIO (see integration test notes). Optional **50k-doc stress** (`large_stress`) indexes in ~40–45s on a dev machine with `--release`; not validated on AWS at that scale.
@@ -208,13 +278,15 @@ For those cases, use **[turbopuffer](https://turbopuffer.com)** (managed) or tre
 | **System of record** | S3 (per region) | Your S3-compatible bucket |
 | **API compatibility** | Canonical | Core write/query/metadata/export/warm/recall subset |
 | **Architecture fidelity** | Production SPFresh + FTS + filters | WAL + v2/v3 centroid ANN + FTS + filters; v3 SPFresh-inspired maintenance |
-| **Maturity** | Production product | Staging/reference; **measured** 10k/50k/100k cold + ann/cold facts; **1M AWS pending** |
+| **Maturity** | Production product | Staging/reference; **MinIO measured** 10k/50k/100k + ann/cold facts; **L1 AWS vs tpuf** via [large-dataset program](#large-dataset-comparison-program-l1--100k) (_pending live JSON_) |
 | **Best fit** | Production apps at scale | Dev, staging, private cloud, learning, forks |
 
 ---
 
 ## References
 
+- [Large-dataset benchmark plan](PLAN_LARGE_DATASET_BENCHMARK.md) — tiers L1–L3, Phase 7 report, G2–G5 gates
+- [BENCHMARKS.md](BENCHMARKS.md) — operator runbook, pass/fail rubric, `render-report.sh` merge step
 - [turbopuffer Architecture](https://turbopuffer.com/docs/architecture)
 - [turbopuffer Tradeoffs](https://turbopuffer.com/docs/tradeoffs)
 - [turbopuffer Limits](https://turbopuffer.com/docs/limits)
