@@ -109,9 +109,11 @@ impl ServeArgs {
     }
 
     pub fn write_buffer_config(&self) -> WriteBufferConfig {
+        let max_delay = Duration::from_millis(self.write_max_delay_ms);
         WriteBufferConfig {
-            max_delay: Duration::from_millis(self.write_max_delay_ms),
+            max_delay,
             max_batch_ops: self.write_max_batch_ops,
+            min_commit_interval: max_delay,
         }
     }
 }

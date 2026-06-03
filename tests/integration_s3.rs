@@ -29,6 +29,7 @@ const NAMESPACE_PATCH: &str = "itest-patch";
 const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
 const NAMESPACE_RESTART_WRITE: &str = "itest-restart-write";
 const NAMESPACE_EXPORT: &str = "itest-export";
+const NAMESPACE_WAL_RATE: &str = "itest-wal-rate";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -928,6 +929,109 @@ async fn patch_rows_updates_fts_after_index() {
         "patching vector field must return 400: {}",
         resp.text().await.unwrap_or_default()
     );
+}
+
+/// Five rapid writes with batch_ops=1 cannot exceed two WAL files in the first 1.5s.
+#[tokio::test]
+async fn wal_commit_rate_max_one_per_second() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn_with_options(&endpoint, &listen, None, Some(1), None);
+    serve.wait_ready().await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!("{}/v2/namespaces/{NAMESPACE_WAL_RATE}", serve.base_url);
+
+    let started = std::time::Instant::now();
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let client = http.clone();
+        let url = write_url.clone();
+        tasks.push(tokio::spawn(async move {
+            let resp = client
+                .post(&url)
+                .json(&json!({
+                    "upsert_rows": [{
+                        "id": format!("rate-{i}"),
+                        "attributes": { "text": format!("wal rate test {i}") }
+                    }]
+                }))
+                .send()
+                .await
+                .expect("rate-limit write request");
+            (i, resp.status())
+        }));
+    }
+    for task in tasks {
+        let (i, status) = task.await.expect("join rate-limit write");
+        assert_eq!(status, StatusCode::OK, "write rate-{i} failed");
+    }
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1600),
+        "five rate-limited writes should not all block past 1.6s"
+    );
+
+    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_RATE}/wal/");
+    let wal_keys = list_keys_with_prefix(&s3, BUCKET, &wal_prefix).await;
+    let mut seqs: Vec<u64> = wal_keys
+        .iter()
+        .filter_map(|k| {
+            let name = k.rsplit('/').next()?;
+            name.strip_suffix(".bin")?.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    assert!(
+        seqs.len() <= 2,
+        "at most 2 WAL commits in first ~1.5s, got {seqs:?} keys={wal_keys:?}"
+    );
+    if seqs.len() == 2 {
+        assert_eq!(seqs[1], seqs[0] + 1, "wal seq gap: {seqs:?}");
+    }
+
+    let meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_WAL_RATE).await;
+    assert!(
+        meta.wal_commit_seq >= 1 && meta.wal_commit_seq <= 2,
+        "five batched writes → 1–2 WAL commits, not one per row: meta={meta:?}"
+    );
+    assert_eq!(
+        seqs.len(),
+        meta.wal_commit_seq as usize,
+        "wal file count must match commit seq"
+    );
+    assert_eq!(seqs.last().copied(), Some(meta.wal_commit_seq));
+
+    use openpuffer::namespace::replay_wal_range;
+    use std::collections::HashMap;
+
+    let mut docs = HashMap::new();
+    replay_wal_range(
+        &s3,
+        BUCKET,
+        NAMESPACE_WAL_RATE,
+        &mut docs,
+        1,
+        meta.wal_commit_seq,
+    )
+    .await
+    .expect("replay wal");
+    for i in 0..5 {
+        assert!(
+            docs.contains_key(&format!("rate-{i}")),
+            "missing rate-{i}, docs={docs:?}"
+        );
+    }
 }
 
 /// Ten parallel HTTP clients upsert distinct doc ids; WAL seq monotonic, no lost docs.

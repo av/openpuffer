@@ -54,13 +54,16 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 
 ### Write throughput limits (v1)
 
+Aligned with [turbopuffer limits](https://turbopuffer.com/docs/limits) (per-namespace write throughput is capped in production; openpuffer enforces a **hard** WAL commit rate).
+
 | Limit | Default | Notes |
 |-------|---------|-------|
 | Group-commit delay | 1s (`OPENPUFFER_WRITE_MAX_DELAY_MS`) | Batches in-memory writes per namespace before one WAL PUT |
-| Max batch ops | 512 (`OPENPUFFER_WRITE_MAX_BATCH_OPS`) | Flush when upserts + patches + deletes reach this count |
+| **Max WAL commits / s / ns** | **1** (`min_commit_interval` = `max_delay`) | **Enforced:** after a durable commit, the next flush waits until 1s elapsed; writes during the wait batch into memory. `flush_all` on shutdown bypasses this. |
+| Max batch ops | 512 (`OPENPUFFER_WRITE_MAX_BATCH_OPS`) | Schedules a flush when upserts + patches + deletes reach this count, but the flush still waits on the 1s commit cooldown if a commit happened recently |
 | Meta CAS retries | 8 | Exponential backoff 50ms × attempt; orphan WAL segment deleted on conflict |
 | Concurrent HTTP writers | Serialized per namespace | Commit lock + S3 `If-Match` on `meta.json`; safe parallel clients, one WAL seq at a time |
-| Practical throughput | ~1 WAL commit / s / ns (default delay) | Lower delay or `max_batch_ops=1` increases commit rate at higher S3 cost |
+| Practical throughput | ~1 WAL commit / s / ns | Raising `OPENPUFFER_WRITE_MAX_DELAY_MS` lowers commit rate; lowering it below 1000ms also lowers `min_commit_interval` (same env var drives both today) |
 | Payload size | No explicit cap in openpuffer | turbopuffer allows up to 512 MiB per write request |
 
 ## Local disk cache (index segments)

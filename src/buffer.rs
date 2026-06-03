@@ -4,6 +4,11 @@
 //! - [`WriteBufferConfig::max_delay`] elapses (default 1s), or
 //! - [`WriteBufferConfig::max_batch_ops`] upserts+deletes is reached.
 //!
+//! **WAL commit rate:** at most one durable WAL commit per namespace per
+//! [`WriteBufferConfig::min_commit_interval`] (default 1s, turbopuffer write throughput).
+//! Additional writes during the cooldown accumulate in the buffer. [`flush_all`] bypasses
+//! the limit for graceful shutdown.
+//!
 //! **Strong consistency:** HTTP ACK waits until [`crate::namespace::append_wal`] completes —
 //! the WAL object is on S3 and `meta.json` CAS succeeded before waiters are released.
 
@@ -12,11 +17,12 @@ use crate::models::{Document, WriteStats};
 use crate::namespace::append_wal;
 use crate::wal::WalEntry;
 use anyhow::Result;
-use serde_json::Value;
 use aws_sdk_s3::Client;
+use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
@@ -26,13 +32,17 @@ use tokio::time::sleep;
 pub struct WriteBufferConfig {
     pub max_delay: Duration,
     pub max_batch_ops: usize,
+    /// Minimum wall time between durable WAL commits per namespace (turbopuffer ~1/s).
+    pub min_commit_interval: Duration,
 }
 
 impl Default for WriteBufferConfig {
     fn default() -> Self {
+        let one_second = Duration::from_secs(1);
         Self {
-            max_delay: Duration::from_secs(1),
+            max_delay: one_second,
             max_batch_ops: 512,
+            min_commit_interval: one_second,
         }
     }
 }
@@ -63,6 +73,22 @@ struct NamespaceBuffer {
     state: Mutex<BufferState>,
     /// Serializes `flush_namespace` so empty flushes do not race in-flight commits.
     flush_lock: Mutex<()>,
+    /// Wall time of the last successful WAL commit (rate-limit anchor).
+    last_committed_at: Mutex<Option<Instant>>,
+    /// True while a `flush_namespace` task is running (coalesce parallel flush callers).
+    flush_running: AtomicBool,
+}
+
+/// Remaining cooldown before the next WAL commit is allowed.
+pub(crate) fn remaining_commit_cooldown(
+    last_committed_at: Option<Instant>,
+    min_interval: Duration,
+    now: Instant,
+) -> Duration {
+    match last_committed_at {
+        None => Duration::ZERO,
+        Some(t) => min_interval.saturating_sub(now.saturating_duration_since(t)),
+    }
 }
 
 /// Shared write buffers keyed by namespace.
@@ -129,11 +155,11 @@ impl WriteBufferManager {
             } else if st.timer.is_none() {
                 let mgr = Arc::new(self.clone_inner());
                 let ns = namespace.to_string();
+                let buf_arc = buf.clone();
+                let delay = self.config.max_delay;
                 let handle = tokio::spawn(async move {
-                    sleep(mgr.config.max_delay).await;
-                    if let Err(e) = mgr.flush_namespace(&ns).await {
-                        tracing::error!("group-commit flush {ns}: {e:#}");
-                    }
+                    sleep(delay).await;
+                    mgr.request_flush(&ns, buf_arc);
                 });
                 st.timer = Some(handle.abort_handle());
                 false
@@ -149,7 +175,7 @@ impl WriteBufferManager {
                     t.abort();
                 }
             }
-            self.flush_namespace(namespace).await?;
+            self.request_flush(namespace, buf);
         }
 
         rx.await
@@ -177,9 +203,52 @@ impl WriteBufferManager {
                         timer: None,
                     }),
                     flush_lock: Mutex::new(()),
+                    last_committed_at: Mutex::new(None),
+                    flush_running: AtomicBool::new(false),
                 })
             })
             .clone()
+    }
+
+    /// Start at most one async flush per namespace; parallel writers wait on their oneshot only.
+    fn request_flush(&self, namespace: &str, buf: Arc<NamespaceBuffer>) {
+        if buf
+            .flush_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let mgr = Arc::new(self.clone_inner());
+        let ns = namespace.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = mgr.flush_namespace(&ns, false).await {
+                tracing::error!("group-commit flush {ns}: {e:#}");
+            }
+            mgr.after_flush_task(&ns, buf).await;
+        });
+    }
+
+    async fn after_flush_task(&self, namespace: &str, buf: Arc<NamespaceBuffer>) {
+        buf.flush_running.store(false, Ordering::Release);
+        let (pending, cooldown) = {
+            let st = buf.state.lock().await;
+            let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
+            let schema_only = ops == 0 && st.schema_patch.is_some();
+            let pending = ops > 0 || schema_only;
+            let last = buf.last_committed_at.lock().await;
+            let cooldown =
+                remaining_commit_cooldown(*last, self.config.min_commit_interval, Instant::now());
+            (pending, cooldown)
+        };
+        if !pending {
+            return;
+        }
+        if cooldown.is_zero() {
+            self.request_flush(namespace, buf);
+        } else {
+            self.arm_cooldown_flush_timer(buf, namespace);
+        }
     }
 
     fn clone_inner(&self) -> Self {
@@ -192,16 +261,83 @@ impl WriteBufferManager {
         }
     }
 
-    /// Flush all namespaces (e.g. graceful shutdown).
+    /// Flush all namespaces (e.g. graceful shutdown). Bypasses per-namespace commit rate limit.
     pub async fn flush_all(&self) -> Result<()> {
         let names: Vec<String> = self.buffers.read().await.keys().cloned().collect();
         for ns in names {
-            self.flush_namespace(&ns).await?;
+            loop {
+                self.flush_namespace(&ns, true).await?;
+                let buf = {
+                    let guard = self.buffers.read().await;
+                    guard.get(&ns).cloned()
+                };
+                let Some(buf) = buf else {
+                    break;
+                };
+                let pending = {
+                    let st = buf.state.lock().await;
+                    let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
+                    ops > 0 || st.schema_patch.is_some()
+                };
+                if !pending {
+                    break;
+                }
+            }
         }
         Ok(())
     }
 
-    async fn flush_namespace(&self, namespace: &str) -> Result<()> {
+    async fn wait_commit_cooldown(&self, buf: &NamespaceBuffer) {
+        loop {
+            let wait = {
+                let last = buf.last_committed_at.lock().await;
+                remaining_commit_cooldown(*last, self.config.min_commit_interval, Instant::now())
+            };
+            if wait.is_zero() {
+                return;
+            }
+            sleep(wait).await;
+        }
+    }
+
+    /// If the buffer still has ops after a commit, arm a timer for the remaining cooldown.
+    fn arm_cooldown_flush_timer(&self, buf: Arc<NamespaceBuffer>, namespace: &str) {
+        let pending = {
+            let st = match buf.state.try_lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
+            let schema_only = ops == 0 && st.schema_patch.is_some();
+            (ops > 0 || schema_only) && st.timer.is_none()
+        };
+        if !pending {
+            return;
+        }
+        let cooldown = match buf.last_committed_at.try_lock() {
+            Ok(last) => {
+                remaining_commit_cooldown(*last, self.config.min_commit_interval, Instant::now())
+            }
+            Err(_) => return,
+        };
+        let delay = cooldown.max(Duration::from_millis(1));
+        let Ok(mut st) = buf.state.try_lock() else {
+            return;
+        };
+        if st.timer.is_some() {
+            return;
+        }
+        let mgr = Arc::new(self.clone_inner());
+        let ns = namespace.to_string();
+        let buf_spawn = buf.clone();
+        let handle = tokio::spawn(async move {
+            sleep(delay).await;
+            mgr.request_flush(&ns, buf_spawn);
+        });
+        st.timer = Some(handle.abort_handle());
+    }
+
+    async fn flush_namespace(&self, namespace: &str, bypass_rate_limit: bool) -> Result<()> {
         let buf = {
             let guard = self.buffers.read().await;
             guard.get(namespace).cloned()
@@ -210,64 +346,78 @@ impl WriteBufferManager {
             return Ok(());
         };
 
-        let _flush_guard = buf.flush_lock.lock().await;
+        let flush_outcome = {
+            let _flush_guard = buf.flush_lock.lock().await;
 
-        let (upserts, patches, deletes, schema_patch, waiters) = {
-            let mut st = buf.state.lock().await;
-            if st.upserts.is_empty()
-                && st.patches.is_empty()
-                && st.deletes.is_empty()
-                && st.schema_patch.is_none()
-            {
-                return Ok(());
+            if !bypass_rate_limit {
+                self.wait_commit_cooldown(&buf).await;
             }
-            let _ = st.timer.take();
-            (
-                std::mem::take(&mut st.upserts),
-                std::mem::take(&mut st.patches),
-                std::mem::take(&mut st.deletes),
-                st.schema_patch.take(),
-                std::mem::take(&mut st.waiters),
-            )
+
+            let drained = {
+                let mut st = buf.state.lock().await;
+                if st.upserts.is_empty()
+                    && st.patches.is_empty()
+                    && st.deletes.is_empty()
+                    && st.schema_patch.is_none()
+                {
+                    None
+                } else {
+                    let _ = st.timer.take();
+                    Some((
+                        std::mem::take(&mut st.upserts),
+                        std::mem::take(&mut st.patches),
+                        std::mem::take(&mut st.deletes),
+                        st.schema_patch.take(),
+                        std::mem::take(&mut st.waiters),
+                    ))
+                }
+            };
+            match drained {
+                None => Ok(()),
+                Some((upserts, patches, deletes, schema_patch, waiters)) => {
+                    let result: Result<(u64, WalEntry)> = async {
+                        let entry = WalEntry::from_write(upserts, patches, deletes)?;
+                        let seq = append_wal(
+                            &self.client,
+                            &self.bucket,
+                            namespace,
+                            entry.clone(),
+                            schema_patch.as_ref(),
+                        )
+                        .await?;
+                        Ok((seq, entry))
+                    }
+                    .await;
+
+                    match result {
+                        Ok((seq, entry)) => {
+                            *buf.last_committed_at.lock().await = Some(Instant::now());
+                            for w in waiters {
+                                let batch = CommittedBatch {
+                                    seq,
+                                    entry: entry.clone(),
+                                    stats: w.stats.clone(),
+                                };
+                                let _ = w.tx.send(Ok(batch));
+                            }
+                            if let Some(indexer) = &self.background_indexer {
+                                indexer.wake(namespace).await;
+                            }
+                            Ok(())
+                        }
+                        Err(err) => {
+                            let msg = format!("{err:#}");
+                            for w in waiters {
+                                let _ = w.tx.send(Err(anyhow::anyhow!("{msg}")));
+                            }
+                            Err(err)
+                        }
+                    }
+                }
+            }
         };
 
-        let result: Result<(u64, WalEntry)> = async {
-            let entry = WalEntry::from_write(upserts, patches, deletes)?;
-            let seq = append_wal(
-                &self.client,
-                &self.bucket,
-                namespace,
-                entry.clone(),
-                schema_patch.as_ref(),
-            )
-            .await?;
-            Ok((seq, entry))
-        }
-        .await;
-
-        match result {
-            Ok((seq, entry)) => {
-                for w in waiters {
-                    let batch = CommittedBatch {
-                        seq,
-                        entry: entry.clone(),
-                        stats: w.stats.clone(),
-                    };
-                    let _ = w.tx.send(Ok(batch));
-                }
-                if let Some(indexer) = &self.background_indexer {
-                    indexer.wake(namespace).await;
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let msg = format!("{err:#}");
-                for w in waiters {
-                    let _ = w.tx.send(Err(anyhow::anyhow!("{msg}")));
-                }
-                Err(err)
-            }
-        }
+        flush_outcome
     }
 }
 
@@ -295,9 +445,52 @@ mod tests {
     }
 
     #[test]
-    fn default_config_one_second_delay() {
+    fn default_config_one_second_delay_and_commit_interval() {
         let cfg = WriteBufferConfig::default();
         assert_eq!(cfg.max_delay, Duration::from_secs(1));
         assert_eq!(cfg.max_batch_ops, 512);
+        assert_eq!(cfg.min_commit_interval, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn remaining_cooldown_zero_when_never_committed() {
+        let now = Instant::now();
+        assert_eq!(
+            remaining_commit_cooldown(None, Duration::from_secs(1), now),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn remaining_cooldown_after_recent_commit() {
+        let t0 = Instant::now();
+        let last = Some(t0);
+        let wait = remaining_commit_cooldown(last, Duration::from_secs(1), t0);
+        assert_eq!(wait, Duration::from_secs(1));
+        let wait_later = remaining_commit_cooldown(last, Duration::from_secs(1), t0 + Duration::from_millis(600));
+        assert_eq!(wait_later, Duration::from_millis(400));
+        let wait_done = remaining_commit_cooldown(last, Duration::from_secs(1), t0 + Duration::from_secs(2));
+        assert_eq!(wait_done, Duration::ZERO);
+    }
+
+    /// Five commits spaced 0ms apart would violate the limit; cooldown enforces ≥1s gaps.
+    #[test]
+    fn five_rapid_commits_need_at_least_five_seconds_of_cooldown() {
+        let interval = Duration::from_secs(1);
+        let mut last: Option<Instant> = None;
+        let mut now = Instant::now();
+        let mut commit_times = Vec::new();
+        for _ in 0..5 {
+            let wait = remaining_commit_cooldown(last, interval, now);
+            now += wait;
+            commit_times.push(now);
+            last = Some(now);
+            now += Duration::from_millis(1);
+        }
+        let span = commit_times[4] - commit_times[0];
+        assert!(
+            span >= Duration::from_millis(3900),
+            "expected ~4s between first and fifth commit, got {span:?}"
+        );
     }
 }
