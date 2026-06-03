@@ -31,6 +31,7 @@ const NAMESPACE_BRANCH_DEST: &str = "itest-branch-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_RECALL: &str = "itest-recall";
+const NAMESPACE_RECALL_FILTER: &str = "itest-recall-filter";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_PATCH_COND: &str = "itest-patch-cond";
@@ -1605,6 +1606,29 @@ fn stress_upsert_columns(start: usize, count: usize) -> Value {
     })
 }
 
+/// 10k upsert with filterable `tier`: ~5% `pro` (sparse subset for recall filter corpus checks).
+fn recall_filter_upsert_columns(start: usize, count: usize) -> Value {
+    let mut ids = Vec::with_capacity(count);
+    let mut texts = Vec::with_capacity(count);
+    let mut tiers = Vec::with_capacity(count);
+    let mut embeddings = Vec::with_capacity(count);
+    for i in start..start + count {
+        ids.push(json!(format!("doc-{i}")));
+        texts.push(json!(format!("stressterm document number {i}")));
+        tiers.push(json!(if i % 20 == 0 { "pro" } else { "free" }));
+        let emb: Vec<f64> = (0..STRESS_DIM)
+            .map(|d| ((i * STRESS_DIM + d) as f64 * 0.001).sin())
+            .collect();
+        embeddings.push(json!(emb));
+    }
+    json!({
+        "id": ids,
+        "text": texts,
+        "tier": tiers,
+        "embedding": embeddings
+    })
+}
+
 /// 10k-column upsert, background index, warm, ANN + FTS under candidate-ratio guard.
 #[tokio::test]
 async fn ten_thousand_docs_indexed_query() {
@@ -1798,6 +1822,134 @@ async fn recall_http_response_shape_on_minio() {
     assert!(
         test_started.elapsed() < Duration::from_secs(300),
         "recall test exceeded 300s wall clock"
+    );
+    serve.stop();
+}
+
+/// `POST …/recall` with `filters` restricts ANN and brute to the same doc set (9b159bb).
+#[tokio::test]
+async fn recall_http_with_filters() {
+    let test_started = std::time::Instant::now();
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let mut serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_RECALL_FILTER;
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "tier": {"type": "string", "filterable": true},
+        "embedding": "[128]f32"
+    });
+
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body = json!({ "upsert_columns": recall_filter_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(240)).await;
+
+    let warm_resp = reqwest::Client::new()
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve.base_url))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK);
+
+    let client = reqwest::Client::new();
+    let recall_url = format!("{}/v1/namespaces/{ns}/recall", serve.base_url);
+    let pro_filter = json!(["tier", "Eq", "pro"]);
+
+    async fn post_recall(
+        client: &reqwest::Client,
+        url: &str,
+        num: usize,
+        top_k: usize,
+        filters: Option<Value>,
+    ) -> Value {
+        let resp = client
+            .post(url)
+            .json(&json!({ "num": num, "top_k": top_k, "filters": filters }))
+            .send()
+            .await
+            .expect("recall request");
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        assert_eq!(status, StatusCode::OK, "recall failed: {text}");
+        serde_json::from_str(&text).expect("recall json")
+    }
+
+    let unfiltered = post_recall(&client, &recall_url, 5, 10, None).await;
+    let filtered = post_recall(
+        &client,
+        &recall_url,
+        5,
+        10,
+        Some(pro_filter.clone()),
+    )
+    .await;
+
+    let unfiltered_recall = unfiltered["avg_recall"].as_f64().expect("avg_recall");
+    let filtered_recall = filtered["avg_recall"].as_f64().expect("avg_recall");
+    assert!(
+        unfiltered_recall >= 0.85,
+        "unfiltered avg_recall {unfiltered_recall} must be >= 0.85"
+    );
+    assert!(
+        filtered_recall >= 0.85,
+        "filtered avg_recall {filtered_recall} must be >= 0.85 (ANN restricted to filter set)"
+    );
+
+    // Large top_k: filtered corpus (~500 pro docs) caps brute/ANN pool vs full 10k.
+    let unfiltered_wide = post_recall(&client, &recall_url, 10, 800, None).await;
+    let filtered_wide = post_recall(
+        &client,
+        &recall_url,
+        10,
+        800,
+        Some(pro_filter),
+    )
+    .await;
+    let unfiltered_exhaustive = unfiltered_wide["avg_exhaustive_count"]
+        .as_f64()
+        .expect("avg_exhaustive_count");
+    let filtered_exhaustive = filtered_wide["avg_exhaustive_count"]
+        .as_f64()
+        .expect("avg_exhaustive_count");
+    assert!(
+        filtered_exhaustive <= 520.0,
+        "filtered exhaustive count {filtered_exhaustive} should reflect ~500-doc corpus"
+    );
+    assert!(
+        unfiltered_exhaustive >= 790.0,
+        "unfiltered exhaustive count {unfiltered_exhaustive} should reflect full 10k corpus at top_k=800"
+    );
+    assert!(
+        filtered_exhaustive < unfiltered_exhaustive - 100.0,
+        "filter must shrink evaluation corpus (filtered={filtered_exhaustive}, unfiltered={unfiltered_exhaustive})"
+    );
+
+    assert!(
+        test_started.elapsed() < Duration::from_secs(300),
+        "recall filter test exceeded 300s wall clock"
     );
     serve.stop();
 }

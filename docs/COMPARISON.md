@@ -4,7 +4,7 @@ This document compares **[openpuffer](https://github.com/av/openpuffer)** (self-
 
 For implementation detail see [ARCHITECTURE.md](ARCHITECTURE.md). For API shapes see [turbopuffer’s docs](https://turbopuffer.com/docs).
 
-**Last refreshed:** SPFresh + cold @ 1M program (commit `9b65712`); treat this as **architecture v0.2** maturity (crate **0.2.0**), not a v1.0 product claim.
+**Last refreshed:** SPFresh + cold @ 1M program (post-anneal `26906a6`); treat this as **architecture v0.2** maturity (crate **0.2.0**), not a v1.0 product claim.
 
 ---
 
@@ -92,7 +92,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 ### Testing & dev ergonomics
 
 - **`.facts` program gates** — `facts check --tags "ann or cold"` (10 spec facts, all `@implemented`); broader sheet via `facts check`.
-- **MinIO integration** — 51 scenarios in `integration_s3` (`cargo test -F integration`), including **Phase A 10k gates**: `cold_vector_query_cluster_gets_bounded_by_probe_plan`, `s3_cold_query_reports_roundtrips_on_minio`, `ten_thousand_docs_indexed_query`, `recall_http_response_shape_on_minio`.
+- **MinIO integration** — 52+ scenarios in `integration_s3` (`cargo test -F integration`), including **Phase A 10k gates**: `cold_vector_query_cluster_gets_bounded_by_probe_plan`, `s3_cold_query_reports_roundtrips_on_minio`, `ten_thousand_docs_indexed_query`, `recall_http_response_shape_on_minio`, `recall_http_with_filters`.
 - **`bench` feature** — `bench_cold_10k_baseline`, `bench_cold_10k_storage_roundtrips_at_most_four` (CI); `bench_cold_100k_nightly` (`#[ignore]`).
 - Plus `#[ignore]` external-S3 smoke and optional **`stress_50k`** (`cargo test -F large_stress --test stress_50k -- --ignored`).
 - **S3 harness** — `tests/common/s3_harness.rs`: Head/List/Get, decode WAL/meta, assert centroids per vector field, compaction object deletion, multi-instance key parity.
@@ -124,7 +124,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 |-----|-------------|------------|
 | **True SPFresh** | Production centroid hierarchy, segment merges, object-storage–tuned layout | **v3** routing + L2 splits + incremental maintenance; still not turbopuffer’s full SPFresh fleet |
 | **Graph ANN** | Centroid-based (not HNSW) by design | Same family; v3 improves recall vs v2 (+0.05 @ 10k gate) but fewer tuning years than prod |
-| **Cold latency at 1M docs** | ~400–500ms class (marketing/docs) | **Not validated at 1M on AWS** — manual path: [`scripts/bench-1m.sh`](../scripts/bench-1m.sh), record `benchmarks/results/1m-aws.json`. **10k MinIO:** `storage_roundtrips` 2, p50 ~919ms ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)); probed load (not full 351-key index GET). **100k nightly:** `bench_cold_100k_nightly` (`#[ignore]`, recall@10 ≥ 0.88). |
+| **Cold latency at 1M docs** | ~400–500ms class (marketing/docs) | **Not validated at 1M on AWS** — manual path: [`scripts/bench-1m.sh`](../scripts/bench-1m.sh), record `benchmarks/results/1m-aws.json`. **10k MinIO (post–Phase A, probed cold):** `storage_roundtrips` **2**, p50 **~919ms**, `cold_s3_keys_fetched` **15**, `candidates_ratio` **0.0058** — 351 ANN index objects exist but are not all GET on cold query ([`baseline-10k.json`](../benchmarks/results/baseline-10k.json)). **50k MinIO v3 (mid-tier stress, `#[ignore]`):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `index_object_count` **175** (`cold_50k_v3` JSON from `fifty_thousand_docs_v3_cold_probed_validation`). **100k nightly:** `bench_cold_100k_nightly` (`#[ignore]`, recall@10 ≥ 0.88). |
 | **FTS sophistication** | Production BM25 + optimizations | BM25 + improved tokenizer; simpler merge chain than turbopuffer at scale |
 | **Filter expressiveness** | Broader DSL (e.g. text ops, more combinators) | v1: scalar compares + `In` + `And`/`Or` only; no `Contains`/`Glob`/etc. |
 | **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | **`POST /v1/namespaces/{name}/recall`** implemented; not every turbopuffer recall option |
@@ -148,7 +148,7 @@ openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert
 
 **Do not expect openpuffer to match turbopuffer’s published latencies** without your own tuning and hardware:
 
-- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). Caught-up 10k on MinIO: **2** logical `storage_roundtrips`, probed cluster GETs (integration: bounded by probe plan, not `num_fine_total`). **1M on AWS** is manual only — see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
+- **Cold query** on a large namespace still means multiple S3 roundtrips (~100ms+ each on real WAN). Caught-up **10k** on MinIO (post–Phase A): **2** `storage_roundtrips`, **15** `cold_s3_keys_fetched`, p50 **~919ms** — probed cluster GETs only (integration: bounded by probe plan, not `num_fine_total`; 351 index objects on disk). **50k v3** mid-tier (`stress_50k`, release, MinIO): **2** roundtrips, **recall@10 1.0**, **175** probed ANN objects — see [`docs/BENCHMARKS.md`](BENCHMARKS.md). **1M on AWS** is manual only.
 - **Warm query** after `POST …/warm` + disk cache can avoid `GetObject` on index segments; `eventual` on a pinned view skips WAL I/O—similar *shape* to turbopuffer’s sub-10ms goal, but measured only in integration tests on MinIO, not at million-doc scale.
 - **ANN recall** — lib gates: v2 `recall@10 > 0.75` (1k×32); v3 ≥ v2 + 0.05 @ 10k; re-rank ≥ 0.92 @ 10k; 100k ≥ 0.90 (`#[ignore]`); HTTP recall ≥ 0.85 @ 10k MinIO. Production recall still depends on probes, `ann_version`, and rebuild cadence.
 - **Indexing lag** under load: fair scheduler + 2s slices mean multi-namespace workloads share indexer time; a 10k-doc namespace can take ~30s+ to catch up on MinIO (see integration test notes). Optional **50k-doc stress** (`large_stress`) indexes in ~40–45s on a dev machine with `--release`; not validated on AWS at that scale.
