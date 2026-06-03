@@ -11,6 +11,7 @@
 //!   GET  /v1/namespaces/{name}/export — WAL snapshot export (paginated by `last_id`)
 //!   POST /v1/namespaces/{name}/export — same with JSON body
 //!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
+//!   POST /v1/namespaces/{name}/recall — ANN vs exhaustive recall@k (bench / ops)
 //!   POST /v2/namespaces/{name}        — write (upsert_rows, upsert_condition, deletes, …)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
 //!   DELETE /v2/namespaces/{name}
@@ -41,6 +42,7 @@ pub mod limits;
 pub mod metrics;
 pub mod meta;
 pub mod models;
+pub mod recall;
 pub mod namespace;
 pub mod namespace_list_cache;
 pub mod s3_batch;
@@ -56,3 +58,4 @@ pub mod wal_compaction;
 
 pub use api::{router, AppState};
 pub use config::{AnnBuildConfig, AnnProbeConfig, AppConfig};
+pub use recall::{measure_recall, RecallMetrics};

@@ -317,6 +317,45 @@ pub struct ExportResponse {
     pub next_last_id: Option<String>,
 }
 
+/// Optional body for `POST /v1/namespaces/{name}/recall`.
+#[derive(Debug, Default, Deserialize)]
+pub struct RecallRequest {
+    /// Number of random query vectors to sample (default 25).
+    #[serde(default = "default_recall_num")]
+    pub num: usize,
+    /// Neighbors per query for recall@k (default 10).
+    #[serde(default = "default_recall_top_k")]
+    pub top_k: usize,
+    #[serde(default)]
+    pub filters: Option<Value>,
+}
+
+fn default_recall_num() -> usize {
+    25
+}
+
+fn default_recall_top_k() -> usize {
+    10
+}
+
+/// turbopuffer recall response (`avg_recall`, `avg_ann_count`, `avg_exhaustive_count`).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct RecallResponse {
+    pub avg_recall: f64,
+    pub avg_ann_count: f64,
+    pub avg_exhaustive_count: f64,
+}
+
+impl From<crate::recall::RecallMetrics> for RecallResponse {
+    fn from(m: crate::recall::RecallMetrics) -> Self {
+        Self {
+            avg_recall: m.avg_recall,
+            avg_ann_count: m.avg_ann_count,
+            avg_exhaustive_count: m.avg_exhaustive_count,
+        }
+    }
+}
+
 /// Optional body for `POST /v1/namespaces/{name}/export`.
 #[derive(Debug, Default, Deserialize)]
 pub struct ExportRequest {

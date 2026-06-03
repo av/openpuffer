@@ -3,7 +3,8 @@ use crate::export::MAX_EXPORT_LIMIT;
 use crate::limits::{self, validate_namespace_name};
 use crate::models::{
     validate_doc_id, ApiErrorResponse, Document, ExportRequest, ExportResponse, HealthResponse,
-    NamespaceSummary, NamespacesResponse, QueryRequest, WriteRequest,
+    NamespaceSummary, NamespacesResponse, QueryRequest, RecallRequest, RecallResponse,
+    WriteRequest,
 };
 use crate::schema::{
     merge_schema, validate_and_normalize_document_attributes, validate_patch_attributes,
@@ -66,6 +67,7 @@ pub fn router(state: AppState) -> Router {
             get(export_namespace_get).post(export_namespace_post),
         )
         .route("/v1/namespaces/{name}/warm", post(warm_namespace_handler))
+        .route("/v1/namespaces/{name}/recall", post(recall_namespace_handler))
         .route("/v2/namespaces/{name}", post(write_namespace))
         .route("/v2/namespaces/{name}/query", post(query_namespace))
         .route("/v2/namespaces/{name}", delete(delete_namespace));
@@ -312,6 +314,73 @@ fn export_page_response(
         next_last_id: page.next_last_id,
     };
     (StatusCode::OK, headers, Json(resp)).into_response()
+}
+
+async fn recall_namespace_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Result<Option<Json<RecallRequest>>, JsonRejection>,
+) -> impl IntoResponse {
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
+    let req = match body {
+        Ok(Some(Json(b))) => b,
+        Ok(None) => RecallRequest::default(),
+        Err(e) => return json_rejection_response(e),
+    };
+    if req.num == 0 {
+        return api_error(StatusCode::BAD_REQUEST, "num must be at least 1");
+    }
+    if req.top_k == 0 {
+        return api_error(StatusCode::BAD_REQUEST, "top_k must be at least 1");
+    }
+    if let Err(e) = state.storage.require_namespace(&name).await {
+        if e.to_string().contains("namespace not found") {
+            return api_error(StatusCode::NOT_FOUND, "namespace not found");
+        }
+        error!("recall namespace existence {name}: {e:#}");
+        return storage_error_response(e);
+    }
+    match state
+        .storage
+        .load_namespace_for_query(&name, search::QueryConsistency::Strong)
+        .await
+    {
+        Ok(loaded) => {
+            let field = match crate::recall::recall_vector_field(&loaded) {
+                Ok(f) => f,
+                Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()),
+            };
+            let use_rerank = state.config.ann_rerank;
+            match crate::recall::measure_recall_for_loaded(
+                &loaded,
+                &field,
+                req.num,
+                req.top_k,
+                use_rerank,
+                req.filters.as_ref(),
+                &name,
+            ) {
+                Ok(metrics) => (StatusCode::OK, Json(RecallResponse::from(metrics))).into_response(),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("no vector index") || msg.contains("no documents") {
+                        return api_error(StatusCode::BAD_REQUEST, msg);
+                    }
+                    error!("recall evaluate {name}: {e:#}");
+                    storage_error_response(e)
+                }
+            }
+        }
+        Err(e) => {
+            error!("recall load {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
+            }
+            storage_error_response(e)
+        }
+    }
 }
 
 async fn warm_namespace_handler(

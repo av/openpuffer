@@ -30,6 +30,7 @@ const NAMESPACE_BRANCH_SRC: &str = "itest-branch-src";
 const NAMESPACE_BRANCH_DEST: &str = "itest-branch-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
+const NAMESPACE_RECALL: &str = "itest-recall";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_PATCH_COND: &str = "itest-patch-cond";
@@ -1708,6 +1709,90 @@ async fn ten_thousand_docs_indexed_query() {
         test_started.elapsed() < Duration::from_secs(300),
         "test exceeded 300s wall clock"
     );
+}
+
+/// `POST /v1/namespaces/{name}/recall` returns turbopuffer recall metrics on indexed 10k namespace.
+#[tokio::test]
+async fn recall_http_response_shape_on_minio() {
+    let test_started = std::time::Instant::now();
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let mut serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_RECALL;
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "embedding": "[128]f32"
+    });
+
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body = json!({ "upsert_columns": stress_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(240)).await;
+
+    let warm_resp = reqwest::Client::new()
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve.base_url))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK);
+
+    let recall_resp = reqwest::Client::new()
+        .post(format!("{}/v1/namespaces/{ns}/recall", serve.base_url))
+        .json(&json!({ "num": 5, "top_k": 10 }))
+        .send()
+        .await
+        .expect("recall request");
+    let recall_status = recall_resp.status();
+    let recall_text = recall_resp.text().await.unwrap_or_default();
+    assert_eq!(
+        recall_status,
+        StatusCode::OK,
+        "recall failed: {recall_text}"
+    );
+    let body: Value = serde_json::from_str(&recall_text).expect("recall json");
+    let avg_recall = body["avg_recall"].as_f64().expect("avg_recall number");
+    let avg_ann = body["avg_ann_count"].as_f64().expect("avg_ann_count number");
+    let avg_exhaustive = body["avg_exhaustive_count"]
+        .as_f64()
+        .expect("avg_exhaustive_count number");
+    assert!(
+        (0.0..=1.0).contains(&avg_recall),
+        "avg_recall {avg_recall} out of range"
+    );
+    assert!(avg_ann > 0.0, "avg_ann_count {avg_ann}");
+    assert!(avg_exhaustive > 0.0, "avg_exhaustive_count {avg_exhaustive}");
+    assert!(
+        avg_recall >= 0.85,
+        "avg_recall {avg_recall} must be >= 0.85 on 10k indexed synthetic"
+    );
+
+    assert!(
+        test_started.elapsed() < Duration::from_secs(300),
+        "recall test exceeded 300s wall clock"
+    );
+    serve.stop();
 }
 
 /// Fifteen WAL commits → indexer catches up → compaction deletes indexed segments; cold query still works.
