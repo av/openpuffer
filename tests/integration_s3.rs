@@ -142,12 +142,12 @@ async fn assert_index_objects(client: &Client, bucket: &str) {
     let has_fts = keys.iter().any(|k| k.contains("/index/fts-") && k.ends_with(".bin"));
     let has_centroids = keys
         .iter()
-        .any(|k| k.ends_with("/index/centroids.bin"));
+        .any(|k| k.ends_with("/index/centroids-l0.bin"));
     let has_filter = keys
         .iter()
         .any(|k| k.contains("/index/filter-") && k.ends_with(".bin"));
     assert!(has_fts, "expected index/fts-*.bin, keys={keys:?}");
-    assert!(has_centroids, "expected index/centroids.bin, keys={keys:?}");
+    assert!(has_centroids, "expected index/centroids-l0.bin, keys={keys:?}");
     assert!(has_filter, "expected index/filter-*.bin, keys={keys:?}");
 }
 

@@ -344,12 +344,12 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
     fn collect_vector_candidates(&mut self, field: &str, query: &[f64]) -> Result<HashSet<String>> {
         let mut ids = HashSet::new();
         if let Some(vindex) = self.ctx.vector {
-            let _vfield = if vindex.centroids.vector_field.is_empty() {
+            let _vfield = if vindex.l0.vector_field.is_empty() {
                 field
             } else {
-                &vindex.centroids.vector_field
+                &vindex.l0.vector_field
             };
-            if query.len() == vindex.centroids.dimensions as usize {
+            if query.len() == vindex.l0.dimensions as usize {
                 for id in vindex.candidate_doc_ids(query) {
                     if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
                         continue;
@@ -521,7 +521,7 @@ fn validate_ranker_vector_dims(ctx: &QueryContext<'_>, ranker: &Ranker) -> Resul
 
 fn validate_query_vector_dims(ctx: &QueryContext<'_>, query: &[f64]) -> Result<()> {
     if let Some(vindex) = ctx.vector {
-        let dim = vindex.centroids.dimensions as usize;
+        let dim = vindex.l0.dimensions as usize;
         if dim > 0 && !query.is_empty() && query.len() != dim {
             bail!(
                 "query vector length {} does not match index dimensions {}",

@@ -1,8 +1,9 @@
-//! Vector ANN index: SPFresh-inspired centroid / cluster layout on S3.
+//! Vector ANN index: SPFresh-style two-level centroid / cluster layout on S3.
 //!
 //! Layout:
-//! - `openpuffer/{ns}/index/centroids.bin` — centroid table + metadata
-//! - `openpuffer/{ns}/index/clusters-{centroid_id:08}.bin` — doc ids + vectors per cluster
+//! - `openpuffer/{ns}/index/centroids-l0.bin` — coarse centroid table + metadata
+//! - `openpuffer/{ns}/index/centroids-l1-{coarse_id:08}.bin` — fine centroids per coarse cell
+//! - `openpuffer/{ns}/index/clusters-{fine_id:08}.bin` — doc ids + vectors per fine centroid
 
 use crate::meta::DistanceMetric;
 use crate::models::Document;
@@ -11,18 +12,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// How many nearest centroids to probe at query time (v1 default).
-pub const DEFAULT_PROBE_CLUSTERS: u32 = 8;
+/// How many nearest coarse centroids to probe at query time.
+pub const DEFAULT_PROBE_COARSE: u32 = 4;
 
-/// Max centroids for v1 k-means.
-const MAX_CENTROIDS: usize = 256;
+/// Fine centroids to probe per selected coarse cell.
+pub const DEFAULT_PROBE_FINE: u32 = 2;
+
+/// Max coarse centroids (level 0).
+pub const MAX_COARSE_CENTROIDS: usize = 16;
+
+/// Max fine centroids per coarse cell.
+const MAX_FINE_PER_COARSE: usize = 256;
 
 /// k-means iterations when building.
 const KMEANS_ITERS: usize = 10;
 
-/// Re-run full k-means when doc count exceeds `num_centroids * REBUILD_DOC_MULTIPLIER`.
-/// Tradeoff: incremental assignment is O(new_docs × k); rebuild is O(n × k × iters) but
-/// improves cluster balance as the namespace grows.
+/// Re-run full hierarchy when doc count exceeds `num_fine_total * REBUILD_DOC_MULTIPLIER`.
 pub const REBUILD_DOC_MULTIPLIER: usize = 4;
 
 /// One document vector stored in a cluster segment.
@@ -32,50 +37,69 @@ pub struct ClusterMember {
     pub vector: Vec<f64>,
 }
 
-/// Centroid table written to `centroids.bin`.
+/// Level-0 coarse centroid table (`centroids-l0.bin`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CentroidIndex {
+pub struct CentroidIndexL0 {
     pub segment_id: u64,
     pub vector_field: String,
     pub dimensions: u32,
-    pub num_centroids: u32,
-    pub probe_clusters: u32,
+    pub num_coarse: u32,
+    pub num_fine_total: u32,
+    pub probe_coarse: u32,
+    pub probe_fine: u32,
     pub distance_metric: DistanceMetric,
+    /// Fine centroid count per coarse bucket (defines global fine id offsets).
+    pub fine_counts: Vec<u32>,
     pub centroids: Vec<Vec<f64>>,
 }
 
-impl Default for CentroidIndex {
+impl Default for CentroidIndexL0 {
     fn default() -> Self {
         Self {
             segment_id: 0,
             vector_field: String::new(),
             dimensions: 0,
-            num_centroids: 0,
-            probe_clusters: DEFAULT_PROBE_CLUSTERS,
+            num_coarse: 0,
+            num_fine_total: 0,
+            probe_coarse: DEFAULT_PROBE_COARSE,
+            probe_fine: DEFAULT_PROBE_FINE,
             distance_metric: DistanceMetric::default(),
+            fine_counts: Vec::new(),
             centroids: Vec::new(),
         }
     }
 }
 
-impl CentroidIndex {
+impl CentroidIndexL0 {
     pub fn key(namespace: &str) -> String {
         format!(
-            "{}{namespace}/index/centroids.bin",
+            "{}{namespace}/index/centroids-l0.bin",
             crate::models::ROOT_PREFIX
         )
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).context("encode CentroidIndex")
+        bincode::serialize(self).context("encode CentroidIndexL0")
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context("decode CentroidIndex")
+        bincode::deserialize(bytes).context("decode CentroidIndexL0")
     }
 
-    /// Top-M centroid ids by score (higher is better) for a query vector.
-    pub fn nearest_centroids(&self, query: &[f64], m: usize) -> Vec<u32> {
+    pub fn global_id_start(&self, coarse_id: u32) -> u32 {
+        self.fine_counts
+            .iter()
+            .take(coarse_id as usize)
+            .map(|&c| c)
+            .sum()
+    }
+
+    pub fn global_fine_id(&self, coarse_id: u32, local_fine: u32) -> u32 {
+        self.global_id_start(coarse_id) + local_fine
+    }
+
+    /// Top-M coarse centroid ids by score (higher is better).
+    pub fn nearest_coarse(&self, query: &[f64], m: usize) -> Vec<u32> {
         if self.centroids.is_empty() {
             return Vec::new();
         }
@@ -98,9 +122,78 @@ impl CentroidIndex {
         });
         ranked.into_iter().take(m).map(|(id, _)| id).collect()
     }
+
+    pub fn probe_coarse_count(&self) -> usize {
+        if self.num_fine_total <= 32 {
+            self.num_coarse as usize
+        } else {
+            self.probe_coarse
+                .min(self.num_coarse)
+                .max(1) as usize
+        }
+    }
+
+    pub fn probe_fine_count(&self, l1: &CentroidIndexL1) -> usize {
+        if self.num_fine_total <= 32 {
+            l1.num_fine as usize
+        } else {
+            self.probe_fine.min(l1.num_fine).max(1) as usize
+        }
+    }
 }
 
-/// One cluster segment: all doc vectors assigned to a centroid.
+/// Level-1 fine centroids for one coarse cell (`centroids-l1-{coarse_id:08}.bin`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentroidIndexL1 {
+    pub segment_id: u64,
+    pub coarse_id: u32,
+    pub global_id_start: u32,
+    pub num_fine: u32,
+    pub centroids: Vec<Vec<f64>>,
+}
+
+impl CentroidIndexL1 {
+    pub fn key(namespace: &str, coarse_id: u32) -> String {
+        format!(
+            "{}{namespace}/index/centroids-l1-{coarse_id:08}.bin",
+            crate::models::ROOT_PREFIX
+        )
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        bincode::serialize(self).context("encode CentroidIndexL1")
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        bincode::deserialize(bytes).context("decode CentroidIndexL1")
+    }
+
+    pub fn nearest_fine(&self, query: &[f64], metric: DistanceMetric, m: usize) -> Vec<u32> {
+        if self.centroids.is_empty() {
+            return Vec::new();
+        }
+        let m = m.min(self.centroids.len());
+        let mut ranked: Vec<(u32, f64)> = self
+            .centroids
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                (
+                    i as u32,
+                    score_vector(query, c, metric),
+                )
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        ranked.into_iter().take(m).map(|(id, _)| id).collect()
+    }
+}
+
+/// One cluster segment: all doc vectors assigned to a fine centroid.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClusterSegment {
     pub segment_id: u64,
@@ -109,9 +202,9 @@ pub struct ClusterSegment {
 }
 
 impl ClusterSegment {
-    pub fn key(namespace: &str, centroid_id: u32) -> String {
+    pub fn key(namespace: &str, fine_id: u32) -> String {
         format!(
-            "{}{namespace}/index/clusters-{centroid_id:08}.bin",
+            "{}{namespace}/index/clusters-{fine_id:08}.bin",
             crate::models::ROOT_PREFIX
         )
     }
@@ -124,7 +217,6 @@ impl ClusterSegment {
         bincode::deserialize(bytes).context("decode ClusterSegment")
     }
 
-    /// Score all members against query; returns (doc_id, score) sorted desc.
     pub fn score_members(
         &self,
         query: &[f64],
@@ -151,15 +243,15 @@ impl ClusterSegment {
     }
 }
 
-/// In-memory vector index for queries (centroids + loaded cluster segments).
+/// In-memory vector index (L0 + L1 segments + cluster segments).
 #[derive(Debug, Clone, Default)]
 pub struct VectorIndex {
-    pub centroids: CentroidIndex,
+    pub l0: CentroidIndexL0,
+    pub l1: HashMap<u32, CentroidIndexL1>,
     pub clusters: HashMap<u32, ClusterSegment>,
 }
 
 impl VectorIndex {
-    /// Build centroid/cluster layout from documents and write-ready segments.
     pub fn build(
         segment_id: u64,
         field: &str,
@@ -188,67 +280,107 @@ impl VectorIndex {
             return Ok(None);
         }
 
-        let k = num_centroids(pairs.len());
-        let centroid_vecs = kmeans_centroids(&pairs, k, dimensions as usize);
-        let assignments = assign_to_centroids(&pairs, &centroid_vecs, metric);
+        let k_coarse = num_coarse(pairs.len());
+        let coarse_vecs = kmeans_centroids(&pairs, k_coarse, dimensions as usize);
+        let coarse_assign = assign_to_centroids(&pairs, &coarse_vecs, metric);
 
-        let mut clusters: HashMap<u32, ClusterSegment> = HashMap::new();
+        let mut by_coarse: HashMap<u32, Vec<(String, Vec<f64>)>> = HashMap::new();
         for (doc_id, vec) in pairs {
-            let cid = assignments.get(&doc_id).copied().unwrap_or(0);
-            clusters
-                .entry(cid)
-                .or_insert_with(|| ClusterSegment {
-                    segment_id,
-                    centroid_id: cid,
-                    members: Vec::new(),
-                })
-                .members
-                .push(ClusterMember {
-                    doc_id,
-                    vector: vec,
-                });
+            let coarse = coarse_assign.get(&doc_id).copied().unwrap_or(0);
+            by_coarse.entry(coarse).or_default().push((doc_id, vec));
         }
 
-        let centroids = CentroidIndex {
+        let mut l1_map: HashMap<u32, CentroidIndexL1> = HashMap::new();
+        let mut clusters: HashMap<u32, ClusterSegment> = HashMap::new();
+        let mut fine_counts: Vec<u32> = vec![0; k_coarse];
+        let mut global_start = 0u32;
+
+        for coarse_id in 0..k_coarse as u32 {
+            let cell_docs = by_coarse.remove(&coarse_id).unwrap_or_default();
+            let k_fine = num_fine(cell_docs.len());
+            fine_counts[coarse_id as usize] = k_fine as u32;
+
+            let fine_vecs = if cell_docs.is_empty() {
+                Vec::new()
+            } else {
+                kmeans_centroids(&cell_docs, k_fine, dimensions as usize)
+            };
+
+            let fine_assign = assign_to_centroids(&cell_docs, &fine_vecs, metric);
+
+            l1_map.insert(
+                coarse_id,
+                CentroidIndexL1 {
+                    segment_id,
+                    coarse_id,
+                    global_id_start: global_start,
+                    num_fine: fine_vecs.len() as u32,
+                    centroids: fine_vecs,
+                },
+            );
+
+            for (doc_id, vec) in cell_docs {
+                let local_fine = fine_assign.get(&doc_id).copied().unwrap_or(0);
+                let fine_id = global_start + local_fine;
+                clusters
+                    .entry(fine_id)
+                    .or_insert_with(|| ClusterSegment {
+                        segment_id,
+                        centroid_id: fine_id,
+                        members: Vec::new(),
+                    })
+                    .members
+                    .push(ClusterMember {
+                        doc_id,
+                        vector: vec,
+                    });
+            }
+
+            global_start += k_fine as u32;
+        }
+
+        let num_fine_total = global_start;
+        let l0 = CentroidIndexL0 {
             segment_id,
             vector_field: field.to_string(),
             dimensions,
-            num_centroids: centroid_vecs.len() as u32,
-            probe_clusters: DEFAULT_PROBE_CLUSTERS.min(centroid_vecs.len() as u32).max(1),
+            num_coarse: k_coarse as u32,
+            num_fine_total,
+            probe_coarse: DEFAULT_PROBE_COARSE.min(k_coarse as u32).max(1),
+            probe_fine: DEFAULT_PROBE_FINE,
             distance_metric: metric,
-            centroids: centroid_vecs,
+            fine_counts,
+            centroids: coarse_vecs,
         };
 
         Ok(Some(VectorIndex {
-            centroids,
+            l0,
+            l1: l1_map,
             clusters,
         }))
     }
 
-    /// Number of documents indexed across all clusters.
     pub fn doc_count(&self) -> usize {
         self.clusters.values().map(|c| c.members.len()).sum()
     }
 
-    /// True when incremental assignments should be replaced by a full k-means rebuild.
     pub fn needs_full_rebuild(&self) -> bool {
         let n = self.doc_count();
-        let k = self.centroids.num_centroids as usize;
+        let k = self.l0.num_fine_total as usize;
         if k == 0 || n == 0 {
             return true;
         }
         n > k.saturating_mul(REBUILD_DOC_MULTIPLIER)
     }
 
-    /// Incrementally assign new/changed docs to nearest centroids; remove deletes.
     pub fn apply_delta(
         &mut self,
         upserts: &[(String, Document)],
         deletes: &[String],
     ) -> Result<()> {
-        let field = self.centroids.vector_field.clone();
-        let dim = self.centroids.dimensions as usize;
-        if dim == 0 || self.centroids.centroids.is_empty() {
+        let field = self.l0.vector_field.clone();
+        let dim = self.l0.dimensions as usize;
+        if dim == 0 || self.l0.centroids.is_empty() {
             return Ok(());
         }
 
@@ -264,17 +396,26 @@ impl VectorIndex {
             if vec.len() != dim {
                 continue;
             }
-            let cid = self
-                .centroids
-                .nearest_centroids(&vec, 1)
+            let coarse = self
+                .l0
+                .nearest_coarse(&vec, 1)
                 .first()
                 .copied()
                 .unwrap_or(0);
+            let l1 = self.l1.get(&coarse).ok_or_else(|| {
+                anyhow::anyhow!("missing L1 segment for coarse {coarse}")
+            })?;
+            let local_fine = l1
+                .nearest_fine(&vec, self.l0.distance_metric, 1)
+                .first()
+                .copied()
+                .unwrap_or(0);
+            let fine_id = self.l0.global_fine_id(coarse, local_fine);
             self.clusters
-                .entry(cid)
+                .entry(fine_id)
                 .or_insert_with(|| ClusterSegment {
-                    segment_id: self.centroids.segment_id,
-                    centroid_id: cid,
+                    segment_id: self.l0.segment_id,
+                    centroid_id: fine_id,
                     members: Vec::new(),
                 })
                 .members
@@ -292,23 +433,32 @@ impl VectorIndex {
         }
     }
 
-    /// Doc ids reachable by probing nearest centroids (candidate generation, no scoring).
-    pub fn candidate_doc_ids(&self, query: &[f64]) -> HashSet<String> {
-        if query.len() != self.centroids.dimensions as usize {
-            return HashSet::new();
+    /// Global fine centroid ids to probe for a query (two-level descent).
+    pub fn probe_fine_centroids(&self, query: &[f64]) -> Vec<u32> {
+        if query.len() != self.l0.dimensions as usize {
+            return Vec::new();
         }
-        let m = if self.centroids.num_centroids <= 32 {
-            self.centroids.num_centroids as usize
-        } else {
-            self.centroids
-                .probe_clusters
-                .min(self.centroids.num_centroids)
-                .max(1) as usize
-        };
-        let probe = self.centroids.nearest_centroids(query, m);
+        let coarse_m = self.l0.probe_coarse_count();
+        let coarse_ids = self.l0.nearest_coarse(query, coarse_m);
+        let mut fine_ids = Vec::new();
+        for coarse_id in coarse_ids {
+            let Some(l1) = self.l1.get(&coarse_id) else {
+                continue;
+            };
+            let fine_m = self.l0.probe_fine_count(l1);
+            for local in l1.nearest_fine(query, self.l0.distance_metric, fine_m) {
+                fine_ids.push(self.l0.global_fine_id(coarse_id, local));
+            }
+        }
+        fine_ids.sort_unstable();
+        fine_ids.dedup();
+        fine_ids
+    }
+
+    pub fn candidate_doc_ids(&self, query: &[f64]) -> HashSet<String> {
         let mut ids = HashSet::new();
-        for cid in probe {
-            if let Some(cluster) = self.clusters.get(&cid) {
+        for fine_id in self.probe_fine_centroids(query) {
+            if let Some(cluster) = self.clusters.get(&fine_id) {
                 for m in &cluster.members {
                     ids.insert(m.doc_id.clone());
                 }
@@ -317,26 +467,14 @@ impl VectorIndex {
         ids
     }
 
-    /// ANN query: probe nearest centroids, score cluster members, return top-k.
     pub fn query_ann(&self, query: &[f64], top_k: usize) -> Vec<(String, f64)> {
-        if query.len() != self.centroids.dimensions as usize {
+        if query.len() != self.l0.dimensions as usize {
             return Vec::new();
         }
-        // Small indexes: probe every cluster so ANN matches exhaustive (tests + tiny namespaces).
-        let m = if self.centroids.num_centroids <= 32 {
-            self.centroids.num_centroids as usize
-        } else {
-            self.centroids
-                .probe_clusters
-                .min(self.centroids.num_centroids)
-                .max(1) as usize
-        };
-        let probe = self.centroids.nearest_centroids(query, m);
-        let metric = self.centroids.distance_metric;
-
+        let metric = self.l0.distance_metric;
         let mut scores: HashMap<String, f64> = HashMap::new();
-        for cid in probe {
-            let Some(cluster) = self.clusters.get(&cid) else {
+        for fine_id in self.probe_fine_centroids(query) {
+            let Some(cluster) = self.clusters.get(&fine_id) else {
                 continue;
             };
             for (id, score) in cluster.score_members(query, metric, top_k.saturating_mul(4)) {
@@ -360,17 +498,42 @@ impl VectorIndex {
         ranked.truncate(top_k);
         ranked
     }
+
+    /// S3 keys for all L1 segments.
+    pub fn all_l1_keys(&self, namespace: &str) -> Vec<String> {
+        (0..self.l0.num_coarse)
+            .map(|c| CentroidIndexL1::key(namespace, c))
+            .collect()
+    }
+
+    /// S3 keys for all cluster segments.
+    pub fn all_cluster_keys(&self, namespace: &str) -> Vec<String> {
+        (0..self.l0.num_fine_total)
+            .map(|fid| ClusterSegment::key(namespace, fid))
+            .collect()
+    }
 }
 
-fn num_centroids(n: usize) -> usize {
+fn num_coarse(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if n <= 32 {
+        return 1;
+    }
+    let sqrt_k = (n as f64).sqrt().ceil() as usize;
+    let k = (sqrt_k / 4).max(4);
+    k.clamp(1, n).min(MAX_COARSE_CENTROIDS)
+}
+
+fn num_fine(n: usize) -> usize {
     if n == 0 {
         return 0;
     }
     let sqrt_k = (n as f64).sqrt().ceil() as usize;
-    sqrt_k.clamp(1, n).min(MAX_CENTROIDS)
+    sqrt_k.clamp(1, n).min(MAX_FINE_PER_COARSE)
 }
 
-/// Simple k-means; falls back to random doc vectors as centroids when n is small.
 fn kmeans_centroids(pairs: &[(String, Vec<f64>)], k: usize, dim: usize) -> Vec<Vec<f64>> {
     let n = pairs.len();
     if n == 0 {
@@ -380,7 +543,6 @@ fn kmeans_centroids(pairs: &[(String, Vec<f64>)], k: usize, dim: usize) -> Vec<V
         return pairs.iter().map(|(_, v)| v.clone()).collect();
     }
 
-    // Deterministic seed centroids: first k document vectors (v1; no external RNG).
     let mut centroids: Vec<Vec<f64>> = pairs
         .iter()
         .take(k)
@@ -452,7 +614,6 @@ pub fn score_vector(query: &[f64], candidate: &[f64], metric: DistanceMetric) ->
     }
 }
 
-/// Cosine similarity (higher is better). Returns 0 for zero vectors.
 pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -484,7 +645,6 @@ fn euclidean_squared(a: &[f64], b: &[f64]) -> f64 {
         .sum()
 }
 
-/// Extract vector from document attributes (shared with search).
 pub fn extract_vector(attrs: &HashMap<String, Value>, field: &str) -> Result<Vec<f64>> {
     let v = attrs
         .get(field)
@@ -505,7 +665,6 @@ pub fn value_to_f64_vec(v: &Value) -> Result<Vec<f64>> {
         .collect()
 }
 
-/// Vector fields from schema hints (`[]f32`, `vector`, etc.).
 pub fn vector_fields_from_schema(schema: &Value) -> Vec<String> {
     let Some(obj) = schema.as_object() else {
         return Vec::new();
@@ -523,7 +682,6 @@ fn field_is_vector(spec: &Value) -> bool {
     crate::schema::field_is_vector_spec(spec)
 }
 
-/// Pick primary vector field (first schema vector field, or first f64 array attr seen).
 pub fn primary_vector_field(schema: &Value, sample: Option<&Document>) -> Option<String> {
     let fields = vector_fields_from_schema(schema);
     if let Some(f) = fields.into_iter().next() {
@@ -539,11 +697,32 @@ pub fn primary_vector_field(schema: &Value, sample: Option<&Document>) -> Option
     None
 }
 
+/// Brute-force top-k for recall tests.
+pub fn brute_force_top_k(
+    docs: &[(String, Vec<f64>)],
+    query: &[f64],
+    metric: DistanceMetric,
+    top_k: usize,
+) -> Vec<String> {
+    let mut scored: Vec<(String, f64)> = docs
+        .iter()
+        .map(|(id, v)| (id.clone(), score_vector(query, v, metric)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    scored.truncate(top_k);
+    scored.into_iter().map(|(id, _)| id).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Document;
     use serde_json::json;
+    use std::collections::HashSet;
 
     fn vec_doc(id: &str, embedding: Vec<f64>) -> (String, Document) {
         (
@@ -565,7 +744,6 @@ mod tests {
                 vec![x, 1.0 - x, 0.5, 0.0],
             ));
         }
-        // Unique nearest neighbor to query [1,0,0.5,0]
         docs.push(vec_doc("target", vec![1.0, 0.0, 0.5, 0.0]));
 
         let index = VectorIndex::build(
@@ -585,20 +763,78 @@ mod tests {
     }
 
     #[test]
-    fn centroid_index_roundtrip_bincode() {
-        let idx = CentroidIndex {
+    fn recall_at_10_1k_docs_32dim_above_point_seven() {
+        const DIM: usize = 32;
+        const N: usize = 1000;
+        const TOP_K: usize = 10;
+        const QUERIES: usize = 20;
+
+        let mut docs = Vec::new();
+        let mut vectors: Vec<(String, Vec<f64>)> = Vec::new();
+        for i in 0..N {
+            let mut v = vec![0.0f64; DIM];
+            for d in 0..DIM {
+                let seed = (i as u64).wrapping_mul(1_103_515_245).wrapping_add(d as u64);
+                v[d] = ((seed % 10_000) as f64) / 10_000.0;
+            }
+            let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for x in &mut v {
+                    *x /= norm;
+                }
+            }
+            let id = format!("doc-{i}");
+            vectors.push((id.clone(), v.clone()));
+            docs.push(vec_doc(&id, v));
+        }
+
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+        )
+        .unwrap()
+        .expect("index built");
+
+        assert!(index.l0.num_coarse > 1, "expected hierarchical coarse level");
+        assert!(index.l0.num_fine_total > index.l0.num_coarse);
+
+        let metric = DistanceMetric::CosineDistance;
+        let mut recall_sum = 0.0f64;
+        for q in 0..QUERIES {
+            let query = vectors[q * (N / QUERIES)].1.clone();
+            let brute = brute_force_top_k(&vectors, &query, metric, TOP_K);
+            let ann = index.query_ann(&query, TOP_K);
+            let ann_set: HashSet<_> = ann.into_iter().map(|(id, _)| id).collect();
+            let hits = brute.iter().filter(|id| ann_set.contains(*id)).count();
+            recall_sum += hits as f64 / TOP_K as f64;
+        }
+        let recall = recall_sum / QUERIES as f64;
+        assert!(
+            recall > 0.7,
+            "recall@10 {recall} should exceed 0.7 vs brute force"
+        );
+    }
+
+    #[test]
+    fn centroid_l0_roundtrip_bincode() {
+        let idx = CentroidIndexL0 {
             segment_id: 3,
             vector_field: "emb".into(),
             dimensions: 2,
-            num_centroids: 2,
-            probe_clusters: 2,
+            num_coarse: 2,
+            num_fine_total: 4,
+            probe_coarse: 2,
+            probe_fine: 2,
             distance_metric: DistanceMetric::CosineDistance,
+            fine_counts: vec![2, 2],
             centroids: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
         };
         let bytes = idx.encode().unwrap();
-        let back = CentroidIndex::decode(&bytes).unwrap();
+        let back = CentroidIndexL0::decode(&bytes).unwrap();
         assert_eq!(back.segment_id, 3);
-        assert_eq!(back.centroids.len(), 2);
+        assert_eq!(back.fine_counts, vec![2, 2]);
     }
 
     #[test]
@@ -617,9 +853,7 @@ mod tests {
         .expect("index");
         let before_count = index.doc_count();
         let new_doc = vec_doc("near-a", vec![0.99, 0.01]);
-        index
-            .apply_delta(&[new_doc], &[])
-            .expect("apply_delta");
+        index.apply_delta(&[new_doc], &[]).expect("apply_delta");
         assert_eq!(index.doc_count(), before_count + 1);
         assert!(!index.needs_full_rebuild());
     }
@@ -641,7 +875,7 @@ mod tests {
         )
         .unwrap()
         .expect("index");
-        let k = index.centroids.num_centroids as usize;
+        let k = index.l0.num_fine_total as usize;
         assert!(
             index.doc_count() > k.saturating_mul(REBUILD_DOC_MULTIPLIER),
             "test setup: doc_count {} should exceed {} * {}",
@@ -665,5 +899,10 @@ mod tests {
         let bytes = seg.encode().unwrap();
         let back = ClusterSegment::decode(&bytes).unwrap();
         assert_eq!(back.members[0].doc_id, "a");
+    }
+
+    #[test]
+    fn l1_key_format() {
+        assert!(CentroidIndexL1::key("ns", 3).contains("centroids-l1-00000003"));
     }
 }

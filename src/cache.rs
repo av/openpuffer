@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 
-/// Disk cache for index objects (`index/fts-*`, `filter-*`, `centroids.bin`, `clusters-*`).
+/// Disk cache for index objects (`index/fts-*`, `filter-*`, `centroids-l0/l1-*`, `clusters-*`).
 #[derive(Debug)]
 pub struct SegmentCache {
     root: Option<PathBuf>,

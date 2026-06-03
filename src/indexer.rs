@@ -7,7 +7,9 @@
 use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
-use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
+use crate::index::vector::{
+    primary_vector_field, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
+};
 use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
 use crate::namespace::{fetch_meta, replay_wal_entries};
 use crate::wal::{collect_index_delta, WalEntry};
@@ -119,7 +121,7 @@ pub async fn index_wal_range(
             .await?
             .unwrap_or_default();
 
-            if vindex.centroids.num_centroids == 0 {
+            if vindex.l0.num_fine_total == 0 {
                 let pairs: Vec<(String, crate::models::Document)> = upserts.clone();
                 if let Some(built) = VectorIndex::build(
                     to,
@@ -146,15 +148,18 @@ pub async fn index_wal_range(
                 }
             }
 
-            if vindex.centroids.num_centroids > 0 {
-                vindex.centroids.segment_id = to;
+            if vindex.l0.num_fine_total > 0 {
+                vindex.l0.segment_id = to;
+                for l1 in vindex.l1.values_mut() {
+                    l1.segment_id = to;
+                }
                 for cluster in vindex.clusters.values_mut() {
                     cluster.segment_id = to;
                 }
                 write_vector_index(client, bucket, namespace, &vindex, cache).await?;
                 vector_segment_id = to;
                 vector_field = vfield;
-                dimensions = vindex.centroids.dimensions;
+                dimensions = vindex.l0.dimensions;
             }
         }
 
@@ -231,20 +236,34 @@ async fn write_vector_index(
     vindex: &VectorIndex,
     cache: &Arc<SegmentCache>,
 ) -> Result<()> {
-    let ckey = CentroidIndex::key(namespace);
-    let cbody = vindex.centroids.encode()?;
-    let cresp = client
+    let l0_key = CentroidIndexL0::key(namespace);
+    let l0_body = vindex.l0.encode()?;
+    let l0_resp = client
         .put_object()
         .bucket(bucket)
-        .key(&ckey)
-        .body(ByteStream::from(cbody.clone()))
+        .key(&l0_key)
+        .body(ByteStream::from(l0_body.clone()))
         .send()
         .await
-        .context("put centroids.bin")?;
-    cache.populate_after_put(bucket, &ckey, &cbody, cresp.e_tag());
+        .context("put centroids-l0.bin")?;
+    cache.populate_after_put(bucket, &l0_key, &l0_body, l0_resp.e_tag());
 
-    for (cid, cluster) in &vindex.clusters {
-        let key = ClusterSegment::key(namespace, *cid);
+    for l1 in vindex.l1.values() {
+        let key = CentroidIndexL1::key(namespace, l1.coarse_id);
+        let body = l1.encode()?;
+        let resp = client
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(ByteStream::from(body.clone()))
+            .send()
+            .await
+            .with_context(|| format!("put centroids-l1-{:08}", l1.coarse_id))?;
+        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+    }
+
+    for (fine_id, cluster) in &vindex.clusters {
+        let key = ClusterSegment::key(namespace, *fine_id);
         let body = cluster.encode()?;
         let resp = client
             .put_object()
@@ -253,7 +272,7 @@ async fn write_vector_index(
             .body(ByteStream::from(body.clone()))
             .send()
             .await
-            .with_context(|| format!("put cluster {cid:08}"))?;
+            .with_context(|| format!("put cluster {fine_id:08}"))?;
         cache.populate_after_put(bucket, &key, &body, resp.e_tag());
     }
     Ok(())
@@ -569,33 +588,47 @@ pub async fn load_vector_index_for_query(
     if meta.vector_segment_id == 0 || meta.index_cursor == 0 || meta.dimensions == 0 {
         return Ok(None);
     }
-    let ckey = CentroidIndex::key(namespace);
-    let Some(cbytes) = cache.get_bytes(client, bucket, &ckey).await? else {
+    let l0_key = CentroidIndexL0::key(namespace);
+    let Some(l0_bytes) = cache.get_bytes(client, bucket, &l0_key).await? else {
         return Ok(None);
     };
-    let centroids = CentroidIndex::decode(&cbytes)?;
+    let l0 = CentroidIndexL0::decode(&l0_bytes)?;
 
     if cache.enabled() {
-        let cluster_keys: Vec<String> = (0..centroids.num_centroids)
-            .map(|cid| ClusterSegment::key(namespace, cid))
+        let prefetch_keys: Vec<String> = (0..l0.num_coarse)
+            .map(|c| CentroidIndexL1::key(namespace, c))
+            .chain(
+                (0..l0.num_fine_total).map(|fid| ClusterSegment::key(namespace, fid)),
+            )
             .collect();
-        Arc::clone(cache).prefetch_background(client.clone(), bucket.to_string(), cluster_keys);
+        Arc::clone(cache).prefetch_background(
+            client.clone(),
+            bucket.to_string(),
+            prefetch_keys,
+        );
+    }
+
+    let mut l1 = HashMap::new();
+    for coarse_id in 0..l0.num_coarse {
+        let key = CentroidIndexL1::key(namespace, coarse_id);
+        let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
+            continue;
+        };
+        let seg = CentroidIndexL1::decode(&bytes)?;
+        l1.insert(coarse_id, seg);
     }
 
     let mut clusters = HashMap::new();
-    for cid in 0..centroids.num_centroids {
-        let key = ClusterSegment::key(namespace, cid);
+    for fine_id in 0..l0.num_fine_total {
+        let key = ClusterSegment::key(namespace, fine_id);
         let Some(bytes) = cache.get_bytes(client, bucket, &key).await? else {
             continue;
         };
         let seg = ClusterSegment::decode(&bytes)?;
-        clusters.insert(cid, seg);
+        clusters.insert(fine_id, seg);
     }
 
-    Ok(Some(VectorIndex {
-        centroids,
-        clusters,
-    }))
+    Ok(Some(VectorIndex { l0, l1, clusters }))
 }
 
 async fn index_delta_from_wal_entries(

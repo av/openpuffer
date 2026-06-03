@@ -3,7 +3,7 @@
 use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
-use crate::index::vector::{CentroidIndex, ClusterSegment};
+use crate::index::vector::{CentroidIndexL0, CentroidIndexL1, ClusterSegment};
 use crate::meta::meta_key;
 use crate::namespace::fetch_meta;
 use crate::view::NamespaceView;
@@ -42,7 +42,7 @@ pub fn index_keys_for_warm(namespace: &str, meta: &crate::meta::NamespaceMeta) -
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
     }
     if meta.vector_segment_id > 0 && meta.index_cursor > 0 && meta.dimensions > 0 {
-        keys.push(CentroidIndex::key(namespace));
+        keys.push(CentroidIndexL0::key(namespace));
     }
     keys
 }
@@ -83,11 +83,15 @@ pub async fn warm_namespace(
     let mut cluster_segments = 0u32;
 
     for key in index_keys_for_warm(namespace, &meta) {
-        if key.ends_with("centroids.bin") {
+        if key.ends_with("centroids-l0.bin") {
             if let Some(bytes) = cache.get_bytes(client, bucket, &key).await? {
-                if let Ok(centroids) = CentroidIndex::decode(&bytes) {
-                    for cid in 0..centroids.num_centroids {
-                        let ckey = ClusterSegment::key(namespace, cid);
+                if let Ok(l0) = CentroidIndexL0::decode(&bytes) {
+                    for coarse_id in 0..l0.num_coarse {
+                        let l1_key = CentroidIndexL1::key(namespace, coarse_id);
+                        let _ = cache.get_bytes(client, bucket, &l1_key).await?;
+                    }
+                    for fine_id in 0..l0.num_fine_total {
+                        let ckey = ClusterSegment::key(namespace, fine_id);
                         if cache.get_bytes(client, bucket, &ckey).await?.is_some() {
                             cluster_segments += 1;
                         }
@@ -165,6 +169,6 @@ mod tests {
         assert_eq!(keys.len(), 3);
         assert!(keys.iter().any(|k| k.contains("fts-")));
         assert!(keys.iter().any(|k| k.contains("filter-")));
-        assert!(keys.iter().any(|k| k.ends_with("centroids.bin")));
+        assert!(keys.iter().any(|k| k.ends_with("centroids-l0.bin")));
     }
 }
