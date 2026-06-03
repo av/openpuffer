@@ -1,4 +1,8 @@
 //! Background indexer: merge WAL batches into FTS + vector indexes on S3 and advance `index_cursor`.
+//!
+//! Indexing runs **asynchronously** on a tokio task (poll every 500ms or on WAL flush notify).
+//! The write hot path only durably appends WAL + CAS `wal_commit_seq`; queries still see
+//! strong consistency via indexed segments + unindexed WAL tail scan.
 
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
@@ -8,8 +12,10 @@ use crate::namespace::{fetch_meta, replay_wal_entries};
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Mutex, Notify};
 
 /// Merge WAL `(index_cursor+1)..=wal_commit_seq` into index segments and CAS-advance `index_cursor`.
 pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> Result<()> {
@@ -149,9 +155,185 @@ async fn write_vector_index(
     Ok(())
 }
 
-/// Run indexer after a durable WAL flush (v1: synchronous in write path).
-pub async fn index_namespace(client: &Client, bucket: &str, namespace: &str) -> Result<()> {
-    index_wal_range(client, bucket, namespace).await
+/// Poll interval when no WAL flush notification is pending.
+pub const INDEX_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// True when WAL segments exist that are not yet merged into `index/`.
+pub fn needs_indexing(meta: &NamespaceMeta) -> bool {
+    meta.index_cursor < meta.wal_commit_seq
+}
+
+/// Count of WAL files in the unindexed tail `(index_cursor, wal_commit_seq]`.
+pub fn unindexed_wal_segments(meta: &NamespaceMeta) -> u64 {
+    if meta.wal_commit_seq <= meta.index_cursor {
+        return 0;
+    }
+    meta.wal_commit_seq - meta.index_cursor
+}
+
+/// Approximate bytes in unindexed WAL segments (HEAD per object; 4KiB fallback per segment).
+pub async fn approx_unindexed_bytes(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> u64 {
+    let from = meta.index_cursor.saturating_add(1);
+    let to = meta.wal_commit_seq;
+    if from > to {
+        return 0;
+    }
+    let mut total = 0u64;
+    for seq in from..=to {
+        let key = crate::wal::wal_key(namespace, seq);
+        match head_content_length(client, bucket, &key).await {
+            Ok(len) => total += len,
+            Err(_) => total += 4096,
+        }
+    }
+    total
+}
+
+async fn head_content_length(client: &Client, bucket: &str, key: &str) -> Result<u64> {
+    let out = client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .context("head wal segment")?;
+    Ok(out.content_length().unwrap_or(0).max(0) as u64)
+}
+
+/// Async background indexer: one global task, per-namespace work queue + periodic S3 scan.
+pub struct BackgroundIndexer {
+    client: Client,
+    bucket: String,
+    pending: Mutex<HashSet<String>>,
+    notify: Notify,
+}
+
+impl BackgroundIndexer {
+    pub fn spawn(client: Client, bucket: String) -> Arc<Self> {
+        let this = Arc::new(Self {
+            client,
+            bucket,
+            pending: Mutex::new(HashSet::new()),
+            notify: Notify::new(),
+        });
+        let runner = Arc::clone(&this);
+        tokio::spawn(async move {
+            runner.run().await;
+        });
+        this
+    }
+
+    /// Notify the background loop that `namespace` may have unindexed WAL (non-blocking).
+    pub async fn wake(&self, namespace: &str) {
+        self.pending.lock().await.insert(namespace.to_string());
+        self.notify.notify_one();
+    }
+
+    async fn run(self: Arc<Self>) {
+        loop {
+            let _ = tokio::time::timeout(INDEX_POLL_INTERVAL, self.notify.notified()).await;
+            if let Err(e) = self.tick().await {
+                tracing::warn!("background indexer tick: {e:#}");
+            }
+        }
+    }
+
+    async fn tick(&self) -> Result<()> {
+        let mut work: HashSet<String> = self.pending.lock().await.drain().collect();
+
+        for name in list_namespace_names(&self.client, &self.bucket).await? {
+            if let Some((meta, _)) =
+                crate::namespace::fetch_meta(&self.client, &self.bucket, &name).await?
+            {
+                if needs_indexing(&meta) {
+                    work.insert(name);
+                }
+            }
+        }
+
+        for namespace in work {
+            match index_wal_range(&self.client, &self.bucket, &namespace).await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "indexer failed for {namespace} (will retry): {e:#}"
+                    );
+                    self.pending.lock().await.insert(namespace);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn pending_namespaces(&self) -> HashSet<String> {
+        self.pending.lock().await.clone()
+    }
+}
+
+async fn list_namespace_names(client: &Client, bucket: &str) -> Result<Vec<String>> {
+    let mut namespaces = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(crate::models::ROOT_PREFIX)
+            .delimiter("/");
+        if let Some(t) = &token {
+            req = req.continuation_token(t);
+        }
+        let out = req.send().await.context("list namespaces for indexer")?;
+        for cp in out.common_prefixes() {
+            if let Some(p) = cp.prefix() {
+                let name = p
+                    .strip_prefix(crate::models::ROOT_PREFIX)
+                    .and_then(|s| s.strip_suffix('/'))
+                    .unwrap_or(p);
+                if !name.is_empty() {
+                    namespaces.push(name.to_string());
+                }
+            }
+        }
+        token = out.next_continuation_token().map(|s| s.to_string());
+        if token.is_none() {
+            break;
+        }
+    }
+    namespaces.sort();
+    namespaces.dedup();
+    Ok(namespaces)
+}
+
+/// Block until `index_cursor` catches up to `wal_commit_seq` (tests / integration).
+pub async fn wait_until_indexed(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some((meta, _)) =
+            crate::namespace::fetch_meta(client, bucket, namespace).await?
+        {
+            if !needs_indexing(&meta) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(anyhow!(
+                "indexer did not catch up for {namespace} within {:?}",
+                timeout
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 fn primary_fts_field(meta: &NamespaceMeta) -> String {
@@ -345,5 +527,59 @@ mod tests {
             ..Default::default()
         };
         assert!(meta_after_index_commit(&meta, 5, 5, 0, String::new(), 0).is_err());
+    }
+
+    #[test]
+    fn needs_indexing_when_cursor_behind_commit() {
+        let meta = NamespaceMeta {
+            index_cursor: 2,
+            wal_commit_seq: 5,
+            ..Default::default()
+        };
+        assert!(needs_indexing(&meta));
+        assert_eq!(unindexed_wal_segments(&meta), 3);
+    }
+
+    #[test]
+    fn needs_indexing_false_when_caught_up() {
+        let meta = NamespaceMeta {
+            index_cursor: 10,
+            wal_commit_seq: 10,
+            ..Default::default()
+        };
+        assert!(!needs_indexing(&meta));
+        assert_eq!(unindexed_wal_segments(&meta), 0);
+    }
+
+    #[tokio::test]
+    async fn background_indexer_wake_enqueues_namespace() {
+        let idx = BackgroundIndexer {
+            client: aws_sdk_s3::Client::from_conf(
+                aws_sdk_s3::Config::builder()
+                    .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+                    .build(),
+            ),
+            bucket: "test".into(),
+            pending: Mutex::new(HashSet::new()),
+            notify: Notify::new(),
+        };
+        idx.wake("ns-a").await;
+        idx.wake("ns-a").await;
+        let pending = idx.pending_namespaces().await;
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains("ns-a"));
+    }
+
+    #[tokio::test]
+    async fn index_cursor_catch_up_after_sleep() {
+        let mut meta = NamespaceMeta {
+            index_cursor: 0,
+            wal_commit_seq: 3,
+            ..Default::default()
+        };
+        assert!(needs_indexing(&meta));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        meta.index_cursor = 3;
+        assert!(!needs_indexing(&meta));
     }
 }

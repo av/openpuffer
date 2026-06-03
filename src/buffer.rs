@@ -7,6 +7,7 @@
 //! **Strong consistency:** HTTP ACK waits until [`crate::namespace::append_wal`] completes —
 //! the WAL object is on S3 and `meta.json` CAS succeeded before waiters are released.
 
+use crate::indexer::BackgroundIndexer;
 use crate::models::Document;
 use crate::namespace::append_wal;
 use crate::wal::WalEntry;
@@ -59,15 +60,22 @@ pub struct WriteBufferManager {
     bucket: String,
     config: WriteBufferConfig,
     buffers: Arc<RwLock<HashMap<String, Arc<NamespaceBuffer>>>>,
+    background_indexer: Option<Arc<BackgroundIndexer>>,
 }
 
 impl WriteBufferManager {
-    pub fn new(client: Client, bucket: String, config: WriteBufferConfig) -> Self {
+    pub fn new(
+        client: Client,
+        bucket: String,
+        config: WriteBufferConfig,
+        background_indexer: Option<Arc<BackgroundIndexer>>,
+    ) -> Self {
         Self {
             client,
             bucket,
             config,
             buffers: Arc::new(RwLock::new(HashMap::new())),
+            background_indexer,
         }
     }
 
@@ -139,6 +147,7 @@ impl WriteBufferManager {
             bucket: self.bucket.clone(),
             config: self.config.clone(),
             buffers: self.buffers.clone(),
+            background_indexer: self.background_indexer.clone(),
         }
     }
 
@@ -186,11 +195,9 @@ impl WriteBufferManager {
         )
         .await?;
 
-        // Index WAL tail synchronously so queries can use FTS + unindexed tail (v1).
-        if let Err(e) =
-            crate::indexer::index_namespace(&self.client, &self.bucket, namespace).await
-        {
-            tracing::warn!("indexer after flush for {namespace}: {e:#}");
+        // Wake async background indexer; writes are not blocked on index build.
+        if let Some(indexer) = &self.background_indexer {
+            indexer.wake(namespace).await;
         }
 
         let committed = CommittedBatch {

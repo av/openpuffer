@@ -75,6 +75,21 @@ pub struct HealthResponse {
 #[derive(Debug, Serialize)]
 pub struct NamespaceSummary {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_cursor: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_commit_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unindexed_bytes: Option<u64>,
+}
+
+/// GET /v1/namespaces/{name} — simplified turbopuffer metadata shape.
+#[derive(Debug, Serialize)]
+pub struct NamespaceMetadata {
+    pub id: String,
+    pub index_cursor: u64,
+    pub wal_commit_seq: u64,
+    pub unindexed_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]

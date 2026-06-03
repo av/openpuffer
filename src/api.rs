@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::models::{
-    validate_doc_id, Document, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest,
-    WriteRequest,
+    validate_doc_id, Document, HealthResponse, NamespaceSummary,
+    NamespacesResponse, QueryRequest, WriteRequest,
 };
 use crate::storage::s3_error_hint;
 use crate::search;
@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/namespaces", get(list_namespaces))
+        .route("/v1/namespaces/{name}", get(get_namespace_metadata))
         .route("/v2/namespaces/{name}", post(write_namespace))
         .route("/v2/namespaces/{name}/query", post(query_namespace))
         .route("/v2/namespaces/{name}", delete(delete_namespace))
@@ -39,14 +40,48 @@ async fn health() -> impl IntoResponse {
 async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
     match state.storage.list_namespaces().await {
         Ok(names) => {
-            let namespaces = names
-                .into_iter()
-                .map(|id| NamespaceSummary { id })
-                .collect();
+            let mut namespaces = Vec::with_capacity(names.len());
+            for id in names {
+                let summary = match state.storage.namespace_metadata(&id).await {
+                    Ok(meta) => NamespaceSummary {
+                        id,
+                        index_cursor: Some(meta.index_cursor),
+                        wal_commit_seq: Some(meta.wal_commit_seq),
+                        unindexed_bytes: Some(meta.unindexed_bytes),
+                    },
+                    Err(_) => NamespaceSummary {
+                        id,
+                        index_cursor: None,
+                        wal_commit_seq: None,
+                        unindexed_bytes: None,
+                    },
+                };
+                namespaces.push(summary);
+            }
             (StatusCode::OK, Json(NamespacesResponse { namespaces })).into_response()
         }
         Err(e) => {
             error!("list namespaces: {e:#}");
+            storage_error_response(e)
+        }
+    }
+}
+
+async fn get_namespace_metadata(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match state.storage.namespace_metadata(&name).await {
+        Ok(meta) => (StatusCode::OK, Json(meta)).into_response(),
+        Err(e) => {
+            error!("namespace metadata {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "namespace not found"})),
+                )
+                    .into_response();
+            }
             storage_error_response(e)
         }
     }

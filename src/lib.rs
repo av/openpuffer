@@ -6,6 +6,7 @@
 //! HTTP routes (turbopuffer-compatible):
 //!   GET  /health
 //!   GET  /v1/namespaces
+//!   GET  /v1/namespaces/{name}      — namespace metadata (index cursor, WAL commit, unindexed bytes)
 //!   POST /v2/namespaces/{name}        — write (upsert_rows, upsert_columns, deletes)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
 //!   DELETE /v2/namespaces/{name}

@@ -44,7 +44,8 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 4. Assign `seq = wal_commit_seq + 1`.
 5. **PUT** `wal/{seq:08}.bin` (bincode payload) — durable before ACK.
 6. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
-7. HTTP ACK only after steps 5–6 succeed (**strong consistency**).
+7. **Wake** the async background indexer (non-blocking).
+8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
 ## Read path (current vs target)
 
@@ -61,12 +62,20 @@ Strong consistency: after a successful write, the next query sees data replayed 
 
 ## Background indexer
 
-After each durable WAL flush (v1: synchronous on write path):
+Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/indexer.rs)):
 
-- Read WAL from `index_cursor + 1` through `wal_commit_seq`.
-- **FTS:** merge upserts/deletes into `fts-{seq}.bin`, set `fts_segment_id`.
-- **Vector ANN:** rebuild centroid/cluster layout from all docs at `index_cursor` (see below), write `centroids.bin` + `clusters-{id}.bin`, set `vector_segment_id`, `vector_field`, `dimensions`.
-- CAS-advance `index_cursor` in `meta.json`.
+1. After each durable WAL flush, the write buffer **notifies** the indexer (`wake`) — no await on index build.
+2. A single tokio background task runs continuously:
+   - Waits up to **500ms** or until notified.
+   - Processes namespaces in the pending queue plus any namespace where `index_cursor < wal_commit_seq` (S3 prefix scan).
+3. For each lagging namespace:
+   - Read WAL from `index_cursor + 1` through `wal_commit_seq`.
+   - **FTS:** merge upserts/deletes into `fts-{seq}.bin`, set `fts_segment_id`.
+   - **Vector ANN:** rebuild centroid/cluster layout from all docs at `index_cursor` (see below), write `centroids.bin` + `clusters-{id}.bin`, set `vector_segment_id`, `vector_field`, `dimensions`.
+   - CAS-advance `index_cursor` in `meta.json`.
+4. On indexer errors: log, re-queue namespace, **retry** on next tick — writes are never blocked.
+
+**Metadata API:** `GET /v1/namespaces/{name}` and `GET /v1/namespaces` (per-ns fields) expose `index_cursor`, `wal_commit_seq`, and approximate `unindexed_bytes` (sum of WAL object sizes in the unindexed tail).
 
 ### Vector ANN (SPFresh-inspired, simplified)
 

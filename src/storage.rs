@@ -1,4 +1,5 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
+use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::vector::VectorIndex;
 use crate::meta::NamespaceMeta;
@@ -42,13 +43,36 @@ pub struct LoadedNamespace {
 
 impl Storage {
     pub fn new(client: Client, bucket: String) -> Arc<Self> {
-        let write_buffer =
-            WriteBufferManager::new(client.clone(), bucket.clone(), WriteBufferConfig::default());
+        let background_indexer =
+            BackgroundIndexer::spawn(client.clone(), bucket.clone());
+        let write_buffer = WriteBufferManager::new(
+            client.clone(),
+            bucket.clone(),
+            WriteBufferConfig::default(),
+            Some(background_indexer),
+        );
         Arc::new(Self {
             client,
             bucket,
             write_buffer,
             views: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    /// Namespace metadata for turbopuffer-style observability.
+    pub async fn namespace_metadata(&self, name: &str) -> Result<crate::models::NamespaceMetadata> {
+        let Some((meta, _)) =
+            crate::namespace::fetch_meta(&self.client, &self.bucket, name).await?
+        else {
+            return Err(anyhow!("namespace not found"));
+        };
+        let unindexed_bytes =
+            approx_unindexed_bytes(&self.client, &self.bucket, name, &meta).await;
+        Ok(crate::models::NamespaceMetadata {
+            id: name.to_string(),
+            index_cursor: meta.index_cursor,
+            wal_commit_seq: meta.wal_commit_seq,
+            unindexed_bytes,
         })
     }
 
