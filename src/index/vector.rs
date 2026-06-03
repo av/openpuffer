@@ -903,6 +903,8 @@ impl VectorIndex {
         self.reassign_drifted_members();
         self.refresh_fine_centroids();
         self.prune_empty_clusters();
+        // merge/reassign can grow clusters; enforce cap again before leaving maintenance.
+        self.split_oversized_clusters()?;
         Ok(())
     }
 
@@ -930,31 +932,72 @@ impl VectorIndex {
     }
 
     fn split_oversized_clusters(&mut self) -> Result<()> {
+        const MAX_ROUNDS: usize = 128;
+        for _ in 0..MAX_ROUNDS {
+            let oversized: Vec<u32> = self
+                .clusters
+                .iter()
+                .filter(|(_, c)| c.members.len() > MAX_CLUSTER_MEMBERS)
+                .map(|(id, _)| *id)
+                .collect();
+            if oversized.is_empty() {
+                return Ok(());
+            }
+            let mut progress = false;
+            for fine_id in &oversized {
+                if self.try_binary_split_oversized_cluster(*fine_id)? {
+                    progress = true;
+                }
+            }
+            if progress {
+                continue;
+            }
+            for fine_id in &oversized {
+                if self.try_multishard_oversized_cluster(*fine_id)? {
+                    progress = true;
+                }
+            }
+            if progress {
+                continue;
+            }
+            for fine_id in &oversized {
+                if self.relocate_excess_within_coarse(*fine_id)? {
+                    progress = true;
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Binary k-means split when a new fine centroid can be added (v2 or v3 under per-coarse cap).
+    fn try_binary_split_oversized_cluster(&mut self, mut fine_id: u32) -> Result<bool> {
         let dim = self.l0.dimensions as usize;
         let metric = self.l0.distance_metric;
         let element = self.l0.vector_element;
-        let oversized: Vec<u32> = self
-            .clusters
-            .iter()
-            .filter(|(_, c)| c.members.len() > MAX_CLUSTER_MEMBERS)
-            .map(|(id, _)| *id)
-            .collect();
-        for fine_id in oversized {
-            let Some((coarse_id, local_fine)) = self.coarse_local_from_global(fine_id) else {
-                continue;
-            };
+        let Some((coarse_id, mut local_fine)) = self.coarse_local_from_global(fine_id) else {
+            return Ok(false);
+        };
+        let mut progress = false;
+        const MAX_SPLITS_PER_CLUSTER: usize = 64;
+        for _ in 0..MAX_SPLITS_PER_CLUSTER {
+            if !self.can_add_fine_centroid_for_split(coarse_id) {
+                break;
+            }
             let members = self
                 .clusters
                 .get(&fine_id)
                 .map(|c| c.members.clone())
                 .unwrap_or_default();
             if members.len() <= MAX_CLUSTER_MEMBERS {
-                continue;
+                break;
             }
             let pairs = members_as_pairs(&members, dim, element);
             let sub_centroids = kmeans_centroids(&pairs, 2, dim, metric);
             if sub_centroids.len() < 2 {
-                continue;
+                break;
             }
             let assign = assign_to_centroids(&pairs, &sub_centroids, metric);
             let mut buckets: [Vec<ClusterMember>; 2] = [Vec::new(), Vec::new()];
@@ -967,33 +1010,238 @@ impl VectorIndex {
                 buckets[sub].push(m);
             }
             if buckets[0].is_empty() || buckets[1].is_empty() {
-                continue;
+                break;
             }
-            if self.can_add_fine_centroid(coarse_id) {
-                let new_local = self.append_fine_centroid(coarse_id, sub_centroids[1].clone())?;
-                let new_global = self.l0.global_fine_id(coarse_id, new_local);
-                if let Some(l1) = self.l1.get_mut(&coarse_id) {
-                    if (local_fine as usize) < l1.centroids.len() {
-                        l1.centroids[local_fine as usize] = sub_centroids[0].clone();
-                    }
+            let new_local = self.append_fine_centroid(coarse_id, sub_centroids[1].clone())?;
+            let new_global = self.l0.global_fine_id(coarse_id, new_local);
+            if let Some(l1) = self.l1.get_mut(&coarse_id) {
+                if (local_fine as usize) < l1.centroids.len() {
+                    l1.centroids[local_fine as usize] = sub_centroids[0].clone();
                 }
-                if let Some(cluster) = self.clusters.get_mut(&fine_id) {
-                    cluster.members = buckets[0].clone();
-                    cluster.centroid_id = fine_id;
-                }
-                self.clusters.insert(
-                    new_global,
-                    ClusterSegment {
-                        segment_id: self.l0.segment_id,
-                        centroid_id: new_global,
-                        members: buckets[1].clone(),
-                    },
-                );
+            }
+            if let Some(cluster) = self.clusters.get_mut(&fine_id) {
+                cluster.members = buckets[0].clone();
+                cluster.centroid_id = fine_id;
+            }
+            self.clusters.insert(
+                new_global,
+                ClusterSegment {
+                    segment_id: self.l0.segment_id,
+                    centroid_id: new_global,
+                    members: buckets[1].clone(),
+                },
+            );
+            progress = true;
+            let left = self
+                .clusters
+                .get(&fine_id)
+                .map(|c| c.members.len())
+                .unwrap_or(0);
+            let right = self
+                .clusters
+                .get(&new_global)
+                .map(|c| c.members.len())
+                .unwrap_or(0);
+            if left >= right {
+                local_fine = self
+                    .coarse_local_from_global(fine_id)
+                    .map(|(_, l)| l)
+                    .unwrap_or(local_fine);
             } else {
-                self.redistribute_to_existing_fines(coarse_id, fine_id, &buckets[0], &buckets[1])?;
+                fine_id = new_global;
+                local_fine = new_local;
             }
         }
-        Ok(())
+        Ok(progress)
+    }
+
+    /// When per-coarse fine cap is reached (v3), shard across existing fines via k-means.
+    fn try_multishard_oversized_cluster(&mut self, fine_id: u32) -> Result<bool> {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        let element = self.l0.vector_element;
+        let Some((coarse_id, _local_fine)) = self.coarse_local_from_global(fine_id) else {
+            return Ok(false);
+        };
+        let members = self
+            .clusters
+            .remove(&fine_id)
+            .map(|c| c.members)
+            .unwrap_or_default();
+        if members.len() <= MAX_CLUSTER_MEMBERS {
+            if !members.is_empty() {
+                self.clusters.insert(
+                    fine_id,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: fine_id,
+                        members,
+                    },
+                );
+            }
+            return Ok(false);
+        }
+        let l1 = match self.l1.get(&coarse_id) {
+            Some(l) => l,
+            None => {
+                self.clusters.insert(
+                    fine_id,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: fine_id,
+                        members,
+                    },
+                );
+                return Ok(false);
+            }
+        };
+        let num_fine = l1.num_fine.max(1) as usize;
+        let k = num_fine
+            .min(members.len().div_ceil(MAX_CLUSTER_MEMBERS))
+            .max(2)
+            .min(num_fine)
+            .min(members.len());
+        let pairs = members_as_pairs(&members, dim, element);
+        let sub_centroids = kmeans_centroids(&pairs, k, dim, metric);
+        if sub_centroids.is_empty() {
+            self.clusters.insert(
+                fine_id,
+                ClusterSegment {
+                    segment_id: self.l0.segment_id,
+                    centroid_id: fine_id,
+                    members,
+                },
+            );
+            return Ok(false);
+        }
+        let assign = assign_to_centroids(&pairs, &sub_centroids, metric);
+        let mut buckets: Vec<Vec<ClusterMember>> = vec![Vec::new(); k];
+        for m in members {
+            let sub = assign
+                .get(&m.doc_id)
+                .copied()
+                .unwrap_or(0)
+                .min((k - 1) as u32) as usize;
+            buckets[sub].push(m);
+        }
+        let mut placed = false;
+        for (sub_idx, bucket) in buckets.into_iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+            let target_local = (sub_idx % num_fine) as u32;
+            let target_global = self.l0.global_fine_id(coarse_id, target_local);
+            self.clusters
+                .entry(target_global)
+                .or_insert_with(|| ClusterSegment {
+                    segment_id: self.l0.segment_id,
+                    centroid_id: target_global,
+                    members: Vec::new(),
+                })
+                .members
+                .extend(bucket);
+            placed = true;
+        }
+        Ok(placed)
+    }
+
+    /// Move excess members from an overloaded cluster to the least-loaded sibling fine in the same coarse cell.
+    fn relocate_excess_within_coarse(&mut self, source_fine: u32) -> Result<bool> {
+        let dim = self.l0.dimensions as usize;
+        let metric = self.l0.distance_metric;
+        let Some((coarse_id, _)) = self.coarse_local_from_global(source_fine) else {
+            return Ok(false);
+        };
+        let excess = self
+            .clusters
+            .get(&source_fine)
+            .map(|c| c.members.len().saturating_sub(MAX_CLUSTER_MEMBERS))
+            .unwrap_or(0);
+        if excess == 0 {
+            return Ok(false);
+        }
+        let l1 = match self.l1.get(&coarse_id) {
+            Some(l) => l,
+            None => return Ok(false),
+        };
+        let mut target_local = None;
+        let mut best_load = usize::MAX;
+        for local in 0..l1.num_fine {
+            let global = self.l0.global_fine_id(coarse_id, local);
+            if global == source_fine {
+                continue;
+            }
+            let load = self
+                .clusters
+                .get(&global)
+                .map(|c| c.members.len())
+                .unwrap_or(0);
+            if load < best_load {
+                best_load = load;
+                target_local = Some(local);
+            }
+        }
+        let Some(target_local) = target_local else {
+            return Ok(false);
+        };
+        let target_global = self.l0.global_fine_id(coarse_id, target_local);
+        let target_centroid = l1
+            .centroids
+            .get(target_local as usize)
+            .cloned()
+            .unwrap_or_default();
+        let mut scored: Vec<(f64, ClusterMember)> = Vec::new();
+        if let Some(cluster) = self.clusters.get_mut(&source_fine) {
+            scored.reserve(cluster.members.len());
+            for m in cluster.members.drain(..) {
+                let v = member_as_f64(&m, dim);
+                let score = score_vector(&v, &target_centroid, metric);
+                scored.push((score, m));
+            }
+        }
+        if scored.len() <= MAX_CLUSTER_MEMBERS {
+            if !scored.is_empty() {
+                self.clusters.insert(
+                    source_fine,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: source_fine,
+                        members: scored.into_iter().map(|(_, m)| m).collect(),
+                    },
+                );
+            }
+            return Ok(false);
+        }
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let split_at = excess.min(scored.len().saturating_sub(1));
+        let (move_part, keep_part) = scored.split_at(split_at);
+        let moved: Vec<ClusterMember> = move_part.iter().map(|(_, m)| m.clone()).collect();
+        let keep: Vec<ClusterMember> = keep_part.iter().map(|(_, m)| m.clone()).collect();
+        if let Some(cluster) = self.clusters.get_mut(&source_fine) {
+            cluster.members = keep;
+        } else {
+            self.clusters.insert(
+                source_fine,
+                ClusterSegment {
+                    segment_id: self.l0.segment_id,
+                    centroid_id: source_fine,
+                    members: keep,
+                },
+            );
+        }
+        self.clusters
+            .entry(target_global)
+            .or_insert_with(|| ClusterSegment {
+                segment_id: self.l0.segment_id,
+                centroid_id: target_global,
+                members: Vec::new(),
+            })
+            .members
+            .extend(moved);
+        Ok(true)
     }
 
     fn can_add_fine_centroid(&self, coarse_id: u32) -> bool {
@@ -1004,6 +1252,37 @@ impl VectorIndex {
             .map(|&c| c as usize)
             .unwrap_or(0)
             < max
+    }
+
+    fn max_cluster_members_in_coarse(&self, coarse_id: u32) -> usize {
+        let start = self.l0.global_id_start(coarse_id);
+        let count = self
+            .l0
+            .fine_counts
+            .get(coarse_id as usize)
+            .copied()
+            .unwrap_or(0);
+        let end = start.saturating_add(count);
+        self.clusters
+            .iter()
+            .filter(|(fid, c)| (start..end).contains(fid))
+            .map(|(_, c)| c.members.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Allow adding fine centroids while any cluster in the coarse cell exceeds the member cap.
+    fn can_add_fine_centroid_for_split(&self, coarse_id: u32) -> bool {
+        if self.max_cluster_members_in_coarse(coarse_id) <= MAX_CLUSTER_MEMBERS {
+            return self.can_add_fine_centroid(coarse_id);
+        }
+        let current = self
+            .l0
+            .fine_counts
+            .get(coarse_id as usize)
+            .map(|&c| c as usize)
+            .unwrap_or(0);
+        current < MAX_FINE_PER_COARSE
     }
 
     /// Append a fine centroid at the end of `coarse_id`; shifts global ids for later coarse cells.
@@ -1047,51 +1326,6 @@ impl VectorIndex {
             }
         }
         Ok(new_local)
-    }
-
-    fn redistribute_to_existing_fines(
-        &mut self,
-        coarse_id: u32,
-        source_fine: u32,
-        bucket0: &[ClusterMember],
-        bucket1: &[ClusterMember],
-    ) -> Result<()> {
-        let dim = self.l0.dimensions as usize;
-        let metric = self.l0.distance_metric;
-        let l1 = self
-            .l1
-            .get(&coarse_id)
-            .ok_or_else(|| anyhow::anyhow!("missing L1 for coarse {coarse_id}"))?;
-        let mut target_local = 0u32;
-        let mut best_score = f64::NEG_INFINITY;
-        for local in 0..l1.num_fine {
-            let global = self.l0.global_fine_id(coarse_id, local);
-            if global == source_fine {
-                continue;
-            }
-            if let Some(c) = l1.centroids.get(local as usize) {
-                let probe = member_as_f64(&bucket1[0], dim);
-                let s = score_vector(&probe, c, metric);
-                if s > best_score {
-                    best_score = s;
-                    target_local = local;
-                }
-            }
-        }
-        let target_global = self.l0.global_fine_id(coarse_id, target_local);
-        if let Some(cluster) = self.clusters.get_mut(&source_fine) {
-            cluster.members = bucket0.to_vec();
-        }
-        self.clusters
-            .entry(target_global)
-            .or_insert_with(|| ClusterSegment {
-                segment_id: self.l0.segment_id,
-                centroid_id: target_global,
-                members: Vec::new(),
-            })
-            .members
-            .extend_from_slice(bucket1);
-        Ok(())
     }
 
     fn merge_tiny_clusters(&mut self) {
@@ -1140,6 +1374,22 @@ impl VectorIndex {
                 );
                 continue;
             }
+            let target_load = self
+                .clusters
+                .get(&target_global)
+                .map(|c| c.members.len())
+                .unwrap_or(0);
+            if target_load.saturating_add(members.len()) > MAX_CLUSTER_MEMBERS {
+                self.clusters.insert(
+                    fine_id,
+                    ClusterSegment {
+                        segment_id: self.l0.segment_id,
+                        centroid_id: fine_id,
+                        members,
+                    },
+                );
+                continue;
+            }
             self.clusters
                 .entry(target_global)
                 .or_insert_with(|| ClusterSegment {
@@ -1173,7 +1423,14 @@ impl VectorIndex {
                     .unwrap_or(current_local);
                 if best_local != current_local {
                     let dest = self.l0.global_fine_id(coarse_id, best_local);
-                    moves.push((m.doc_id.clone(), dest));
+                    let dest_load = self
+                        .clusters
+                        .get(&dest)
+                        .map(|c| c.members.len())
+                        .unwrap_or(0);
+                    if dest_load < MAX_CLUSTER_MEMBERS {
+                        moves.push((m.doc_id.clone(), dest));
+                    }
                 }
             }
         }
@@ -2367,13 +2624,15 @@ mod tests {
             })
             .collect();
 
+        // Pin v2 layout: incremental four-wave gate predates v3 env defaulting in AnnBuildConfig.
+        let build_v2 = AnnBuildConfig::default().with_ann_version(ANN_VERSION_V2);
         let mut index = VectorIndex::build(
             1,
             "embedding",
             DistanceMetric::CosineDistance,
             &wave0,
             &json!({ "embedding": format!("[{DIM}]f32") }),
-            AnnBuildConfig::default(),
+            build_v2,
         )
         .unwrap()
         .expect("initial index");
@@ -2414,6 +2673,71 @@ mod tests {
         let recall_final = recall_at_10(&index, &vectors, QUERIES);
         assert!(recall_final >= MIN_RECALL);
         let _ = TOP_K;
+    }
+
+    #[test]
+    fn spfresh_incremental_four_waves_20k_v3_without_forced_rebuild() {
+        const DIM: usize = 32;
+        const WAVE: usize = 5000;
+        const WAVES: usize = 4;
+        const MIN_RECALL: f64 = 0.80;
+        const QUERIES: usize = 20;
+
+        let wave0 = synthetic_wave_docs(0, WAVE, DIM);
+        let mut vectors: Vec<(String, Vec<f64>)> = wave0
+            .iter()
+            .map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            })
+            .collect();
+
+        let build_v3 = AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3);
+        let mut index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &wave0,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            build_v3,
+        )
+        .unwrap()
+        .expect("initial v3 index");
+        assert!(index.l0.is_v3());
+
+        for wave in 1..WAVES {
+            let start = wave * WAVE;
+            let batch = synthetic_wave_docs(start, WAVE, DIM);
+            for (id, v) in batch.iter().map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            }) {
+                vectors.push((id, v));
+            }
+            index
+                .apply_delta(&batch, &[])
+                .expect("apply_delta wave");
+            assert!(
+                !index.needs_full_rebuild(),
+                "v3 wave {wave}: should not force full rebuild (passes={})",
+                index.l0.maintenance_passes
+            );
+            assert!(
+                index.max_cluster_members() <= MAX_CLUSTER_MEMBERS,
+                "v3 wave {wave}: cluster size {} exceeds {}",
+                index.max_cluster_members(),
+                MAX_CLUSTER_MEMBERS
+            );
+            let recall = recall_at_10(&index, &vectors, QUERIES);
+            assert!(
+                recall >= MIN_RECALL,
+                "v3 wave {wave}: recall@10 {recall} below {MIN_RECALL}"
+            );
+        }
     }
 
     fn bench_synthetic_embedding(doc_index: usize, dim: usize) -> Vec<f64> {
