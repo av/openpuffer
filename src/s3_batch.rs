@@ -166,8 +166,17 @@ pub fn cold_plan_storage_roundtrips(plan: &ColdQueryPlan) -> u32 {
 }
 
 /// L0 + FTS + filter keys for cold query bootstrap (round 2).
+///
+/// FTS must be loaded here (not in the probed L1/cluster round) so hybrid
+/// `Sum`/`Product` queries have a BM25 index on the cold vector path.
 pub fn round2_bootstrap_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
     let mut keys = round1_index_keys(namespace, meta);
+    if meta.fts_segment_id > 0 && meta.index_cursor > 0 {
+        let fts_key = FtsSegment::key(namespace, meta.fts_segment_id);
+        if !keys.contains(&fts_key) {
+            keys.push(fts_key);
+        }
+    }
     if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
     }
@@ -558,7 +567,7 @@ pub async fn fetch_cold_index_bootstrap(
     let mut storage_roundtrips = 0u32;
 
     let r2_keys = round2_bootstrap_keys(namespace, meta);
-    let s3_keys_fetched = record_cold_s3_keys_fetched(r2_keys.len());
+    let mut s3_keys_fetched = record_cold_s3_keys_fetched(r2_keys.len());
     let fetched = if r2_keys.is_empty() {
         HashMap::new()
     } else {
@@ -568,7 +577,15 @@ pub async fn fetch_cold_index_bootstrap(
 
     let l0_by_field = decode_l0_by_field_from_fetched(namespace, meta, &fetched);
 
-    let fts = decode_fts_from_round(namespace, meta, &fetched)?;
+    let mut fts = decode_fts_from_round(namespace, meta, &fetched)?;
+    if fts.is_none() && meta.fts_segment_id > 0 && meta.index_cursor > 0 {
+        let fts_key = FtsSegment::key(namespace, meta.fts_segment_id);
+        if !fetched.contains_key(&fts_key) {
+            s3_keys_fetched = s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(1));
+            let extra = fetch_round(client, bucket, std::slice::from_ref(&fts_key)).await?;
+            fts = decode_fts_from_round(namespace, meta, &extra)?;
+        }
+    }
     let filter = decode_filter_from_round(namespace, meta, &fetched)?;
 
     Ok(ColdBootstrapArtifacts {
@@ -578,6 +595,32 @@ pub async fn fetch_cold_index_bootstrap(
         storage_roundtrips,
         s3_keys_fetched,
     })
+}
+
+/// After probed vector fetch, ensure FTS is present for hybrid BM25 (bootstrap should have loaded it).
+pub async fn ensure_cold_fts_for_hybrid(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    fts: &mut Option<FtsSegment>,
+    storage_roundtrips: &mut Option<u32>,
+    cold_s3_keys_fetched: &mut u32,
+) -> Result<()> {
+    if fts.is_some() || meta.fts_segment_id == 0 || meta.index_cursor == 0 {
+        return Ok(());
+    }
+    let fts_key = FtsSegment::key(namespace, meta.fts_segment_id);
+    let fetched = fetch_round(client, bucket, std::slice::from_ref(&fts_key)).await?;
+    *fts = decode_fts_from_round(namespace, meta, &fetched)?;
+    if fts.is_some() {
+        if let Some(rt) = storage_roundtrips {
+            *rt = rt.saturating_add(1);
+        }
+        *cold_s3_keys_fetched =
+            cold_s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(1));
+    }
+    Ok(())
 }
 
 /// Probed vector index for one query: L1 then clusters (one logical roundtrip).
@@ -1603,6 +1646,51 @@ mod tests {
             cold_fetch_sub_batch_count(plan.round3_keys.len(), DEFAULT_COLD_MAX_KEYS_PER_ROUND),
             4,
             "fetch_round would issue four capped sub-batches inside one roundtrip"
+        );
+    }
+
+    #[test]
+    fn plan_cold_query_hybrid_probe_includes_fts_in_round2() {
+        let meta = NamespaceMeta {
+            index_cursor: 3,
+            fts_segment_id: 7,
+            filter_segment_id: 2,
+            vector_segment_id: 3,
+            vector_field: "emb".into(),
+            dimensions: 2,
+            vector_fields: vec![VectorFieldConfig {
+                name: "emb".into(),
+                dimensions: 2,
+                segment_id: 3,
+                segment_ids: vec![3],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let l0 = CentroidIndexL0 {
+            vector_field: "emb".into(),
+            num_coarse: 4,
+            num_fine_total: 16,
+            dimensions: 2,
+            ..Default::default()
+        };
+        let mut l0_map = HashMap::new();
+        l0_map.insert("emb".into(), l0);
+        let plan = plan_cold_query(
+            "ns",
+            &meta,
+            &[("emb".into(), vec![1.0, 0.0])],
+            &l0_map,
+            None,
+            ColdPlanOpts {
+                include_wal_round: false,
+                include_wal_tail: false,
+            },
+        );
+        assert!(
+            plan.round2_keys.iter().any(|k| k.contains("fts-00000007")),
+            "hybrid cold plan must load FTS in bootstrap round 2, got {:?}",
+            plan.round2_keys
         );
     }
 

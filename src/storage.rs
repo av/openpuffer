@@ -527,6 +527,18 @@ impl Storage {
                 .saturating_add(probed_clusters);
             loaded.vectors.insert(field, vindex);
         }
+        if cold_batch {
+            crate::s3_batch::ensure_cold_fts_for_hybrid(
+                &self.client,
+                &self.bucket,
+                name,
+                &loaded.meta,
+                &mut loaded.fts,
+                &mut loaded.storage_roundtrips,
+                &mut loaded.cold_s3_keys_fetched,
+            )
+            .await?;
+        }
         Ok(())
     }
 

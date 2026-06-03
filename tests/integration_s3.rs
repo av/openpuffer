@@ -74,6 +74,7 @@ const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 const NAMESPACE_COLD_HYBRID_FILTER: &str = "itest-cold-hybrid-filter";
+const NAMESPACE_COLD_HYBRID_10K: &str = "itest-cold-hybrid-10k";
 const NAMESPACE_COLD_TWO_VEC: &str = "itest-cold-two-vector-fields";
 const NAMESPACE_COLD_INDEX_LAG_FILTER: &str = "itest-cold-index-lag-filter";
 const NAMESPACE_COLD_EMPTY_DOCS: &str = "itest-cold-empty-docs";
@@ -4353,6 +4354,158 @@ async fn cold_hybrid_sum_vector_filter_on_minio() {
         .as_u64()
         .expect("ann_probed_clusters");
     assert!(probed >= 1, "hybrid cold query must probe ANN clusters, got {probed}");
+}
+
+/// 10k indexed namespace: cold hybrid `Sum` (vector + BM25) + filter; FTS in bootstrap round 2.
+#[tokio::test]
+async fn cold_hybrid_10k_fts_vector_filter_on_minio() {
+    use openpuffer::index::fts::FtsSegment;
+    use openpuffer::s3_batch::{
+        fetch_cold_index_bootstrap, plan_cold_query, round2_bootstrap_keys, ColdPlanOpts,
+    };
+
+    let test_started = std::time::Instant::now();
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_HYBRID_10K;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "tier": {"type": "string", "filterable": true},
+        "embedding": "[128]f32"
+    });
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body = json!({ "upsert_columns": recall_filter_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(300)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(
+        meta.index_cursor, meta.wal_commit_seq,
+        "namespace must be fully indexed before cold hybrid query"
+    );
+    assert!(
+        meta.fts_segment_id > 0,
+        "10k fixture must have FTS segment for hybrid BM25 leg"
+    );
+
+    let query_vec: Vec<f64> = (0..STRESS_DIM)
+        .map(|d| (d as f64 * 0.02).cos())
+        .collect();
+    let fts_key = FtsSegment::key(ns, meta.fts_segment_id);
+    let r2_keys = round2_bootstrap_keys(ns, &meta);
+    assert!(
+        r2_keys.iter().any(|k| k.contains("fts-")),
+        "bootstrap round2 must list FTS key for hybrid cold, keys={r2_keys:?}"
+    );
+    assert!(
+        r2_keys.contains(&fts_key),
+        "bootstrap round2 must include latest fts segment {fts_key}"
+    );
+
+    let bootstrap = fetch_cold_index_bootstrap(&fixture.client, &fixture.bucket, ns, &meta)
+        .await
+        .expect("cold bootstrap fetch");
+    assert!(
+        bootstrap.fts.is_some(),
+        "cold bootstrap on probed vector path must decode FTS index"
+    );
+    let plan = plan_cold_query(
+        ns,
+        &meta,
+        &[("embedding".into(), query_vec.clone())],
+        &bootstrap.l0_by_field,
+        None,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+    );
+    assert!(
+        plan.round2_keys.iter().any(|k| k.contains("fts-")),
+        "planner round2 must include FTS for hybrid cold, keys={:?}",
+        plan.round2_keys
+    );
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": [
+                "Sum",
+                ["vector", "ANN", "embedding", query_vec],
+                ["BM25", "text", "stressterm"]
+            ],
+            "filters": ["tier", "Eq", "pro"],
+            "top_k": 10,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let rows = body["rows"].as_array().expect("hybrid rows");
+    assert!(!rows.is_empty(), "cold hybrid+filter on 10k must return rows");
+    for row in rows {
+        let id = row["id"].as_str().expect("row id");
+        let idx: usize = id
+            .strip_prefix("doc-")
+            .and_then(|s| s.parse().ok())
+            .expect("doc id format doc-N");
+        assert_eq!(
+            idx % 20,
+            0,
+            "filter tier=pro must only return pro docs, got {id}"
+        );
+    }
+
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips <= 4,
+        "cold hybrid 10k storage_roundtrips {roundtrips} must be ≤ 4"
+    );
+    let probed = perf["ann_probed_clusters"]
+        .as_u64()
+        .expect("ann_probed_clusters");
+    assert!(
+        probed >= 1,
+        "hybrid cold 10k must probe ANN clusters, got {probed}"
+    );
+    let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
+    assert!(
+        ratio < 0.20,
+        "cold hybrid candidates_ratio {ratio} should stay sub-linear on 10k"
+    );
+
+    assert!(
+        test_started.elapsed() < Duration::from_secs(360),
+        "cold_hybrid_10k test exceeded 360s wall clock"
+    );
 }
 
 /// Cold path: two vector columns — probed fetch only for the `rank_by` field.

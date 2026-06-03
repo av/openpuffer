@@ -432,6 +432,9 @@
 - label: cold vector query S3 cluster GET count is bounded by probe plan not num_fine_total
   command: grep -q 'fn cold_vector_query_cluster_gets_bounded_by_probe_plan' tests/integration_s3.rs && cargo test -F integration cold_vector_query_cluster_gets_bounded_by_probe_plan -q --test integration_s3
   tags: [spec, cold, implemented]
+- label: cold hybrid Sum vector BM25 filter on 10k loads FTS in bootstrap round 2 with storage_roundtrips at most 4
+  command: grep -q 'fn cold_hybrid_10k_fts_vector_filter_on_minio' tests/integration_s3.rs && cargo test -F integration cold_hybrid_10k_fts_vector_filter_on_minio -q --test integration_s3
+  tags: [spec, cold, implemented]
 - label: nightly bench_cold_100k recall@10 at least 0.88 and candidates_ratio below 0.20
   command: python3 -c "import json; d=json.load(open('benchmarks/results/nightly-100k.json')); assert d['benchmark']=='cold_100k' and d['recall_at_10']>=0.88 and d['candidates_ratio']<0.20 and d['storage_roundtrips']<=4" && grep -q 'async fn bench_cold_100k_nightly' tests/bench_cold.rs && grep -A2 'bench_cold_100k_nightly' tests/bench_cold.rs | grep -q '#\[ignore'
   tags: [spec, cold, bench, implemented]
