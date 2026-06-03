@@ -11,7 +11,7 @@
 #   OPENPUFFER_INGEST_TIER=l1 ./scripts/ingest-large.sh
 #
 # After ingest completes, run cold bench:
-#   OPENPUFFER_BENCH_DOCS=100000 OPENPUFFER_BENCH_NAMESPACE=bench-large-100k ./scripts/bench-1m.sh
+#   ./scripts/bench-large.sh --tier l1
 #
 # See docs/PLAN_LARGE_DATASET_BENCHMARK.md (A2) and docs/BENCHMARKS.md § 1M ingest cadence.
 set -euo pipefail
@@ -420,4 +420,4 @@ wait_until_indexed
 NS_META="$(verify_namespace_meta)"
 write_results_json "$NS_META"
 
-echo "Ingest complete. Next: OPENPUFFER_BENCH_DOCS=${NUM_DOCS} OPENPUFFER_BENCH_NAMESPACE=${NAMESPACE} ./scripts/bench-1m.sh"
+echo "Ingest complete. Next: OPENPUFFER_BENCH_NAMESPACE=${NAMESPACE} ./scripts/bench-large.sh --tier ${TIER}"
