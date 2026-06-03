@@ -141,6 +141,21 @@ openpuffer serve \
 | `--ann-coarse-probe` / `--ann-fine-probe`, `OPENPUFFER_ANN_COARSE_PROBE` / `OPENPUFFER_ANN_FINE_PROBE` | ANN L0/L1 probe counts at index build (defaults 4 / 2) |
 | `--ann-rerank`, `OPENPUFFER_ANN_RERANK` | Exact re-rank over probed ANN pool (`1`/`true`; default off) |
 
+### Prometheus metrics
+
+Build with `--features metrics` (`cargo build --release --features metrics`). The server exposes **`GET /metrics`** (Prometheus text).
+
+Cold/ANN counters (increment on probed cold loads and vector ANN queries):
+
+| Metric | Meaning |
+|--------|---------|
+| `openpuffer_cold_s3_keys_fetched` | S3 object keys fetched on cold batch plans (each parallel sub-batch key counts once) |
+| `openpuffer_ann_probed_clusters` | Cluster segments selected by ANN probe planning per vector query |
+
+Also exported: `openpuffer_wal_commits_total`, `openpuffer_index_lag_segments`, `openpuffer_s3_get_total`, `openpuffer_query_duration_seconds`, `openpuffer_cold_query_duration_seconds`.
+
+Per-query JSON (`POST …/query`) reports the same cold signals as `performance.cold_s3_keys_fetched` and `performance.ann_probed_clusters` without the metrics feature.
+
 ### WAL corrupt policy
 
 v1 WAL segments on S3 use `[0x01][bincode WalEntry][crc32 LE]`. On replay, openpuffer verifies the CRC over the payload. If a segment is truncated, tampered, or has a bad checksum:
@@ -178,6 +193,7 @@ Integration coverage: `corrupt_wal_segment_on_minio_fail_and_skip_policies` in `
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Readiness |
+| GET | `/metrics` | Prometheus scrape (`--features metrics`) |
 | GET | `/v1/namespaces` | List namespaces + metadata |
 | GET | `/health?deep=1` | S3 probe (`HeadBucket` + `openpuffer/` read); `degraded` if down |
 | GET | `/v1/namespaces/{name}` | `approx_row_count`, `index_status`, `unindexed_bytes`, cursors |
