@@ -39,6 +39,7 @@ cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four --test bench_
 |------|------|---------|-------------|
 | CI baseline | 10k | `cargo test -F bench bench_cold_10k_baseline` | MinIO testcontainers |
 | Nightly | 100k | `cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture` | MinIO (`#[ignore]`, ~15–30 min) |
+| Nightly (lib) | 100k ANN | `cargo test --lib 'recall_at_10_100k|ann_v3_built_index' -- --ignored --nocapture` | In-memory v3 (`#[ignore]`, ~4 min each) |
 | Manual | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
 
 ## 1M manual (AWS)
@@ -49,6 +50,16 @@ cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four --test bench_
 4. Run `scripts/bench-1m.sh` or cold-query with `--cache-dir=""`.
 5. Record `benchmarks/results/1m-aws.json`: `storage_roundtrips ≤ 4`, `recall@10 ≥ 0.85`, p50 **< 600ms**.
 
+## Phase B ANN gates (lib, CI + nightly)
+
+| Gate | CI command | Nightly (full 100k build) |
+|------|------------|---------------------------|
+| v3 object count @ 100k | `cargo test --lib ann_v3_index_object_count_100k_under_five_hundred` | `cargo test --lib ann_v3_built_index_object_count_100k_under_five_hundred -- --ignored` |
+| v3 vs v2 @ 10k (+0.05) | `cargo test --lib recall_v3_at_least_five_points_above_v2_on_10k_fixture` | — |
+| recall@10 @ 100k ≥ 0.90 | sizing + spot-check in CI | `cargo test --lib recall_at_10_100k_synthetic_at_least_point_nine -- --ignored` |
+
+Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests set `AnnBuildConfig::with_ann_version(3)` directly.
+
 ## Related tests
 
 - `cargo test -F perf` — 5k in-memory `candidates_ratio < 0.12`
@@ -58,6 +69,7 @@ cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four --test bench_
 ## Facts
 
 ```bash
-facts check --tags cold,ann   # @spec gates; fail until Phases A/B
+facts check --tags ann        # Phase B @spec gates (7 facts, includes ignored 100k recall)
+facts check --tags cold,ann   # cold + ann program gates
 facts ll --tags spec          # list program spec facts
 ```

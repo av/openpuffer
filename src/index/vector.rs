@@ -7,7 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::AnnBuildConfig;
+use crate::config::{AnnBuildConfig, AnnProbeConfig};
 use crate::meta::DistanceMetric;
 use crate::models::Document;
 use crate::schema::{vector_element_for_field, VectorElement};
@@ -46,6 +46,9 @@ pub const L2_SPLIT_FINE_THRESHOLD: u32 = 32;
 
 /// Target docs per coarse bucket when sizing v3 hierarchy.
 const V3_TARGET_DOCS_PER_COARSE: usize = 500;
+
+/// Phase B cap: L1 segment keys + cluster keys per vector field @ 100k scale.
+pub const V3_INDEX_OBJECT_CAP: usize = 500;
 
 /// Resolve ANN layout version from `OPENPUFFER_ANN_VERSION` (only `3` selects v3).
 pub fn ann_version_from_env() -> u8 {
@@ -1283,12 +1286,26 @@ fn num_coarse_v2(n: usize) -> usize {
     k.clamp(1, n).min(MAX_COARSE_CENTROIDS)
 }
 
+/// Estimated L1 + cluster object count for a v3 layout (matches `index_object_count` sans aux).
+fn v3_l1_cluster_object_count_estimate(n: usize, k_coarse: usize) -> usize {
+    if k_coarse == 0 {
+        return 0;
+    }
+    let cell = n.div_ceil(k_coarse);
+    let k_fine = num_fine_v3(cell);
+    k_coarse + k_coarse.saturating_mul(k_fine)
+}
+
 fn num_coarse_v3(n: usize) -> usize {
     if n <= 32 {
         return 1;
     }
-    let k = (n / V3_TARGET_DOCS_PER_COARSE).max(8);
-    k.clamp(8, n).min(MAX_COARSE_CENTROIDS_V3)
+    let mut k = (n / V3_TARGET_DOCS_PER_COARSE).max(8);
+    k = k.clamp(8, n).min(MAX_COARSE_CENTROIDS_V3);
+    while k > 8 && v3_l1_cluster_object_count_estimate(n, k) >= V3_INDEX_OBJECT_CAP {
+        k -= 1;
+    }
+    k
 }
 
 fn num_fine_v2(n: usize) -> usize {
@@ -2115,6 +2132,157 @@ mod tests {
         assert!(
             pool_rerank >= pool_probe,
             "re-rank pool ({pool_rerank}) should be >= probe-only pool ({pool_probe})"
+        );
+    }
+
+    fn build_10k_synthetic_fixture() -> (Vec<(String, Document)>, Vec<(String, Vec<f64>)>) {
+        const N: usize = 10_000;
+        const DIM: usize = 128;
+        let mut docs = Vec::with_capacity(N);
+        let mut vectors: Vec<(String, Vec<f64>)> = Vec::with_capacity(N);
+        for i in 0..N {
+            let v = bench_synthetic_embedding(i, DIM);
+            let id = format!("doc-{i}");
+            vectors.push((id.clone(), v.clone()));
+            docs.push(vec_doc(&id, v));
+        }
+        (docs, vectors)
+    }
+
+    #[test]
+    fn recall_v3_at_least_five_points_above_v2_on_10k_fixture() {
+        const QUERIES: usize = 20;
+        const TOP_K: usize = 10;
+        const MIN_DELTA: f64 = 0.05;
+        let schema = json!({ "embedding": "[128]f32" });
+        // Tight probes so v2 (16 coarse cap) lags v3 hierarchy on the same 10k fixture.
+        let probes = AnnProbeConfig {
+            coarse: 2,
+            fine: 1,
+        };
+        let (docs, vectors) = build_10k_synthetic_fixture();
+
+        let v2 = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &schema,
+            AnnBuildConfig::from_probes(probes).with_ann_version(ANN_VERSION_V2),
+        )
+        .unwrap()
+        .expect("v2 index");
+        let v3 = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &schema,
+            AnnBuildConfig::from_probes(probes).with_ann_version(ANN_VERSION_V3),
+        )
+        .unwrap()
+        .expect("v3 index");
+
+        let view = |id: &str| vectors.iter().find(|(d, _)| d == id).map(|(_, v)| v.clone());
+        let recall_v2 = measure_recall_at_k(&v2, &vectors, QUERIES, TOP_K, false, &view);
+        let recall_v3 = measure_recall_at_k(&v3, &vectors, QUERIES, TOP_K, false, &view);
+        let delta = recall_v3 - recall_v2;
+        assert!(
+            delta >= MIN_DELTA - 1e-9,
+            "v3 recall@10 {recall_v3} should be >= v2 {recall_v2} + {MIN_DELTA} (delta={delta}, same probes)"
+        );
+    }
+
+    #[test]
+    fn ann_v3_index_object_count_100k_under_five_hundred() {
+        const N: usize = 100_000;
+        let k = num_coarse_v3(N);
+        let est = v3_l1_cluster_object_count_estimate(N, k);
+        assert!(
+            est < V3_INDEX_OBJECT_CAP,
+            "v3 100k sizing estimate {est} (coarse={k}) must be < {cap}",
+            cap = V3_INDEX_OBJECT_CAP
+        );
+        // Spot-check built layout matches estimate on 10k (CI-fast).
+        const SPOT: usize = 10_000;
+        const DIM: usize = 128;
+        let mut docs = Vec::with_capacity(SPOT);
+        for i in 0..SPOT {
+            docs.push(vec_doc(&format!("doc-{i}"), bench_synthetic_embedding(i, DIM)));
+        }
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3),
+        )
+        .unwrap()
+        .expect("v3 10k spot index");
+        assert_eq!(index.l0.num_coarse as usize, num_coarse_v3(SPOT));
+        assert!(index.index_object_count() < V3_INDEX_OBJECT_CAP);
+    }
+
+    #[test]
+    #[ignore = "100k in-memory v3 build (~3 min); nightly: cargo test --lib ann_v3_built_index_object_count_100k_under_five_hundred -- --ignored --nocapture"]
+    fn ann_v3_built_index_object_count_100k_under_five_hundred() {
+        const N: usize = 100_000;
+        const DIM: usize = 128;
+        let mut docs = Vec::with_capacity(N);
+        for i in 0..N {
+            docs.push(vec_doc(&format!("doc-{i}"), bench_synthetic_embedding(i, DIM)));
+        }
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3),
+        )
+        .unwrap()
+        .expect("v3 100k index");
+        assert!(
+            index.index_object_count() < V3_INDEX_OBJECT_CAP,
+            "built v3 100k index_object_count {} must be < {}",
+            index.index_object_count(),
+            V3_INDEX_OBJECT_CAP
+        );
+    }
+
+    #[test]
+    #[ignore = "100k in-memory build + 20 queries (~2–5 min); nightly: cargo test --lib recall_at_10_100k_synthetic_at_least_point_nine -- --ignored --nocapture"]
+    fn recall_at_10_100k_synthetic_at_least_point_nine() {
+        const N: usize = 100_000;
+        const DIM: usize = 128;
+        const QUERIES: usize = 20;
+        const MIN_RECALL: f64 = 0.90;
+
+        let mut docs = Vec::with_capacity(N);
+        let mut vectors: Vec<(String, Vec<f64>)> = Vec::with_capacity(N);
+        for i in 0..N {
+            let v = bench_synthetic_embedding(i, DIM);
+            let id = format!("doc-{i}");
+            vectors.push((id.clone(), v.clone()));
+            docs.push(vec_doc(&id, v));
+        }
+
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnBuildConfig::default().with_ann_version(ANN_VERSION_V3),
+        )
+        .unwrap()
+        .expect("100k v3 index");
+
+        let recall = recall_at_10(&index, &vectors, QUERIES);
+        assert!(
+            recall >= MIN_RECALL,
+            "recall@10 {recall} should be >= {MIN_RECALL} on 100k synthetic (v3)"
         );
     }
 

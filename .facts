@@ -397,8 +397,14 @@
 # index/ann
 
 - label: recall@10 on 100k synthetic vectors is at least 0.90
-  command: grep -q 'fn recall_at_10_100k_synthetic_at_least_point_nine' src/index/vector.rs && cargo test --lib recall_at_10_100k_synthetic_at_least_point_nine -q
-  tags: [spec, ann]
+  command: grep -q 'fn recall_at_10_100k_synthetic_at_least_point_nine' src/index/vector.rs && grep -B1 'recall_at_10_100k_synthetic_at_least_point_nine' src/index/vector.rs | grep -q '#\[ignore' && cargo test --lib recall_at_10_100k_synthetic_at_least_point_nine -- --ignored -q
+  tags: [spec, ann, implemented]
+- label: v3 index L1 plus cluster object count under 500 at 100k scale
+  command: grep -q 'fn ann_v3_index_object_count_100k_under_five_hundred' src/index/vector.rs && grep -q 'V3_INDEX_OBJECT_CAP' src/index/vector.rs && cargo test --lib ann_v3_index_object_count_100k_under_five_hundred -q
+  tags: [spec, ann, implemented]
+- label: v3 recall@10 at least five points above v2 on identical 10k synthetic fixture with same probes
+  command: grep -q 'fn recall_v3_at_least_five_points_above_v2_on_10k_fixture' src/index/vector.rs && cargo test --lib recall_v3_at_least_five_points_above_v2_on_10k_fixture -q
+  tags: [spec, ann, implemented]
 - label: CentroidIndexL0 ann_version 3 segments roundtrip and v2 segments still load
   command: grep -q 'fn ann_version_v3_roundtrip' src/index/vector.rs && grep -q 'fn ann_version_v2_legacy_segment_still_loads' src/index/vector.rs && cargo test --lib ann_version -q
   tags: [spec, ann, implemented]
