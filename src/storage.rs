@@ -378,7 +378,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            let vectors = crate::indexer::load_vector_indexes_for_query(
+            let cold_vector_l0 = crate::indexer::load_vector_l0_for_query(
                 &self.client,
                 &self.bucket,
                 name,
@@ -394,7 +394,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            (fts, vectors, HashMap::new(), filter_index, 0)
+            (fts, HashMap::new(), cold_vector_l0, filter_index, 0)
         };
 
         let mut storage_roundtrips = if cold_batch {
@@ -446,7 +446,7 @@ impl Storage {
         })
     }
 
-    /// Fetch probed L1 + cluster segments for vector `rank_by` queries (cold path only).
+    /// Fetch probed L1 + cluster segments for vector `rank_by` queries (cold S3 or warm cache).
     pub async fn finish_cold_vector_probes(
         &self,
         name: &str,
@@ -456,6 +456,7 @@ impl Storage {
         if loaded.cold_vector_l0.is_empty() || probes.is_empty() {
             return Ok(());
         }
+        let cold_batch = !self.cache.enabled();
         let mut by_field: HashMap<String, Vec<f64>> = HashMap::new();
         for (field, query) in probes {
             by_field.insert(field.clone(), query.clone());
@@ -467,20 +468,55 @@ impl Storage {
             let Some(l0) = loaded.cold_vector_l0.remove(&field) else {
                 continue;
             };
-            let (vindex, probe_roundtrips) = crate::s3_batch::fetch_cold_vector_probed(
-                &self.client,
-                &self.bucket,
-                name,
-                &loaded.meta,
-                &field,
-                l0,
-                &query,
-            )
-            .await?;
+            let vindex = if cold_batch {
+                let (vindex, probe_roundtrips) = crate::s3_batch::fetch_cold_vector_probed(
+                    &self.client,
+                    &self.bucket,
+                    name,
+                    &loaded.meta,
+                    &field,
+                    l0,
+                    &query,
+                )
+                .await?;
+                if let Some(rt) = loaded.storage_roundtrips.as_mut() {
+                    *rt = rt.saturating_add(probe_roundtrips);
+                }
+                vindex
+            } else {
+                crate::indexer::load_vector_index_probed_for_query(
+                    &self.client,
+                    &self.bucket,
+                    name,
+                    &loaded.meta,
+                    &field,
+                    l0,
+                    &query,
+                    &self.cache,
+                )
+                .await?
+            };
             loaded.vectors.insert(field, vindex);
-            if let Some(rt) = loaded.storage_roundtrips.as_mut() {
-                *rt = rt.saturating_add(probe_roundtrips);
-            }
+        }
+        Ok(())
+    }
+
+    /// Load full vector indexes for recall / evaluation (not the per-query ANN hot path).
+    pub async fn load_vector_indexes_full_for_eval(
+        &self,
+        name: &str,
+        loaded: &mut LoadedNamespace,
+    ) -> Result<()> {
+        let indexes = crate::indexer::load_vector_indexes_full_for_eval(
+            &self.client,
+            &self.bucket,
+            name,
+            &loaded.meta,
+            &self.cache,
+        )
+        .await?;
+        for (field, idx) in indexes {
+            loaded.vectors.insert(field, idx);
         }
         Ok(())
     }

@@ -136,7 +136,7 @@ pub async fn index_wal_range(
         for vfield_name in
             vector_fields_to_index(&meta.schema, &meta, upserts.first().map(|(_, d)| d))
         {
-            let mut vindex = load_vector_index_for_field(
+            let mut vindex = load_vector_index_full_for_field(
                 client,
                 bucket,
                 namespace,
@@ -888,15 +888,38 @@ pub async fn load_fts_segment_for_query(
     .await
 }
 
-/// Load vector ANN index for one field (centroids + all cluster segments).
-pub async fn load_vector_index_for_field(
+/// Load L0 centroids for all indexed vector fields (query bootstrap; L1/clusters are probed per query).
+pub async fn load_vector_l0_for_query(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    cache: &Arc<SegmentCache>,
+) -> Result<HashMap<String, CentroidIndexL0>> {
+    let mut out = HashMap::new();
+    for cfg in crate::meta::effective_vector_fields(meta) {
+        if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
+            continue;
+        }
+        if let Some(l0) =
+            load_vector_l0_for_field(client, bucket, namespace, meta, &cfg.name, cache).await?
+        {
+            if l0.num_fine_total > 0 {
+                out.insert(cfg.name.clone(), l0);
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn load_vector_l0_for_field(
     client: &Client,
     bucket: &str,
     namespace: &str,
     meta: &NamespaceMeta,
     field: &str,
     cache: &Arc<SegmentCache>,
-) -> Result<Option<VectorIndex>> {
+) -> Result<Option<CentroidIndexL0>> {
     let cfg = crate::meta::effective_vector_fields(meta)
         .into_iter()
         .find(|f| f.name == field);
@@ -921,21 +944,64 @@ pub async fn load_vector_index_for_field(
     let Some(l0_bytes) = l0_bytes else {
         return Ok(None);
     };
-    let l0 = CentroidIndexL0::decode(&l0_bytes)?;
+    Ok(Some(CentroidIndexL0::decode(&l0_bytes)?))
+}
 
-    if cache.enabled() {
-        let prefetch_keys: Vec<String> = (0..l0.num_coarse)
-            .map(|c| CentroidIndexL1::key(namespace, field, c))
-            .chain(
-                (0..l0.num_fine_total).map(|fid| ClusterSegment::key(namespace, field, fid)),
-            )
-            .collect();
-        Arc::clone(cache).prefetch_background(
-            client.clone(),
-            bucket.to_string(),
-            prefetch_keys,
-        );
+/// Probed L1 + cluster load via segment cache (warm query path; mirrors [`crate::s3_batch::fetch_cold_vector_probed`]).
+pub async fn load_vector_index_probed_for_query(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: CentroidIndexL0,
+    query: &[f64],
+    cache: &Arc<SegmentCache>,
+) -> Result<VectorIndex> {
+    let l1_keys = crate::s3_batch::l1_keys_for_query_probe(namespace, meta, field, &l0, query);
+    let mut fetched = fetch_index_objects_from_cache(client, bucket, cache, &l1_keys).await?;
+    let cluster_keys = crate::s3_batch::cluster_keys_for_query_after_l1(
+        namespace, meta, field, &l0, &fetched, query,
+    )?;
+    let cluster_bytes =
+        fetch_index_objects_from_cache(client, bucket, cache, &cluster_keys).await?;
+    fetched.extend(cluster_bytes);
+    crate::s3_batch::assemble_vector_index_probed(namespace, meta, field, l0, &fetched, query)
+}
+
+async fn fetch_index_objects_from_cache(
+    client: &Client,
+    bucket: &str,
+    cache: &Arc<SegmentCache>,
+    keys: &[String],
+) -> Result<HashMap<String, Vec<u8>>> {
+    let mut out = HashMap::new();
+    for key in keys {
+        if let Some(bytes) = cache.get_bytes(client, bucket, key).await? {
+            out.insert(key.clone(), bytes);
+        }
     }
+    Ok(out)
+}
+
+/// Full vector index for one field (indexer maintenance, recall, warm prefetch — not per-query ANN).
+pub async fn load_vector_index_full_for_field(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    cache: &Arc<SegmentCache>,
+) -> Result<Option<VectorIndex>> {
+    let Some(l0) = load_vector_l0_for_field(client, bucket, namespace, meta, field, cache).await?
+    else {
+        return Ok(None);
+    };
+    if l0.num_fine_total == 0 {
+        return Ok(None);
+    }
+
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
 
     let mut l1 = HashMap::new();
     for coarse_id in 0..l0.num_coarse {
@@ -988,8 +1054,8 @@ pub async fn load_vector_index_for_field(
     }))
 }
 
-/// Load all indexed vector columns for queries.
-pub async fn load_vector_indexes_for_query(
+/// Load full indexes for all vector fields (recall evaluation, explicit warm prefetch).
+pub async fn load_vector_indexes_full_for_eval(
     client: &Client,
     bucket: &str,
     namespace: &str,
@@ -998,31 +1064,15 @@ pub async fn load_vector_indexes_for_query(
 ) -> Result<HashMap<String, VectorIndex>> {
     let mut out = HashMap::new();
     for cfg in crate::meta::effective_vector_fields(meta) {
-        if let Some(idx) =
-            load_vector_index_for_field(client, bucket, namespace, meta, &cfg.name, cache).await?
+        if let Some(idx) = load_vector_index_full_for_field(
+            client, bucket, namespace, meta, &cfg.name, cache,
+        )
+        .await?
         {
             out.insert(cfg.name.clone(), idx);
         }
     }
     Ok(out)
-}
-
-/// Load primary vector index (first column) — legacy helper.
-pub async fn load_vector_index_for_query(
-    client: &Client,
-    bucket: &str,
-    namespace: &str,
-    meta: &NamespaceMeta,
-    cache: &Arc<SegmentCache>,
-) -> Result<Option<VectorIndex>> {
-    let field = crate::meta::effective_vector_fields(meta)
-        .first()
-        .map(|f| f.name.clone())
-        .unwrap_or_else(|| meta.vector_field.clone());
-    if field.is_empty() {
-        return Ok(None);
-    }
-    load_vector_index_for_field(client, bucket, namespace, meta, &field, cache).await
 }
 
 /// Replay WAL `from..=to` one segment at a time; apply FTS/filter deltas per batch.
@@ -1250,6 +1300,44 @@ mod tests {
         let queue = idx.queued_namespaces().await;
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.front().map(String::as_str), Some("ns-a"));
+    }
+
+    #[test]
+    fn probed_cluster_ids_bounded_vs_full_index() {
+        use crate::index::vector::{DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE};
+        use crate::s3_batch::fine_ids_for_probed_query;
+
+        let l0 = CentroidIndexL0 {
+            vector_field: "emb".into(),
+            num_coarse: 32,
+            num_fine_total: 4000,
+            fine_counts: vec![125; 32],
+            centroids: vec![vec![0.0; 8]; 32],
+            dimensions: 8,
+            probe_coarse: DEFAULT_PROBE_COARSE,
+            probe_fine: DEFAULT_PROBE_FINE,
+            ..Default::default()
+        };
+        let query = vec![1.0; 8];
+        let mut l1 = HashMap::new();
+        for coarse_id in l0.nearest_coarse(&query, l0.probe_coarse_count()) {
+            let start = l0.global_id_start(coarse_id);
+            l1.insert(
+                coarse_id,
+                CentroidIndexL1 {
+                    segment_id: 1,
+                    coarse_id,
+                    global_id_start: start,
+                    num_fine: l0.fine_counts[coarse_id as usize],
+                    centroids: (0..l0.fine_counts[coarse_id as usize])
+                        .map(|i| vec![if i == 0 { 1.0 } else { 0.0 }; 8])
+                        .collect(),
+                },
+            );
+        }
+        let probed = fine_ids_for_probed_query(&l0, &l1, &query);
+        assert!(probed.len() >= 8 && probed.len() <= 64);
+        assert!(probed.len() < l0.num_fine_total as usize / 10);
     }
 
     #[tokio::test]

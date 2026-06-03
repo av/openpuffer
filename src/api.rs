@@ -347,7 +347,15 @@ async fn recall_namespace_handler(
         .load_namespace_for_query(&name, search::QueryConsistency::Strong)
         .await
     {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
+            if let Err(e) = state
+                .storage
+                .load_vector_indexes_full_for_eval(&name, &mut loaded)
+                .await
+            {
+                error!("recall load vectors {name}: {e:#}");
+                return storage_error_response(e);
+            }
             let field = match crate::recall::recall_vector_field(&loaded) {
                 Ok(f) => f,
                 Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()),

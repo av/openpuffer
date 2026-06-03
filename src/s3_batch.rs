@@ -522,8 +522,8 @@ pub async fn fetch_cold_vector_probed(
         fetched.extend(l1_map);
     }
 
-    let l1 = decode_l1_probed(namespace, meta, field, &l0, &fetched)?;
-    let cluster_keys = cluster_keys_for_query(namespace, meta, field, &l0, &l1, query);
+    let cluster_keys =
+        cluster_keys_for_query_after_l1(namespace, meta, field, &l0, &fetched, query)?;
     if !cluster_keys.is_empty() {
         if storage_roundtrips == 0 {
             storage_roundtrips = 1;
@@ -532,21 +532,47 @@ pub async fn fetch_cold_vector_probed(
         fetched.extend(cluster_map);
     }
 
-    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query);
-    let clusters = decode_clusters_probed(namespace, meta, field, &fetched, &fine_ids)?;
     Ok((
-        VectorIndex {
-            l0,
-            l1,
-            clusters,
-            routing: None,
-            l2: HashMap::new(),
-        },
+        assemble_vector_index_probed(namespace, meta, field, l0, &fetched, query)?,
         storage_roundtrips,
     ))
 }
 
-fn decode_l1_probed(
+/// Build a probed [`VectorIndex`] from bytes already fetched (L1 keys) plus optional cluster keys.
+pub fn assemble_vector_index_probed(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: CentroidIndexL0,
+    fetched: &HashMap<String, Vec<u8>>,
+    query: &[f64],
+) -> Result<VectorIndex> {
+    let l1 = decode_l1_probed(namespace, meta, field, &l0, fetched)?;
+    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query);
+    let clusters = decode_clusters_probed(namespace, meta, field, fetched, &fine_ids)?;
+    Ok(VectorIndex {
+        l0,
+        l1,
+        clusters,
+        routing: None,
+        l2: HashMap::new(),
+    })
+}
+
+/// After L1 objects are in `fetched`, return cluster keys still needed for `query`.
+pub fn cluster_keys_for_query_after_l1(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: &CentroidIndexL0,
+    fetched: &HashMap<String, Vec<u8>>,
+    query: &[f64],
+) -> Result<Vec<String>> {
+    let l1 = decode_l1_probed(namespace, meta, field, l0, fetched)?;
+    Ok(cluster_keys_for_query(namespace, meta, field, l0, &l1, query))
+}
+
+pub(crate) fn decode_l1_probed(
     namespace: &str,
     meta: &NamespaceMeta,
     field: &str,
@@ -572,7 +598,7 @@ fn decode_l1_probed(
     Ok(l1)
 }
 
-fn decode_clusters_probed(
+pub(crate) fn decode_clusters_probed(
     namespace: &str,
     meta: &NamespaceMeta,
     field: &str,

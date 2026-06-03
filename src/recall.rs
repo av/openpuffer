@@ -186,6 +186,12 @@ pub fn recall_vector_field(loaded: &LoadedNamespace) -> Result<String> {
     let sample = loaded.docs.values().next();
     primary_vector_field(&loaded.meta.schema, sample)
         .or_else(|| loaded.vectors.keys().next().cloned())
+        .or_else(|| loaded.cold_vector_l0.keys().next().cloned())
+        .or_else(|| {
+            crate::meta::effective_vector_fields(&loaded.meta)
+                .first()
+                .map(|f| f.name.clone())
+        })
         .ok_or_else(|| anyhow!("namespace has no vector field"))
 }
 
