@@ -396,6 +396,9 @@
 - label: mid-tier artifact benchmarks/results/cold-50k-v3.json records cold_50k_v3 storage_roundtrips recall_at_10 index_object_count
   command: python3 -c "import json; d=json.load(open('benchmarks/results/cold-50k-v3.json')); assert d['benchmark']=='cold_50k_v3' and all(k in d for k in ('storage_roundtrips','recall_at_10','index_object_count','candidates_ratio','cold_s3_keys_fetched'))"
   tags: [bench, implemented]
+- label: nightly artifact benchmarks/results/nightly-100k.json records cold_100k storage_roundtrips recall_at_10 candidates_ratio index_object_count p50_query_latency_ms
+  command: python3 -c "import json; d=json.load(open('benchmarks/results/nightly-100k.json')); assert d['benchmark']=='cold_100k' and d['namespace_docs']==100000 and all(k in d for k in ('storage_roundtrips','recall_at_10','candidates_ratio','index_object_count','p50_query_latency_ms'))"
+  tags: [bench, implemented]
 - label: large_stress fifty_thousand_docs_v3_cold_probed_validation is ignored mid-tier v3 cold gate
   command: grep -q 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs && grep -B2 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs | grep -q '#\[ignore'
   tags: [bench, implemented]
@@ -430,7 +433,7 @@
   command: grep -q 'fn cold_vector_query_cluster_gets_bounded_by_probe_plan' tests/integration_s3.rs && cargo test -F integration cold_vector_query_cluster_gets_bounded_by_probe_plan -q --test integration_s3
   tags: [spec, cold, implemented]
 - label: nightly bench_cold_100k recall@10 at least 0.88 and candidates_ratio below 0.20
-  command: grep -q 'async fn bench_cold_100k_nightly' tests/bench_cold.rs && grep -A2 'bench_cold_100k_nightly' tests/bench_cold.rs | grep -q '#\[ignore'
+  command: python3 -c "import json; d=json.load(open('benchmarks/results/nightly-100k.json')); assert d['benchmark']=='cold_100k' and d['recall_at_10']>=0.88 and d['candidates_ratio']<0.20 and d['storage_roundtrips']<=4" && grep -q 'async fn bench_cold_100k_nightly' tests/bench_cold.rs && grep -A2 'bench_cold_100k_nightly' tests/bench_cold.rs | grep -q '#\[ignore'
   tags: [spec, cold, bench, implemented]
 - label: strong caught-up cold query on 10k namespace reports storage_roundtrips at most 4
   command: cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four -q --test bench_cold

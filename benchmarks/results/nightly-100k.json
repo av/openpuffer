@@ -1,0 +1,18 @@
+{
+  "benchmark": "cold_100k",
+  "cache_dir": "",
+  "candidates_ratio": 0.0008,
+  "cold_query_runs": 7,
+  "consistency": "strong",
+  "dimensions": 128,
+  "environment": "minio-testcontainers",
+  "index_cursor_eq_wal_commit_seq": true,
+  "index_keys_total": 357,
+  "index_object_count": 274,
+  "namespace_docs": 100000,
+  "notes": "Nightly 100k gate. Regenerate: cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture",
+  "p50_query_latency_ms": 828,
+  "recall_at_10": 1.0,
+  "s3_get_count": 0,
+  "storage_roundtrips": 2
+}
