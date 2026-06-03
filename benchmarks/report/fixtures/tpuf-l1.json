@@ -23,10 +23,40 @@
   "s3_get_count_note": "N/A (managed turbopuffer)",
   "p50_query_latency_ms": 280,
   "p95_query_latency_ms": 350,
+  "p50_warm_query_latency_ms": 14,
+  "p95_warm_query_latency_ms": 19,
+  "warm_query_runs": 20,
+  "warm_consistency": "eventual",
+  "warm_protocol": "hint_cache_warm",
+  "warm_runs": [],
   "candidates_ratio": 0.0015,
   "recall_at_10": 0.94,
   "cold_query_runs": 7,
   "cold_runs": [],
+  "filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 310
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 295
+    }
+  ],
+  "hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 340
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 325
+    }
+  ],
   "index_keys_total": null,
   "index_object_count": null,
   "ingest_elapsed_secs": 95.2,

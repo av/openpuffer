@@ -255,7 +255,7 @@ render_executive_summary() {
   op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
   tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
   if [[ "$op_warm_p50" != "null" || "$tpuf_warm_p50" != "null" ]]; then
-    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual, see plan §4.3).
+    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual; tpuf: \`hint_cache_warm\` + eventual, plan §4.3).
 "
   fi
 
@@ -387,6 +387,13 @@ render_results_table() {
     warm_cache="$(jq_field "$op_file" '.warm_cache_dir')"
     warm_protocol_note=" **Warm (openpuffer):** ${warm_runs} runs, consistency=${warm_consistency}, cache-dir=\`${warm_cache}\`, no cache bust between runs."
   fi
+  if [[ "$tpuf_warm_p50" != "null" ]]; then
+    local tpuf_warm_runs tpuf_warm_consistency tpuf_warm_proto
+    tpuf_warm_runs="$(jq_field "$tpuf_file" '.warm_query_runs')"
+    tpuf_warm_consistency="$(jq_field "$tpuf_file" '.warm_consistency')"
+    tpuf_warm_proto="$(jq_field "$tpuf_file" '.warm_protocol // "hint_cache_warm"')"
+    warm_protocol_note="${warm_protocol_note} **Warm (turbopuffer):** ${tpuf_warm_runs} runs, consistency=${tpuf_warm_consistency}, protocol=${tpuf_warm_proto}."
+  fi
 
   cat <<EOF
 ## Results @ $(tier_docs_label "$tier") × 128-dim cosine (synthetic seed=${seed})
@@ -410,6 +417,38 @@ render_results_table() {
 **Client:** EC2 localhost (openpuffer \`serve\`) vs turbopuffer SDK from same host (_document instance type in Methodology_).
 
 EOF
+}
+
+render_secondary_query_table() {
+  local tier="$1" tpuf_file="$2"
+  local n_filter n_hybrid
+  n_filter="$(jq_field "$tpuf_file" '.filter_query_runs | length')"
+  n_hybrid="$(jq_field "$tpuf_file" '.hybrid_query_runs | length')"
+  if [[ "$n_filter" == "0" && "$n_hybrid" == "0" ]]; then
+    return 0
+  fi
+  if [[ "$n_filter" == "null" && "$n_hybrid" == "null" ]]; then
+    return 0
+  fi
+
+  cat <<EOF
+### Secondary queries (turbopuffer, tier ${tier})
+
+Per-query latency from \`filter_query_runs\` / \`hybrid_query_runs\` in tpuf JSON (1× each, \`consistency: strong\`). openpuffer bench-large records cold vector only; G2 integration gates cover filter/hybrid correctness on MinIO.
+
+EOF
+  if [[ "$n_filter" != "0" && "$n_filter" != "null" ]]; then
+    echo "| Filter query | Latency (ms) |"
+    echo "|--------------|-------------:|"
+    jq -r '.filter_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$tpuf_file"
+    echo ""
+  fi
+  if [[ "$n_hybrid" != "0" && "$n_hybrid" != "null" ]]; then
+    echo "| Hybrid query | Latency (ms) |"
+    echo "|--------------|-------------:|"
+    jq -r '.hybrid_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$tpuf_file"
+    echo ""
+  fi
 }
 
 render_correctness_section() {
@@ -536,6 +575,7 @@ EOF
       render_methodology_skeleton "$tier" "$op_path" "$tpuf_path"
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
       render_results_table "$tier" "$op_path" "$tpuf_path"
+      render_secondary_query_table "$tier" "$tpuf_path"
       overlap_path="$(resolve_overlap_json "$tier")"
       render_correctness_section "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       echo ""

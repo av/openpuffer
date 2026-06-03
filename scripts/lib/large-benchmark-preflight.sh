@@ -211,5 +211,6 @@ Optional:
 
 After G3 large-aws JSON (or in parallel on a host with API access):
   ./scripts/run-tpuf-large-benchmark.sh --tier l1
+  ./scripts/run-tpuf-large-benchmark.sh --tier l1 --warm   # adds hint_cache_warm + eventual latencies
 EOF
 }

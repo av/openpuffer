@@ -184,7 +184,7 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
 # Output: benchmarks/results/tpuf-l1.json
 ```
 
-**Warm queries (secondary):** `./scripts/bench-large.sh --warm` after cold phase: non-empty `--cache-dir`, `POST /v1/namespaces/{ns}/warm`, 20 queries with `consistency: eventual` (from `queries.json` `warm_query_protocol`). JSON fields `p50_warm_query_latency_ms` / `p95_warm_query_latency_ms`; `render-report.sh` shows warm rows when present. Compare p50 to tpuf [warm cache](https://turbopuffer.com/docs/warm-cache) when tpuf driver adds warm metrics.
+**Warm queries (secondary):** `./scripts/bench-large.sh --warm` (openpuffer) or `./scripts/run-tpuf-large-benchmark.sh --warm` / `run_benchmark.py --warm` (tpuf `hint_cache_warm` + 20× eventual from `warm_query_protocol`). JSON fields `p50_warm_query_latency_ms` / `p95_warm_query_latency_ms`; `render-report.sh` shows warm rows when present.
 
 **Hybrid / filter (secondary):** use `filter_queries` / `hybrid_queries` in `queries.json` and integration patterns (`cold_hybrid_10k_*`); openpuffer gate `storage_roundtrips ≤ 4` still applies.
 

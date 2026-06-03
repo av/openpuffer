@@ -32,6 +32,7 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --dry-run --tier l3
 export TURBOPUFFER_API_KEY='tpuf_...'
 export TURBOPUFFER_REGION='aws-us-east-1'
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
+./scripts/run-tpuf-large-benchmark.sh --tier l1 --warm
 ```
 
 Output: `benchmarks/results/tpuf-l1.json` (schema aligned with `large-aws-l1.json`).
@@ -55,8 +56,10 @@ Output: `benchmarks/results/tpuf-l1.json` (schema aligned with `large-aws-l1.jso
 1. **Ingest** — 10k-row `namespace.write(upsert_columns=…)` batches from `generate_synthetic.py`
 2. **Index gate** — poll `metadata()` until `index.status == up-to-date` and row count ≥ tier docs
 3. **Cold queries** — 7× vector ANN (`consistency: strong`), record `client_total_ms` when present
-4. **Recall** — `namespace.recall(num=20, top_k=10)` (same defaults as workload `queries.json`)
-5. **Cleanup** — `namespace.delete_all()` unless `TURBOPUFFER_BENCH_SKIP_DELETE=1`
+4. **Filter + hybrid** — all `filter_queries` / `hybrid_queries` from `queries.json` (1× each, strong); per-query latency in `filter_query_runs` / `hybrid_query_runs`
+5. **Warm (optional `--warm`)** — `hint_cache_warm` then 20× vector ANN (`warm_query_protocol`, `consistency: eventual`); `p50_warm_query_latency_ms` / `p95_warm_query_latency_ms`
+6. **Recall** — `namespace.recall(num=20, top_k=10)` (same defaults as workload `queries.json`)
+7. **Cleanup** — `namespace.delete_all()` unless `TURBOPUFFER_BENCH_SKIP_DELETE=1`
 
 Openpuffer-specific fields (`storage_roundtrips`, `s3_get_count`, `preferred_ann_version`) are
 `null` in the JSON so A5 can merge rows without special cases.

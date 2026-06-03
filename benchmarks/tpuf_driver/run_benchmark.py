@@ -59,6 +59,12 @@ class RunContext:
     enforce_gates: bool
     skip_ingest: bool
     skip_delete: bool
+    warm_mode: bool
+    warm_runs: int
+    warm_query_top_k: int
+    warm_consistency: str
+    filter_specs: tuple[dict[str, Any], ...]
+    hybrid_specs: tuple[dict[str, Any], ...]
 
 
 def repo_relative(path: str) -> Path:
@@ -161,6 +167,37 @@ def ingest_workload(ns: Any, cfg: gen.WorkloadConfig) -> dict[str, Any]:
     }
 
 
+def inject_vector_placeholder(value: Any, vector: list[float]) -> Any:
+    """Substitute ``\"$vector\"`` placeholders (same contract as synthetic_workload.rs)."""
+    if value == "$vector":
+        return vector
+    if isinstance(value, list):
+        return [inject_vector_placeholder(v, vector) for v in value]
+    if isinstance(value, dict):
+        return {k: inject_vector_placeholder(v, vector) for k, v in value.items()}
+    return value
+
+
+def json_to_rank_by(value: Any, vector: list[float]) -> Any:
+    """Convert openpuffer ``rank_by`` JSON lists to turbopuffer tuple form."""
+    resolved = inject_vector_placeholder(value, vector)
+    if isinstance(resolved, list):
+        return tuple(json_to_rank_by(v, vector) for v in resolved)
+    return resolved
+
+
+def openpuffer_query_kwargs(query: dict[str, Any], vector: list[float]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "rank_by": json_to_rank_by(query["rank_by"], vector),
+        "top_k": int(query.get("top_k", 10)),
+        "consistency": str(query.get("consistency", "strong")),
+        "include_attributes": False,
+    }
+    if query.get("filters") is not None:
+        kwargs["filters"] = query["filters"]
+    return kwargs
+
+
 def performance_dict(perf: Any | None) -> dict[str, Any]:
     if perf is None:
         return {}
@@ -177,20 +214,9 @@ def performance_dict(perf: Any | None) -> dict[str, Any]:
     return {}
 
 
-def cold_query_once(
-    ns: Any,
-    *,
-    vector: list[float],
-    top_k: int,
-    consistency: str,
-) -> dict[str, Any]:
+def query_once(ns: Any, **query_kwargs: Any) -> dict[str, Any]:
     t0 = time.perf_counter()
-    resp = ns.query(
-        rank_by=("vector", "ANN", "embedding", vector),
-        top_k=top_k,
-        consistency=consistency,
-        include_attributes=False,
-    )
+    resp = ns.query(**query_kwargs)
     latency_ms = int((time.perf_counter() - t0) * 1000)
     perf = performance_dict(getattr(resp, "performance", None))
     client_ms = perf.get("client_total_ms")
@@ -209,17 +235,22 @@ def cold_query_once(
     }
 
 
+def cold_vector_query_kwargs(ctx: RunContext) -> dict[str, Any]:
+    return {
+        "rank_by": ("vector", "ANN", "embedding", ctx.query_vector),
+        "top_k": ctx.query_top_k,
+        "consistency": ctx.query_consistency,
+        "include_attributes": False,
+    }
+
+
 def run_cold_queries(ctx: RunContext, ns: Any) -> tuple[list[dict[str, Any]], int, int, float | None]:
     runs: list[dict[str, Any]] = []
     latencies: list[int] = []
     last_ratio: float | None = None
+    cold_kwargs = cold_vector_query_kwargs(ctx)
     for run_i in range(1, ctx.cold_runs + 1):
-        sample = cold_query_once(
-            ns,
-            vector=ctx.query_vector,
-            top_k=ctx.query_top_k,
-            consistency=ctx.query_consistency,
-        )
+        sample = query_once(ns, **cold_kwargs)
         latencies.append(sample["latency_ms"])
         last_ratio = sample.get("candidates_ratio")
         runs.append(
@@ -235,6 +266,62 @@ def run_cold_queries(ctx: RunContext, ns: Any) -> tuple[list[dict[str, Any]], in
         )
     sorted_lat = sorted(latencies)
     return runs, percentile_ms(sorted_lat, 50), percentile_ms(sorted_lat, 95), last_ratio
+
+
+def run_workload_query_specs(
+    ns: Any,
+    specs: tuple[dict[str, Any], ...],
+    *,
+    query_kind: str,
+) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    for spec in specs:
+        name = str(spec.get("name", query_kind))
+        vector = list(spec["vector"])
+        oq = spec["openpuffer_query"]
+        if not isinstance(oq, dict):
+            raise ValueError(f"{query_kind} query {name}: openpuffer_query must be an object")
+        sample = query_once(ns, **openpuffer_query_kwargs(oq, vector))
+        runs.append(
+            {
+                "query_name": name,
+                "query_kind": query_kind,
+                "latency_ms": sample["latency_ms"],
+                "result_rows": sample.get("result_rows"),
+                "candidates_ratio": sample.get("candidates_ratio"),
+                "tpuf_performance": sample.get("performance"),
+            }
+        )
+    return runs
+
+
+def run_warm_queries(ctx: RunContext, ns: Any) -> tuple[list[dict[str, Any]], int, int]:
+    print(f"hint_cache_warm on namespace {ctx.namespace}…")
+    ns.hint_cache_warm()
+    warm_kwargs = {
+        "rank_by": ("vector", "ANN", "embedding", ctx.query_vector),
+        "top_k": ctx.warm_query_top_k,
+        "consistency": ctx.warm_consistency,
+        "include_attributes": False,
+    }
+    runs: list[dict[str, Any]] = []
+    latencies: list[int] = []
+    last_ratio: float | None = None
+    for run_i in range(1, ctx.warm_runs + 1):
+        sample = query_once(ns, **warm_kwargs)
+        latencies.append(sample["latency_ms"])
+        last_ratio = sample.get("candidates_ratio")
+        runs.append(
+            {
+                "run": run_i,
+                "query_name": ctx.primary_query_name,
+                "latency_ms": sample["latency_ms"],
+                "candidates_ratio": last_ratio,
+                "tpuf_performance": sample.get("performance"),
+            }
+        )
+    sorted_lat = sorted(latencies)
+    return runs, percentile_ms(sorted_lat, 50), percentile_ms(sorted_lat, 95)
 
 
 def run_recall(ns: Any, *, num: int, top_k: int) -> float:
@@ -301,6 +388,15 @@ def build_context(args: argparse.Namespace) -> RunContext:
     if not results_path.is_absolute():
         results_path = ROOT / results_path
 
+    warm_protocol = queries.get("warm_query_protocol", {})
+    warm_mode = bool(args.warm or os.environ.get("TURBOPUFFER_BENCH_WARM") == "1")
+    warm_runs = int(os.environ.get("TURBOPUFFER_BENCH_WARM_RUNS", warm_protocol.get("runs", 20)))
+    warm_query_top_k = int(warm_protocol.get("top_k", 10))
+    warm_consistency = str(warm_protocol.get("consistency", "eventual"))
+
+    filter_specs = tuple(queries.get("filter_queries") or ())
+    hybrid_specs = tuple(queries.get("hybrid_queries") or ())
+
     index_timeout = int(os.environ.get("TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC", "7200"))
     enforce_gates = os.environ.get("TURBOPUFFER_BENCH_ENFORCE_GATES", "1") != "0"
     skip_ingest = bool(args.skip_ingest or os.environ.get("TURBOPUFFER_BENCH_SKIP_INGEST"))
@@ -328,6 +424,12 @@ def build_context(args: argparse.Namespace) -> RunContext:
         enforce_gates=enforce_gates,
         skip_ingest=skip_ingest,
         skip_delete=skip_delete,
+        warm_mode=warm_mode,
+        warm_runs=warm_runs,
+        warm_query_top_k=warm_query_top_k,
+        warm_consistency=warm_consistency,
+        filter_specs=filter_specs,
+        hybrid_specs=hybrid_specs,
     )
 
 
@@ -341,14 +443,33 @@ def build_result_payload(
     p95_ms: int,
     candidates_ratio: float | None,
     recall_at_10: float,
+    filter_query_runs: list[dict[str, Any]] | None = None,
+    hybrid_query_runs: list[dict[str, Any]] | None = None,
+    warm_runs: list[dict[str, Any]] | None = None,
+    warm_p50_ms: int | None = None,
+    warm_p95_ms: int | None = None,
 ) -> dict[str, Any]:
     indexed = index_meta.get("status") == "up-to-date"
+    warm_note = ""
+    if ctx.warm_mode:
+        warm_note = (
+            f" Warm: hint_cache_warm + {ctx.warm_runs}× {ctx.primary_query_name} "
+            f"(consistency={ctx.warm_consistency})."
+        )
+    secondary_note = ""
+    if filter_query_runs or hybrid_query_runs:
+        secondary_note = (
+            f" Secondary: {len(filter_query_runs or [])} filter + "
+            f"{len(hybrid_query_runs or [])} hybrid queries (1× each, strong)."
+        )
     notes = (
         f"A4 run_benchmark.py tier={ctx.tier}; workload queries.json; "
         f"region={ctx.region}. Cold runs use consistency={ctx.query_consistency} on a "
-        "fresh namespace (no openpuffer-style cache bust). "
+        "fresh namespace (no openpuffer-style cache bust)."
+        f"{warm_note}{secondary_note} "
         f"Targets: recall@10>={RECALL_GATE}. Regenerate: "
         f"python3 benchmarks/tpuf_driver/run_benchmark.py --tier {ctx.tier}"
+        f"{' --warm' if ctx.warm_mode else ''}"
     )
     payload: dict[str, Any] = {
         "benchmark": f"cold_tpuf_{ctx.tier}",
@@ -393,6 +514,21 @@ def build_result_payload(
                 "ingest_rows_written": ingest_stats["ingest_rows_written"],
             }
         )
+    if filter_query_runs is not None:
+        payload["filter_query_runs"] = filter_query_runs
+    if hybrid_query_runs is not None:
+        payload["hybrid_query_runs"] = hybrid_query_runs
+    if ctx.warm_mode and warm_runs is not None:
+        payload.update(
+            {
+                "p50_warm_query_latency_ms": warm_p50_ms,
+                "p95_warm_query_latency_ms": warm_p95_ms,
+                "warm_query_runs": ctx.warm_runs,
+                "warm_consistency": ctx.warm_consistency,
+                "warm_protocol": "hint_cache_warm",
+                "warm_runs": warm_runs,
+            }
+        )
     return payload
 
 
@@ -403,14 +539,21 @@ def dry_run(ctx: RunContext) -> None:
     print(f"  region={ctx.region} results={ctx.results_path}")
     print(f"  cold_runs={ctx.cold_runs} primary_query={ctx.primary_query_name}")
     print(f"  recall_num={ctx.recall_num} index_timeout={ctx.index_timeout_sec}s")
-    print(f"  enforce_gates={ctx.enforce_gates} skip_ingest={ctx.skip_ingest}")
+    print(f"  enforce_gates={ctx.enforce_gates} skip_ingest={ctx.skip_ingest} warm_mode={ctx.warm_mode}")
+    print(f"  filter_queries={len(ctx.filter_specs)} hybrid_queries={len(ctx.hybrid_specs)}")
+    if ctx.warm_mode:
+        print(
+            f"  warm_runs={ctx.warm_runs} warm_consistency={ctx.warm_consistency} "
+            f"warm_top_k={ctx.warm_query_top_k} (hint_cache_warm)"
+        )
     if os.environ.get("TURBOPUFFER_API_KEY"):
         print("  TURBOPUFFER_API_KEY=set")
     else:
         print("  TURBOPUFFER_API_KEY unset (required for full run)")
+    warm_flag = " --warm" if ctx.warm_mode else ""
     print(
         f"Full run: export TURBOPUFFER_API_KEY=tpuf_... TURBOPUFFER_REGION={ctx.region} "
-        f"&& python3 benchmarks/tpuf_driver/run_benchmark.py --tier {ctx.tier}"
+        f"&& python3 benchmarks/tpuf_driver/run_benchmark.py --tier {ctx.tier}{warm_flag}"
     )
 
 
@@ -476,6 +619,29 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
         print(f"Running {ctx.cold_runs} cold vector queries ({ctx.primary_query_name})…")
         cold_runs, p50, p95, ratio = run_cold_queries(ctx, ns)
 
+        filter_query_runs: list[dict[str, Any]] | None = None
+        hybrid_query_runs: list[dict[str, Any]] | None = None
+        if ctx.filter_specs:
+            print(f"Running {len(ctx.filter_specs)} filter queries (1× each)…")
+            filter_query_runs = run_workload_query_specs(
+                ns, ctx.filter_specs, query_kind="filter"
+            )
+        if ctx.hybrid_specs:
+            print(f"Running {len(ctx.hybrid_specs)} hybrid queries (1× each)…")
+            hybrid_query_runs = run_workload_query_specs(
+                ns, ctx.hybrid_specs, query_kind="hybrid"
+            )
+
+        warm_runs_data: list[dict[str, Any]] | None = None
+        warm_p50: int | None = None
+        warm_p95: int | None = None
+        if ctx.warm_mode:
+            print(
+                f"Warm phase: {ctx.warm_runs} queries ({ctx.primary_query_name}, "
+                f"consistency={ctx.warm_consistency})…"
+            )
+            warm_runs_data, warm_p50, warm_p95 = run_warm_queries(ctx, ns)
+
         print(f"Measuring recall (num={ctx.recall_num}, top_k={ctx.recall_top_k})…")
         recall = run_recall(ns, num=ctx.recall_num, top_k=ctx.recall_top_k)
 
@@ -488,6 +654,11 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
             p95_ms=p95,
             candidates_ratio=ratio,
             recall_at_10=recall,
+            filter_query_runs=filter_query_runs,
+            hybrid_query_runs=hybrid_query_runs,
+            warm_runs=warm_runs_data,
+            warm_p50_ms=warm_p50,
+            warm_p95_ms=warm_p95,
         )
         ctx.results_path.parent.mkdir(parents=True, exist_ok=True)
         with ctx.results_path.open("w", encoding="utf-8") as f:
@@ -514,6 +685,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tier", default=os.environ.get("TURBOPUFFER_BENCH_TIER", "l1"))
     parser.add_argument("--workload-dir", default=os.environ.get("TURBOPUFFER_BENCH_WORKLOAD_DIR"))
     parser.add_argument("--dry-run", "-n", action="store_true")
+    parser.add_argument(
+        "--warm",
+        action="store_true",
+        help="After cold/filter/hybrid: hint_cache_warm + warm_query_protocol runs",
+    )
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--skip-delete", action="store_true")
     return parser.parse_args(argv)

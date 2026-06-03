@@ -9,6 +9,7 @@
 #   ./scripts/run-tpuf-large-benchmark.sh --dry-run          # print plan + env checklist
 #   ./scripts/run-tpuf-large-benchmark.sh --skip-g2          # skip MinIO correctness subset
 #   ./scripts/run-tpuf-large-benchmark.sh --skip-ingest      # query existing namespace
+#   ./scripts/run-tpuf-large-benchmark.sh --warm             # cold + filter/hybrid + warm phase
 #
 # Environment: see large_preflight_print_tpuf_operator_env in scripts/lib/large-benchmark-preflight.sh
 # and docs/BENCHMARKS.md § large-dataset program operator runbook.
@@ -25,6 +26,7 @@ DRY_RUN=0
 PREFLIGHT_ONLY=0
 SKIP_G2=0
 SKIP_INGEST=0
+WARM_MODE=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -32,6 +34,7 @@ for arg in "$@"; do
     --preflight-only) PREFLIGHT_ONLY=1 ;;
     --skip-g2) SKIP_G2=1 ;;
     --skip-ingest) SKIP_INGEST=1 ;;
+    --warm) WARM_MODE=1 ;;
     --tier=*) TIER="${arg#*=}" ;;
     --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
     -h|--help)
@@ -59,6 +62,7 @@ run_plan_dry() {
   echo "  tier=${TIER}"
   echo "  region=${REGION}"
   echo "  results=${RESULTS}"
+  echo "  warm_mode=${WARM_MODE}"
   echo "  steps: $([[ "$SKIP_G2" == 1 ]] && echo 'skip-g2' || echo 'g2-subset') → tpuf-preflight → run_benchmark.py"
   large_preflight_print_tpuf_operator_env
   if [[ -n "${TURBOPUFFER_API_KEY:-}" ]]; then
@@ -102,6 +106,10 @@ export TURBOPUFFER_BENCH_ENFORCE_GATES="${TURBOPUFFER_BENCH_ENFORCE_GATES:-1}"
 TPUF_ARGS=(--tier "$TIER")
 if [[ "$SKIP_INGEST" == "1" ]]; then
   TPUF_ARGS+=(--skip-ingest)
+fi
+if [[ "$WARM_MODE" == "1" ]]; then
+  TPUF_ARGS+=(--warm)
+  export TURBOPUFFER_BENCH_WARM=1
 fi
 
 echo "==> tpuf run_benchmark.py ${TPUF_ARGS[*]}"
