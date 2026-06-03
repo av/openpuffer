@@ -1,0 +1,76 @@
+# Unit tests (lib) and MinIO integration tests (testcontainers; requires Docker on the runner).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (unit)
+        run: cargo test
+
+  integration:
+    name: integration (MinIO / testcontainers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: integration
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test -F integration
+        env:
+          # GitHub-hosted runners: avoid Ryuk sidecar permission issues with testcontainers.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: cargo test -F integration
+
+  facts-check:
+    name: facts check
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [unit, integration]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install facts CLI
+        run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
+
+      - name: facts check
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: facts check
