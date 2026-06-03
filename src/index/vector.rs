@@ -1112,6 +1112,42 @@ impl VectorIndex {
         ids
     }
 
+    /// ANN candidate pool: all doc ids in probed clusters (input to exact re-rank).
+    pub fn ann_pool_doc_ids(&self, query: &[f64]) -> HashSet<String> {
+        self.candidate_doc_ids(query)
+    }
+
+    /// Score the probed ANN pool with exact view vectors and return top-*k* (re-rank pass).
+    pub fn rerank_top_k(
+        &self,
+        query: &[f64],
+        top_k: usize,
+        view_vector: impl Fn(&str) -> Option<Vec<f64>>,
+    ) -> Vec<(String, f64)> {
+        if query.len() != self.l0.dimensions as usize {
+            return Vec::new();
+        }
+        let metric = self.l0.distance_metric;
+        let mut scored: Vec<(String, f64)> = self
+            .ann_pool_doc_ids(query)
+            .into_iter()
+            .filter_map(|id| {
+                let v = view_vector(&id)?;
+                if v.len() != query.len() {
+                    return None;
+                }
+                Some((id, score_vector(query, &v, metric)))
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        scored.truncate(top_k);
+        scored
+    }
+
     pub fn query_ann(&self, query: &[f64], top_k: usize) -> Vec<(String, f64)> {
         if query.len() != self.l0.dimensions as usize {
             return Vec::new();
@@ -1588,6 +1624,43 @@ fn members_as_pairs(
         .collect()
 }
 
+/// Mean recall@*k* over queries comparing ANN results to brute-force ground truth.
+pub fn measure_recall_at_k(
+    index: &VectorIndex,
+    vectors: &[(String, Vec<f64>)],
+    queries: usize,
+    top_k: usize,
+    use_rerank: bool,
+    view_vector: impl Fn(&str) -> Option<Vec<f64>>,
+) -> f64 {
+    if queries == 0 || vectors.is_empty() {
+        return 0.0;
+    }
+    let metric = index.l0.distance_metric;
+    let n = vectors.len();
+    let mut recall_sum = 0.0f64;
+    for q in 0..queries {
+        let query = vectors[q * (n / queries)].1.clone();
+        let brute = brute_force_top_k(vectors, &query, metric, top_k);
+        let ann: HashSet<_> = if use_rerank {
+            index
+                .rerank_top_k(&query, top_k, &view_vector)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        } else {
+            index
+                .query_ann(&query, top_k)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let hits = brute.iter().filter(|id| ann.contains(*id)).count();
+        recall_sum += hits as f64 / top_k as f64;
+    }
+    recall_sum / queries as f64
+}
+
 /// Brute-force top-k for recall tests.
 pub fn brute_force_top_k(
     docs: &[(String, Vec<f64>)],
@@ -1987,6 +2060,62 @@ mod tests {
         let recall_final = recall_at_10(&index, &vectors, QUERIES);
         assert!(recall_final >= MIN_RECALL);
         let _ = TOP_K;
+    }
+
+    fn bench_synthetic_embedding(doc_index: usize, dim: usize) -> Vec<f64> {
+        (0..dim)
+            .map(|d| ((doc_index * dim + d) as f64 * 0.001).sin())
+            .collect()
+    }
+
+    #[test]
+    fn recall_at_10_10k_with_rerank_at_least_point_nine_two() {
+        const N: usize = 10_000;
+        const DIM: usize = 128;
+        const TOP_K: usize = 10;
+        const QUERIES: usize = 20;
+        const MIN_RERANK_RECALL: f64 = 0.92;
+
+        let mut docs = Vec::with_capacity(N);
+        let mut vectors: Vec<(String, Vec<f64>)> = Vec::with_capacity(N);
+        for i in 0..N {
+            let v = bench_synthetic_embedding(i, DIM);
+            let id = format!("doc-{i}");
+            vectors.push((id.clone(), v.clone()));
+            docs.push(vec_doc(&id, v));
+        }
+
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("10k index built");
+
+        let view = |id: &str| vectors.iter().find(|(d, _)| d == id).map(|(_, v)| v.clone());
+        let recall_probe =
+            measure_recall_at_k(&index, &vectors, QUERIES, TOP_K, false, view);
+        let recall_rerank =
+            measure_recall_at_k(&index, &vectors, QUERIES, TOP_K, true, view);
+
+        assert!(
+            recall_rerank >= MIN_RERANK_RECALL,
+            "re-rank recall@10 {recall_rerank} should be >= {MIN_RERANK_RECALL} on 10k fixture"
+        );
+        assert!(
+            recall_rerank >= recall_probe,
+            "re-rank {recall_rerank} should be >= probe-only {recall_probe}"
+        );
+        let pool_probe = index.query_ann(&vectors[0].1, TOP_K).len();
+        let pool_rerank = index.ann_pool_doc_ids(&vectors[0].1).len();
+        assert!(
+            pool_rerank >= pool_probe,
+            "re-rank pool ({pool_rerank}) should be >= probe-only pool ({pool_probe})"
+        );
     }
 
     #[test]

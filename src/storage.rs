@@ -789,6 +789,7 @@ impl Storage {
             tail_doc_ids: &loaded.tail_doc_ids,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: loaded.storage_roundtrips,
+            ann_rerank: None,
         };
         let ids = matching_doc_ids_for_filter(&ctx, &expr)?;
         Ok(ids.into_iter().collect())

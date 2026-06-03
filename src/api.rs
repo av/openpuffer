@@ -832,6 +832,7 @@ async fn query_namespace(
                 tail_doc_ids: &loaded.tail_doc_ids,
                 consistency,
                 storage_roundtrips: loaded.storage_roundtrips,
+                ann_rerank: Some(state.config.ann_rerank),
             };
             match search::execute_query(&ctx, &body) {
             Ok(resp) => {

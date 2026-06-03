@@ -335,12 +335,14 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 |----------------------|---------------|
 | Multi-level centroid hierarchy | **L0** coarse k-means (≤16 cells) + **L1** fine k-means per coarse (`k_fine ≈ √n_cell`, cap 256) |
 | Incremental cluster maintenance | Incremental two-level assign; full rebuild when `doc_count > num_fine_total × 4` |
-| Re-rank with fresh vectors from WAL | Cluster files store doc vectors; tail WAL scored exhaustively |
+| Re-rank with fresh vectors from WAL | Optional `OPENPUFFER_ANN_RERANK` / `--ann-rerank`: full probed-cluster pool exact-scored from view; default probe-only uses cluster-vector `query_ann` pool |
 | Many small segments + merges | `centroids-l0.bin` + `centroids-l1-{coarse:08}.bin` + `clusters-{fine:08}.bin` |
 
 **Build:** coarse k-means partitions the namespace; each coarse cell runs fine k-means (10 Lloyd iterations). Centroid seeds use **k-means++** initialization (weighted by squared distance to nearest existing center) instead of the first *k* doc vectors. Global fine ids are `fine_counts` offsets in L0. Cluster files list `(doc_id, vector)` for cosine (or negated L2²) scoring.
 
 **Probe tuning (serve / indexer):** `openpuffer serve` accepts `--ann-coarse-probe` / `--ann-fine-probe` (env `OPENPUFFER_ANN_COARSE_PROBE`, `OPENPUFFER_ANN_FINE_PROBE`; defaults **4** and **2**). Values are written into `centroids-l0.bin` (`probe_coarse`, `probe_fine`) on each full vector index build. Higher probes improve recall at the cost of more S3 objects fetched per query (`performance.candidates`, `storage_roundtrips`). Re-index or rebuild after changing probes so L0 metadata matches.
+
+**Re-rank (query, optional):** `--ann-rerank` / `OPENPUFFER_ANN_RERANK=1` widens the ANN candidate pool to every doc in probed clusters, then ranks with **exact** vectors from the in-memory view (including WAL tail updates). Probe-only (default) keeps a smaller pool from per-cluster `query_ann` truncation; `performance.candidates_ratio` is typically **higher** with re-rank enabled. Lib gate: `recall_at_10_10k_with_rerank_at_least_point_nine_two` (recall@10 ≥ 0.92 on the 10k synthetic fixture).
 
 **Query (`rank_by: ["vector", "ANN", field, query]`):**
 

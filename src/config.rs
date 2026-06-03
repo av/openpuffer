@@ -84,6 +84,21 @@ pub struct ServeArgs {
     /// WAL replay on corrupt segment: `fail` (default) aborts load; `skip` logs and continues.
     #[arg(long, env = "OPENPUFFER_WAL_CORRUPT_POLICY", default_value = "fail")]
     pub wal_corrupt_policy: String,
+
+    /// ANN query: re-rank probed cluster pool with exact view vectors (higher recall, larger candidate pool).
+    #[arg(long, env = "OPENPUFFER_ANN_RERANK", default_value_t = false)]
+    pub ann_rerank: bool,
+}
+
+/// Whether vector queries re-rank the full probed ANN pool with exact view vectors.
+pub fn ann_rerank_from_env() -> bool {
+    matches!(
+        std::env::var("OPENPUFFER_ANN_RERANK")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 /// ANN probe widths written into vector index metadata at build time.
@@ -157,6 +172,8 @@ pub struct AppConfig {
     pub limits: LimitsConfig,
     pub ann_probes: AnnProbeConfig,
     pub ann_build: AnnBuildConfig,
+    /// Re-rank probed ANN pool with exact vectors from the namespace view at query time.
+    pub ann_rerank: bool,
     pub wal_corrupt_policy: WalCorruptPolicy,
 }
 
@@ -212,6 +229,7 @@ impl ServeArgs {
                 fine: self.ann_fine_probe.max(1),
             })
             .with_ann_version(self.ann_version),
+            ann_rerank: self.ann_rerank,
             wal_corrupt_policy: WalCorruptPolicy::from_env_str(&self.wal_corrupt_policy),
         }
     }

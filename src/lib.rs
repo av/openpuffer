@@ -22,6 +22,7 @@
 //!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
 //!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
 //!      OPENPUFFER_ANN_VERSION (`2` default, `3` for scalable index layout at build)
+//!      OPENPUFFER_ANN_RERANK (`1`/`true` enables exact re-rank on probed ANN pool; default off)
 //!      OPENPUFFER_FTS_STEM (optional Porter stemming for FTS; default off)
 //!      OPENPUFFER_WAL_CORRUPT_POLICY (`fail` | `skip` on corrupt WAL replay)
 

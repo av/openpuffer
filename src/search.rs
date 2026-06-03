@@ -56,6 +56,16 @@ pub struct QueryContext<'a> {
     pub consistency: QueryConsistency,
     /// Logical S3 fetch rounds for cold query (batched parallel plan).
     pub storage_roundtrips: Option<u32>,
+    /// When `Some(true)`, widen ANN candidates to the full probed cluster pool and exact-score view vectors.
+    /// When `None`, falls back to `OPENPUFFER_ANN_RERANK` env. Default query path uses probe-only (`query_ann` pool).
+    pub ann_rerank: Option<bool>,
+}
+
+impl QueryContext<'_> {
+    pub fn ann_rerank_enabled(&self) -> bool {
+        self.ann_rerank
+            .unwrap_or_else(crate::config::ann_rerank_from_env)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +144,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         tail_doc_ids: ctx.tail_doc_ids,
         consistency,
         storage_roundtrips: ctx.storage_roundtrips,
+        ann_rerank: ctx.ann_rerank,
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
@@ -395,17 +406,22 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         let mut ids = HashSet::new();
         if let Some(vindex) = self.ctx.vectors.get(field) {
             if query.len() == vindex.l0.dimensions as usize {
-                for id in vindex.candidate_doc_ids(query) {
-                    if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
-                        continue;
+                if self.ctx.ann_rerank_enabled() {
+                    // Re-rank: full probed cluster membership, exact-scored in score_candidates.
+                    for id in vindex.ann_pool_doc_ids(query) {
+                        if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                            continue;
+                        }
+                        ids.insert(id);
                     }
-                    ids.insert(id);
-                }
-                for (id, _) in vindex.query_ann(query, self.candidate_pool) {
-                    if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
-                        continue;
+                } else {
+                    // Probe-only: approximate cluster-vector pool (smaller candidates_ratio).
+                    for (id, _) in vindex.query_ann(query, self.candidate_pool) {
+                        if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                            continue;
+                        }
+                        ids.insert(id);
                     }
-                    ids.insert(id);
                 }
             }
         }
@@ -840,6 +856,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust programming"]),
@@ -891,6 +908,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -1001,6 +1019,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
 
         let bm25_resp = execute_query(&ctx, &bm25_only).unwrap();
@@ -1048,6 +1067,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -1090,6 +1110,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
@@ -1135,6 +1156,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: Value::Array(vec![
@@ -1229,6 +1251,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1257,6 +1280,7 @@ mod tests {
             tail_doc_ids: &HashSet::new(),
             consistency: QueryConsistency::Strong,
             storage_roundtrips: Some(4),
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
@@ -1311,6 +1335,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1329,6 +1354,84 @@ mod tests {
         assert!(
             perf.billing.billable_logical_bytes_queried
                 >= perf.billing.billable_logical_bytes_returned
+        );
+    }
+
+    #[test]
+    fn ann_rerank_increases_candidates_ratio_vs_probe_only() {
+        const N: usize = 5_000;
+        const DIM: usize = 128;
+        let mut map: HashMap<String, Document> = HashMap::new();
+        let mut pairs = Vec::with_capacity(N);
+        for i in 0..N {
+            let id = format!("doc-{i}");
+            let embedding: Vec<f64> = (0..DIM)
+                .map(|d| ((i * DIM + d) as f64 * 0.001).sin())
+                .collect();
+            let doc = Document {
+                id: id.clone(),
+                attributes: [("embedding".into(), json!(embedding.clone()))].into(),
+            };
+            pairs.push((id, doc.clone()));
+            map.insert(doc.id.clone(), doc);
+        }
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+            &json!({}),
+            crate::config::AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("vector index");
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            dimensions: DIM as u32,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", query_vec]),
+            top_k: Some(10),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+            order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let ctx_probe = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vectors: &HashMap::from([("embedding".to_string(), vindex.clone())]),
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+            ann_rerank: Some(false),
+        };
+        let ctx_rerank = QueryContext {
+            ann_rerank: Some(true),
+            ..ctx_probe
+        };
+        let probe_ratio = execute_query(&ctx_probe, &req)
+            .unwrap()
+            .performance
+            .expect("perf")
+            .candidates_ratio;
+        let rerank_ratio = execute_query(&ctx_rerank, &req)
+            .unwrap()
+            .performance
+            .expect("perf")
+            .candidates_ratio;
+        assert!(
+            rerank_ratio > probe_ratio,
+            "re-rank candidates_ratio {rerank_ratio} should exceed probe-only {probe_ratio}"
         );
     }
 
@@ -1381,6 +1484,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
         let req = QueryRequest {
@@ -1420,6 +1524,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "anything"]),
@@ -1454,6 +1559,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         for top_k in [Some(0), Some((MAX_TOP_K as u32) + 1)] {
             let req = QueryRequest {
@@ -1497,6 +1603,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let cases = [
             json!([]),
@@ -1564,6 +1671,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0]]),
@@ -1626,6 +1734,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1670,6 +1779,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let expr = parse_filter(&json!(["tier", "Eq", "free"])).unwrap();
         let ids = matching_doc_ids_for_filter(&ctx, &expr).unwrap();
@@ -1715,6 +1825,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "tie score"]),
@@ -1750,6 +1861,7 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            ann_rerank: None,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
