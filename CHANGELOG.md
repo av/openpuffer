@@ -47,6 +47,45 @@ Program release: **SPFresh-inspired ANN (opt-in v3)**, **query-driven cold load 
 - **Docs** — ARCHITECTURE (cold planner, v3 layout, risks), COMPARISON (measured 10k/50k), README quickstart (v3, recall, cache flags).
 - **Anneal** — shared WAL replay / probed decode helpers (`wal_commit_replay_from`, `decode_l0_by_field_from_fetched`); −133 LOC in cold/recall/indexer paths.
 
+### Post-release hardening (`b6ec313`…`97b55c2`)
+
+Same-day follow-ups after the initial v0.3.0 changelog commit.
+
+#### Cold & consistency
+
+- **Eventual probed path** — `consistency: "eventual"` skips WAL tail rounds on the probed cold planner (`281e04c`).
+- **Meta-driven ANN** — `preferred_ann_version` in namespace meta; L0 aligns via `align_with_namespace_meta`; eventual scoring respects `doc_last_wal_seq` (`5462f21`, `e194ed9`).
+- **BM25-only cold** — FTS-only queries skip L0/ANN bootstrap; vector L0 deferred until probe path needs it (`a2e99f6`).
+- **Hybrid cold** — FTS segments included in bootstrap round 2 on probed vector path (`8132f15`).
+- **S3 path safety** — key traversal validation on cold/index fetch paths (`198d5f2`).
+- **Debug** — `POST /v1/debug/namespaces/{name}/cold-plan` preview of planner rounds/keys (`6eae230`, `41c10e5`).
+- **Routing fix** — meta align no longer sets `has_routing` without `centroids-routing.bin` on disk (`99a9897`).
+
+#### ANN
+
+- **Probe clamp** — `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` caps coarse/fine probe plan at query time; `openpuffer_ann_probe_clamp_total` metric (`a40fbbb`).
+
+#### Indexer & multi-instance
+
+- **L0-last publish** — indexer writes cluster segments before `centroids-l0` on S3 to avoid cold queries seeing L0 ahead of clusters (`5ffa063`).
+- **Concurrent cold** — integration hammers cold queries during multi-instance index build (`97b55c2`).
+
+#### Bench & CI
+
+- **100k artifact** — committed nightly MinIO cold bench JSON (`00e6ae1`).
+- **1M script** — `bench-1m.sh` polish for v0.3 / preferred ann version (`0b26eb5`).
+- **Warm vs cold** — 10k gate bench + ARCHITECTURE consistency roundtrip notes (`f9e258c`).
+- **Release binary in CI** — `CARGO_BIN_EXE_openpuffer` for integration, bench, and facts jobs (`b42f784`, `5462f21`, `64f11a3`); nightly stress workflow (`64f11a3`).
+
+#### Tests & facts
+
+- Product `rank_by` hybrid on probed cold path (`f3d389f`); two-vector-field 10k stress (`52042ae`).
+- Facts program gates **24/24** including cold-plan debug (`41c10e5`).
+
+#### Docs
+
+- COMPARISON measured maturity table (`5ae030c`); README Prometheus cold/ANN counters (`aab155b`); BENCHMARKS 1M ingest cadence (`e194ed9`).
+
 ### Limitations
 
 - **1M cold @ AWS** not validated in CI — run `scripts/bench-1m.sh` and commit `1m-aws.json` when available.
