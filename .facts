@@ -403,6 +403,42 @@
   command: grep -q 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs && grep -B2 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs | grep -q '#\[ignore'
   tags: [bench, implemented]
 
+# bench-large (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A1–A5, G1/G6)
+
+- label: synthetic-128 L1 workload manifest and queries committed with seed 42 num_docs 100k dim 128 recall_defaults num=20 top_k=10
+  command: test -f benchmarks/workloads/synthetic-128/l1-100k/manifest.json && test -f benchmarks/workloads/synthetic-128/l1-100k/queries.json && python3 -c "import json; m=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/manifest.json')); q=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/queries.json')); assert m['seed']==42 and m['num_docs']==100000 and m['dim']==128 and q['recall_defaults']=={'num':20,'top_k':10,'vector_field':'embedding'} and q['cold_query_protocol']['runs']==7"
+  tags: [spec, bench-large, implemented]
+- label: benchmarks/workloads/generate_synthetic.py unit tests pass and emit manifest queries recall_defaults
+  command: test -f benchmarks/workloads/generate_synthetic.py && python3 -m pytest benchmarks/workloads/test_generate_synthetic.py -q && grep -q 'recall_defaults' benchmarks/workloads/generate_synthetic.py
+  tags: [spec, bench-large, implemented]
+- label: scripts/ingest-large.sh tiered ingest dry-run validates synthetic-128 workload and meta poll knobs
+  command: test -x scripts/ingest-large.sh && grep -q 'synthetic-128' scripts/ingest-large.sh && grep -q 'index_cursor' scripts/ingest-large.sh && ./scripts/ingest-large.sh --dry-run >/dev/null
+  tags: [spec, bench-large, implemented]
+- label: scripts/bench-large.sh tiered AWS bench dry-run reads queries.json recall_defaults and targets benchmarks/results/large-aws-{tier}.json
+  command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && ./scripts/bench-large.sh --dry-run >/dev/null
+  tags: [spec, bench-large, implemented]
+- label: large-aws bench JSON fixture cold_large_l1 records tier workload_dir recall_at_10 p50 storage_roundtrips preferred_ann_version index_cursor_eq_wal_commit_seq
+  command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and all(k in d for k in ('workload_dir','recall_at_10','p50_query_latency_ms','storage_roundtrips','preferred_ann_version','index_cursor_eq_wal_commit_seq','cold_query_runs')) and d['cold_query_runs']==7"
+  tags: [spec, bench-large, implemented]
+- label: G2 MinIO preflight script and synthetic_workload_gate test compile and assert fixture vectors recall_defaults cold protocol
+  command: test -x scripts/run-minio-correctness-gates.sh && test -f tests/common/synthetic_workload.rs && cargo test --test synthetic_workload_gate --no-run -q && grep -q 'synthetic_128_g2_correctness_gates_on_minio' tests/integration_s3.rs
+  tags: [spec, bench-large, implemented]
+- label: bench_cold synthetic_128 workload gate test exists for 10k G2 path
+  command: grep -q 'bench_cold_10k_synthetic_128_workload_gate' tests/bench_cold.rs && cargo test -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate --no-run -q
+  tags: [spec, bench-large, implemented]
+
+# bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
+
+- label: benchmarks/tpuf_driver/run_benchmark.py unit tests pass and read workload queries.json recall_defaults
+  command: test -f benchmarks/tpuf_driver/run_benchmark.py && grep -q 'recall_defaults' benchmarks/tpuf_driver/run_benchmark.py && python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
+  tags: [spec, bench-tpuf, implemented]
+- label: tpuf bench JSON fixture cold_tpuf_l1 records tier region recall_at_10 p50 cold_query_runs ingest metrics
+  command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/tpuf-l1.json')); assert d['benchmark']=='cold_tpuf_l1' and d['tier']=='l1' and all(k in d for k in ('tpuf_region','recall_at_10','p50_query_latency_ms','cold_query_runs','ingest_elapsed_secs')) and d['cold_query_runs']==7"
+  tags: [spec, bench-tpuf, implemented]
+- label: scripts/render-report.sh dry-run merges large-aws and tpuf tier JSON into comparison report skeleton
+  command: test -x scripts/render-report.sh && grep -q 'large-aws-' scripts/render-report.sh && grep -q 'tpuf-' scripts/render-report.sh && OPENPUFFER_REPORT_DATE=2099-01-01 ./scripts/render-report.sh --dry-run --output /tmp/openpuffer-render-report-fact-check.md >/dev/null && test -f /tmp/openpuffer-render-report-fact-check.md
+  tags: [spec, bench-tpuf, bench-large, implemented]
+
 # index/ann
 
 - label: recall@10 on 100k synthetic vectors is at least 0.90

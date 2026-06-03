@@ -126,12 +126,14 @@ Record these commit SHAs in every report:
 | [`benchmarks/results/nightly-100k.json`](../benchmarks/results/nightly-100k.json) | 100k | MinIO |
 | `benchmarks/results/1m-aws.json` | 1M | AWS (pending) |
 
-### Fact sheet (optional but recommended)
+### Fact sheet
 
-Before changing gates or adding automation, add `@spec` facts for the comparison program (tags e.g. `bench-large`, `bench-tpuf`) using fact-driven workflow in [AGENTS.md](../AGENTS.md). Example claims:
+`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` and `facts check --tags bench-tpuf` ([BENCHMARKS.md](BENCHMARKS.md#facts)). They cover A1–A5 scripts, G2 fixture gates, and report merge fixtures—not live AWS/tpuf JSON (still manual).
 
-- “100k AWS cold bench JSON exists with `storage_roundtrips ≤ 4`.”
-- “Comparison report documents tpuf region and openpuffer S3 region.”
+**Pending manual facts** (add when artifacts exist):
+
+- “100k AWS cold bench JSON exists with `storage_roundtrips ≤ 4`.” (`benchmarks/results/large-aws-l1.json`)
+- “Comparison report documents tpuf region and openpuffer S3 region.” (`docs/reports/BENCHMARK_VS_TURBOPUFFER_*.md` from measured runs)
 
 ---
 
