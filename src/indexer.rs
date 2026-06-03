@@ -738,6 +738,23 @@ mod tests {
         assert_eq!(unindexed_wal_segments(&meta), 0);
     }
 
+    #[test]
+    fn index_status_catching_up_and_up_to_date() {
+        use crate::models::IndexStatus;
+        assert_eq!(
+            IndexStatus::from_meta(0, 3),
+            IndexStatus::CatchingUp
+        );
+        assert_eq!(
+            IndexStatus::from_meta(3, 3),
+            IndexStatus::UpToDate
+        );
+        assert_eq!(
+            IndexStatus::from_meta(5, 3),
+            IndexStatus::UpToDate
+        );
+    }
+
     #[tokio::test]
     async fn background_indexer_wake_enqueues_namespace() {
         let idx = BackgroundIndexer {

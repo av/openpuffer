@@ -146,7 +146,9 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
    - CAS-advance `index_cursor` in `meta.json`.
 4. On indexer errors: log, re-queue namespace, **retry** on next tick — writes are never blocked.
 
-**Metadata API:** `GET /v1/namespaces/{name}` and `GET /v1/namespaces` (per-ns fields) expose `index_cursor`, `wal_commit_seq`, and approximate `unindexed_bytes` (sum of WAL object sizes in the unindexed tail).
+**Metadata API:** `GET /v1/namespaces/{name}` exposes `index_cursor`, `wal_commit_seq`, `approx_row_count` (view or WAL replay), `unindexed_bytes` (HEAD sum of WAL segments after `index_cursor`), and `index_status` (`catching_up` | `up_to_date`). `GET /v1/namespaces` returns the same per-ns fields except row count.
+
+**Health:** `GET /health` returns `{status:"ok"}`. With `?deep=1`, probes S3 (`HeadBucket`, list `openpuffer/`, HEAD canary `meta.json` when a namespace exists); returns `{status:"degraded",s3:"unavailable"}` with HTTP 503 if S3 is unreachable.
 
 ### Vector ANN (SPFresh-inspired, two-level)
 

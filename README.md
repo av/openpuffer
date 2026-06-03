@@ -101,7 +101,8 @@ openpuffer serve \
 |--------|------|---------|
 | GET | `/health` | Readiness |
 | GET | `/v1/namespaces` | List namespaces + metadata |
-| GET | `/v1/namespaces/{name}` | `index_cursor`, `wal_commit_seq`, schema |
+| GET | `/health?deep=1` | S3 probe (`HeadBucket` + `openpuffer/` read); `degraded` if down |
+| GET | `/v1/namespaces/{name}` | `approx_row_count`, `index_status`, `unindexed_bytes`, cursors |
 | GET/POST | `/v1/namespaces/{name}/export` | Paginated export (`last_id`, `limit`, `format=ndjson`) |
 | POST | `/v1/namespaces/{name}/warm` | Prefetch index + pin view |
 | POST | `/v2/namespaces/{name}` | Write (upsert, patch, delete, `delete_by_filter`, `schema`) |

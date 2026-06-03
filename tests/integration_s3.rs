@@ -32,6 +32,7 @@ const NAMESPACE_EXPORT: &str = "itest-export";
 const NAMESPACE_WAL_RATE: &str = "itest-wal-rate";
 const NAMESPACE_COPY_SRC: &str = "itest-copy-src";
 const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
+const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -1405,4 +1406,107 @@ async fn copy_from_namespace_returns_same_docs_on_dest() {
         Some("copy-a"),
         "dest vector top-1 should be copy-a, got {vector_ids:?}"
     );
+}
+
+#[tokio::test]
+async fn deep_health_and_namespace_metadata_fields() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let mut serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_HEALTH_META;
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "doc-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "alpha bravo unique",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "doc-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "charlie delta",
+                    "tier": "free"
+                }
+            },
+            {
+                "id": "doc-c",
+                "attributes": {
+                    "embedding": [0.9, 0.1, 0.0],
+                    "text": "alpha charlie",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, ns, Duration::from_secs(90)).await;
+
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("{}/health?deep=1", serve.base_url))
+        .send()
+        .await
+        .expect("deep health");
+    assert_eq!(health.status(), StatusCode::OK);
+    let hv: Value = health.json().await.expect("health json");
+    assert_eq!(hv["status"].as_str(), Some("ok"));
+    assert_eq!(hv["s3"].as_str(), Some("ok"));
+    assert_eq!(hv["deep"].as_bool(), Some(true));
+
+    let meta_resp = client
+        .get(format!("{base_url}/v1/namespaces/{ns}", base_url = serve.base_url))
+        .send()
+        .await
+        .expect("namespace metadata");
+    assert_eq!(meta_resp.status(), StatusCode::OK);
+    let meta: Value = meta_resp.json().await.expect("metadata json");
+    assert_eq!(meta["approx_row_count"].as_u64(), Some(3));
+    assert_eq!(meta["index_status"].as_str(), Some("up_to_date"));
+    assert!(meta["unindexed_bytes"].as_u64().is_some());
+    assert_eq!(meta["index_cursor"].as_u64(), meta["wal_commit_seq"].as_u64());
+
+    // Unindexed tail: write without waiting for indexer.
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "doc-meta-lag",
+            "attributes": {"text": "lag probe", "embedding": [0.1, 0.2, 0.0], "tier": "pro"}
+        }]),
+    )
+    .await;
+    let lag_meta = client
+        .get(format!("{base_url}/v1/namespaces/{ns}", base_url = serve.base_url))
+        .send()
+        .await
+        .expect("lag metadata")
+        .json::<Value>()
+        .await
+        .expect("lag json");
+    assert_eq!(lag_meta["index_status"].as_str(), Some("catching_up"));
+    assert!(
+        lag_meta["unindexed_bytes"].as_u64().unwrap_or(0) > 0,
+        "expected unindexed_bytes > 0 while catching up"
+    );
+    assert_eq!(lag_meta["approx_row_count"].as_u64(), Some(4));
+
+    serve.stop();
 }

@@ -140,6 +140,29 @@ pub struct QueryRequest {
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,
+    /// Present when `?deep=1`: `"ok"` if S3 probes succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deep: Option<bool>,
+}
+
+/// Background indexer state for a namespace (turbopuffer `index_status` subset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexStatus {
+    CatchingUp,
+    UpToDate,
+}
+
+impl IndexStatus {
+    pub fn from_meta(index_cursor: u64, wal_commit_seq: u64) -> Self {
+        if index_cursor < wal_commit_seq {
+            Self::CatchingUp
+        } else {
+            Self::UpToDate
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -151,6 +174,8 @@ pub struct NamespaceSummary {
     pub wal_commit_seq: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unindexed_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_status: Option<IndexStatus>,
 }
 
 /// GET /v1/namespaces/{name} — simplified turbopuffer metadata shape.
@@ -159,7 +184,10 @@ pub struct NamespaceMetadata {
     pub id: String,
     pub index_cursor: u64,
     pub wal_commit_seq: u64,
+    /// Live document count from in-memory view or full WAL replay.
+    pub approx_row_count: u64,
     pub unindexed_bytes: u64,
+    pub index_status: IndexStatus,
 }
 
 #[derive(Debug, Serialize)]

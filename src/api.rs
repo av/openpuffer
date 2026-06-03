@@ -47,8 +47,52 @@ pub fn router(state: AppState) -> Router {
     r.with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
-    Json(HealthResponse { status: "ok" })
+#[derive(Debug, Default, serde::Deserialize)]
+struct HealthQuery {
+    #[serde(default)]
+    deep: Option<u8>,
+}
+
+async fn health(
+    State(state): State<AppState>,
+    Query(params): Query<HealthQuery>,
+) -> impl IntoResponse {
+    let deep = params.deep == Some(1);
+    if !deep {
+        return (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                s3: None,
+                deep: None,
+            }),
+        )
+            .into_response();
+    }
+
+    match state.storage.deep_health_probe().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                s3: Some("ok"),
+                deep: Some(true),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("deep health S3 probe failed: {e:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(HealthResponse {
+                    status: "degraded",
+                    s3: Some("unavailable"),
+                    deep: Some(true),
+                }),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
@@ -56,18 +100,14 @@ async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
         Ok(names) => {
             let mut namespaces = Vec::with_capacity(names.len());
             for id in names {
-                let summary = match state.storage.namespace_metadata(&id).await {
-                    Ok(meta) => NamespaceSummary {
-                        id,
-                        index_cursor: Some(meta.index_cursor),
-                        wal_commit_seq: Some(meta.wal_commit_seq),
-                        unindexed_bytes: Some(meta.unindexed_bytes),
-                    },
+                let summary = match state.storage.namespace_summary(&id).await {
+                    Ok(summary) => summary,
                     Err(_) => NamespaceSummary {
                         id,
                         index_cursor: None,
                         wal_commit_seq: None,
                         unindexed_bytes: None,
+                        index_status: None,
                     },
                 };
                 namespaces.push(summary);

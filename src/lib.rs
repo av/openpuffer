@@ -4,9 +4,9 @@
 //! + `meta.json`); see `docs/ARCHITECTURE.md`.
 //!
 //! HTTP routes (turbopuffer-compatible):
-//!   GET  /health
+//!   GET  /health                    — `?deep=1` probes S3 (HeadBucket + openpuffer/ read)
 //!   GET  /v1/namespaces
-//!   GET  /v1/namespaces/{name}      — namespace metadata (index cursor, WAL commit, unindexed bytes)
+//!   GET  /v1/namespaces/{name}      — metadata (row count, index_status, unindexed_bytes, …)
 //!   GET  /v1/namespaces/{name}/export — WAL snapshot export (paginated by `last_id`)
 //!   POST /v1/namespaces/{name}/export — same with JSON body
 //!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
@@ -27,6 +27,7 @@ pub mod commit_lock;
 pub mod config;
 pub mod export;
 pub mod filter;
+pub mod health;
 pub mod index;
 pub mod indexer;
 pub mod meta;

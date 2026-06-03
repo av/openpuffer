@@ -2,6 +2,7 @@ use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::cache::SegmentCache;
 use crate::filter::parse_filter;
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
+use crate::models::IndexStatus;
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
 use crate::index::vector::VectorIndex;
@@ -82,6 +83,29 @@ impl Storage {
         &self.cache
     }
 
+    /// Shallow S3 probe for `GET /health?deep=1`.
+    pub async fn deep_health_probe(&self) -> Result<()> {
+        crate::health::probe_s3_storage(&self.client, &self.bucket).await
+    }
+
+    /// Namespace summary for list (no WAL replay for row count).
+    pub async fn namespace_summary(&self, name: &str) -> Result<crate::models::NamespaceSummary> {
+        let Some((meta, _)) =
+            crate::namespace::fetch_meta(&self.client, &self.bucket, name).await?
+        else {
+            return Err(anyhow!("namespace not found"));
+        };
+        let unindexed_bytes =
+            approx_unindexed_bytes(&self.client, &self.bucket, name, &meta).await;
+        Ok(crate::models::NamespaceSummary {
+            id: name.to_string(),
+            index_cursor: Some(meta.index_cursor),
+            wal_commit_seq: Some(meta.wal_commit_seq),
+            unindexed_bytes: Some(unindexed_bytes),
+            index_status: Some(IndexStatus::from_meta(meta.index_cursor, meta.wal_commit_seq)),
+        })
+    }
+
     /// Namespace metadata for turbopuffer-style observability.
     pub async fn namespace_metadata(&self, name: &str) -> Result<crate::models::NamespaceMetadata> {
         let Some((meta, _)) =
@@ -91,12 +115,29 @@ impl Storage {
         };
         let unindexed_bytes =
             approx_unindexed_bytes(&self.client, &self.bucket, name, &meta).await;
+        let approx_row_count = self.approx_row_count(name, &meta).await?;
         Ok(crate::models::NamespaceMetadata {
             id: name.to_string(),
             index_cursor: meta.index_cursor,
             wal_commit_seq: meta.wal_commit_seq,
+            approx_row_count,
             unindexed_bytes,
+            index_status: IndexStatus::from_meta(meta.index_cursor, meta.wal_commit_seq),
         })
+    }
+
+    /// Document count: pinned view when caught up, else full WAL replay.
+    async fn approx_row_count(&self, name: &str, meta: &NamespaceMeta) -> Result<u64> {
+        {
+            let mut views = self.views.lock().await;
+            if let Some(view) = views.get_mut(name) {
+                if view.last_applied_wal_seq >= meta.wal_commit_seq {
+                    return Ok(view.docs.len() as u64);
+                }
+            }
+        }
+        let view = NamespaceView::load(&self.client, &self.bucket, name).await?;
+        Ok(view.docs.len() as u64)
     }
 
     pub async fn list_namespaces(&self) -> Result<Vec<String>> {

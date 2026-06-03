@@ -110,6 +110,10 @@
   tags: [implemented]
 - label: GET /v1/namespaces and GET /v1/namespaces/{name} expose index_cursor and wal_commit_seq
   command: grep -q '/v1/namespaces' src/api.rs && grep -q 'index_cursor' src/meta.rs
+- label: GET /health?deep=1 probes S3 and returns degraded when unavailable
+  command: grep -q 'deep_health_probe' src/storage.rs && grep -q 'probe_s3_storage' src/health.rs
+- label: GET /v1/namespaces/{name} exposes approx_row_count index_status and unindexed_bytes
+  command: grep -q 'approx_row_count' src/models.rs && grep -q 'IndexStatus' src/models.rs
   tags: [implemented]
 - label: POST /v2/namespaces/{name} accepts upsert_rows upsert_columns deletes patches and delete_by_filter
   command: grep -q 'write_namespace' src/api.rs && grep -q 'upsert_rows' src/models.rs
