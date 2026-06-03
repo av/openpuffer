@@ -283,6 +283,13 @@ pub fn l1_keys_for_query_probe(
     keys
 }
 
+/// Upper bound on cluster `GetObject` calls for one probed vector query (spec slack +4).
+pub fn cluster_get_upper_bound(l0: &CentroidIndexL0) -> usize {
+    let coarse = l0.probe_coarse as usize;
+    let fine = l0.probe_fine as usize;
+    coarse + coarse.saturating_mul(fine) + 4
+}
+
 /// Probed cluster object keys given L1 segments already in memory.
 pub fn cluster_keys_for_query(
     namespace: &str,
@@ -1016,6 +1023,16 @@ mod tests {
         assert!(!r2_keys.iter().any(|k| k.contains("clusters-")));
         let full_r2 = round2_keys("ns", &meta, &[("emb".into(), l0)]);
         assert!(full_r2.iter().filter(|k| k.contains("clusters-")).count() == 64);
+    }
+
+    #[test]
+    fn cluster_get_upper_bound_matches_probe_defaults() {
+        let l0 = CentroidIndexL0 {
+            probe_coarse: DEFAULT_PROBE_COARSE,
+            probe_fine: DEFAULT_PROBE_FINE,
+            ..CentroidIndexL0::default()
+        };
+        assert_eq!(cluster_get_upper_bound(&l0), 16);
     }
 
     #[test]

@@ -38,7 +38,7 @@ cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four --test bench_
 | Tier | Size | Command | Environment |
 |------|------|---------|-------------|
 | CI baseline | 10k | `cargo test -F bench bench_cold_10k_baseline` | MinIO testcontainers |
-| Nightly | 100k | TBD (`#[ignore]` bench or dedicated job) | MinIO |
+| Nightly | 100k | `cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture` | MinIO (`#[ignore]`, ~15–30 min) |
 | Manual | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
 
 ## 1M manual (AWS)

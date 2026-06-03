@@ -51,6 +51,7 @@ const FAIR_HOT_BATCHES: usize = 5;
 const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
 const NAMESPACE_MULTI_INST: &str = "itest-multi-inst-stateless";
 const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
+const NAMESPACE_COLD_PROBE_BOUND: &str = "itest-cold-probe-bound";
 const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
 const NAMESPACE_S3_COPY_KEYS_SRC: &str = "itest-s3-copy-keys-src";
@@ -3330,6 +3331,150 @@ async fn multi_instance_stateless_integration() {
         vector_on_a.first().map(String::as_str),
         Some("doc-d"),
         "instance A query after warm must rank doc-d from B, got {vector_on_a:?}"
+    );
+}
+
+/// Cold vector query fetches O(probe) cluster segments, not `num_fine_total` (10k indexed).
+#[tokio::test]
+async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
+    use openpuffer::index::vector::CentroidIndexL0;
+    use openpuffer::s3_batch::{cluster_get_upper_bound, fetch_cold_vector_probed};
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_PROBE_BOUND;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "embedding": "[128]f32"
+    });
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body = json!({ "upsert_columns": stress_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(300)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(
+        meta.index_cursor, meta.wal_commit_seq,
+        "namespace must be fully indexed"
+    );
+
+    let l0_key = format!("{ROOT_PREFIX}{ns}/index/embedding/centroids-l0.bin");
+    let l0_bytes = get_object_bytes(&fixture.client, &fixture.bucket, &l0_key).await;
+    let l0 = CentroidIndexL0::decode(&l0_bytes).expect("decode centroids-l0");
+    assert!(
+        l0.num_fine_total > 100,
+        "fixture must have many fine clusters (got {})",
+        l0.num_fine_total
+    );
+
+    let index_prefix = format!("{ROOT_PREFIX}{ns}/index/");
+    let index_keys =
+        list_keys_with_prefix(&fixture.client, &fixture.bucket, &index_prefix).await;
+    let s3_cluster_objects = index_keys
+        .iter()
+        .filter(|k| k.contains("clusters-"))
+        .count();
+    assert!(
+        s3_cluster_objects > 100,
+        "S3 should list many cluster objects (got {s3_cluster_objects})"
+    );
+    assert!(
+        s3_cluster_objects >= l0.num_fine_total as usize / 2,
+        "cluster object count {s3_cluster_objects} should track num_fine_total {}",
+        l0.num_fine_total
+    );
+
+    let query_vec: Vec<f64> = (0..STRESS_DIM)
+        .map(|d| (d as f64 * 0.02).cos())
+        .collect();
+    let max_cluster_gets = cluster_get_upper_bound(&l0);
+
+    let (vindex, probe_roundtrips) = fetch_cold_vector_probed(
+        &fixture.client,
+        &fixture.bucket,
+        ns,
+        &meta,
+        "embedding",
+        l0.clone(),
+        &query_vec,
+    )
+    .await
+    .expect("probed cold vector fetch");
+    let cluster_segments_fetched = vindex.clusters.len();
+    assert!(
+        cluster_segments_fetched <= max_cluster_gets,
+        "probed cluster GETs {cluster_segments_fetched} must be ≤ probe bound {max_cluster_gets} \
+         (probe_coarse={}, probe_fine={})",
+        l0.probe_coarse,
+        l0.probe_fine
+    );
+    assert!(
+        cluster_segments_fetched < l0.num_fine_total as usize,
+        "probed fetch {cluster_segments_fetched} must be << num_fine_total {}",
+        l0.num_fine_total
+    );
+    assert!(
+        cluster_segments_fetched * 10 < s3_cluster_objects,
+        "probed fetch should not scale with full index: fetched {cluster_segments_fetched}, \
+         s3_cluster_objects {s3_cluster_objects}"
+    );
+    assert!(
+        probe_roundtrips <= 2,
+        "L1+clusters share ≤2 logical roundtrips in fetch_cold_vector_probed, got {probe_roundtrips}"
+    );
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    let resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", query_vec],
+            "top_k": 10,
+            "consistency": "strong"
+        }))
+        .send()
+        .await
+        .expect("cold HTTP query");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("query json");
+    let perf = body["performance"].as_object().expect("performance");
+    let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
+    assert!(
+        ratio < 0.20,
+        "cold ANN candidates_ratio {ratio} should stay sub-linear on 10k"
+    );
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips <= 4,
+        "storage_roundtrips {roundtrips} must be ≤ 4 on caught-up strong cold query"
     );
 }
 
