@@ -30,6 +30,199 @@ Helpers live in [`tests/common/synthetic_workload.rs`](../tests/common/synthetic
 
 ---
 
+## Large-dataset program — Operator runbook (Phases 4–6)
+
+Performance measurement, debugging, and pass/fail assessment for the [large-dataset comparison program](PLAN_LARGE_DATASET_BENCHMARK.md). **MinIO timings are not used in the turbopuffer report** — AWS + managed tpuf only for latency comparison.
+
+### End-to-end operator flow
+
+| Step | Phase | Command | Output |
+|------|-------|---------|--------|
+| 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
+| 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
+| 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
+| 3 | tpuf | [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
+| 4 | report | [`scripts/render-report.sh`](../scripts/render-report.sh) | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
+
+**Fairness:** run the tpuf driver from the **same region** as the openpuffer S3 bucket and tpuf namespace. Record client RTT before interpreting cold p50 deltas ([plan § architecture](PLAN_LARGE_DATASET_BENCHMARK.md#architecture-of-the-evaluation)).
+
+**Dry-run** (no credentials):
+
+```bash
+./scripts/ingest-large.sh --tier l1 --dry-run
+./scripts/bench-large.sh --tier l1 --dry-run
+python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
+./scripts/render-report.sh --dry-run
+```
+
+Tiers: **l1** (100k, default comparison), **l2** (500k), **l3** (1M). Workloads under `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/`.
+
+### Phase 4 — Metrics matrix
+
+Collect the same **logical** metrics on both sides where APIs allow. JSON field names align across [`bench-large.sh`](../scripts/bench-large.sh) and [`run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) for [`render-report.sh`](../scripts/render-report.sh).
+
+| Metric | Unit | openpuffer source | turbopuffer source | Gate / notes |
+|--------|------|-------------------|--------------------|--------------|
+| Cold p50 query latency | ms | `p50_query_latency_ms` in `large-aws-*.json` | `p50_query_latency_ms` in `tpuf-*.json` | **AWS: p50 < 600** when `OPENPUFFER_BENCH_ENFORCE_GATES=1` |
+| Cold p95 query latency | ms | `p95_query_latency_ms` | `p95_query_latency_ms` | Report only (no hard gate) |
+| `storage_roundtrips` | count | `performance.storage_roundtrips` (last cold run) | n/a | **≤ 4** on caught-up strong cold vector query |
+| `cold_s3_keys_fetched` | count | `performance.cold_s3_keys_fetched` | n/a | Operability; explain vs tpuf opaque storage |
+| `s3_get_count` | count | `GET /v1/debug/cache-stats` after cold series | n/a | Segment cache; see `s3_get_count_note` in JSON |
+| `candidates_ratio` | ratio | `performance.candidates_ratio` | tpuf `performance` if present | **< 0.20** @ 100k+ (MinIO nightly); informational on AWS |
+| `recall@10` | ratio | `POST …/recall` → `avg_recall` | `namespace.recall()` | **≥ 0.85** large-tier script gate; aim **≥ 0.90** @ 100k |
+| Index catch-up | bool | `index_cursor_eq_wal_commit_seq` | driver index wait | Must be true before cold series |
+| `preferred_ann_version` | int | namespace meta | n/a | **3** required |
+| `index_object_count` | count | optional `aws s3api list-objects-v2` | n/a | openpuffer operability |
+| Ingest wall time | s | `ingest-large.sh` logs / meta poll | driver ingest logs | Not 1:1 vs tpuf (WAL ~1 commit/s/ns) |
+| Per-run cold detail | JSON array | `cold_runs[]` | `cold_runs[]` | Latency + performance per run |
+
+**Recall billing (tpuf):** use `queries.json` `recall_defaults` (`num=20`, `top_k=10`) — same as openpuffer bench. Lower `num` on L2/L3 if cost-sensitive.
+
+### Phase 4 — Cold query protocol (mandatory)
+
+Shared definition in workload [`queries.json`](../benchmarks/workloads/synthetic-128/l1-100k/queries.json) → `cold_query_protocol`:
+
+| Parameter | Default | Override env |
+|-----------|---------|--------------|
+| Runs | **7** | `OPENPUFFER_BENCH_COLD_RUNS` / `TURBOPUFFER_BENCH_COLD_RUNS` |
+| `top_k` | **10** | from `queries.json` |
+| `consistency` | **strong** | from `queries.json` |
+| Primary query | `vector-q00` (`vector_queries[0]`) | fixed in scripts |
+
+**Procedure (both systems):**
+
+1. **Indexed gate** — openpuffer: `index_cursor == wal_commit_seq` and `preferred_ann_version == 3` (`bench-large.sh` polls; tpuf driver waits on namespace metadata).
+2. **Query shape** — vector-only ANN: `rank_by: ["vector","ANN","embedding", <query_vec>]`, minimal attributes (scripts build body from `queries.json`).
+3. **Cache bust each run:**
+   - **openpuffer:** empty `--cache-dir` on `serve`; `POST /v1/debug/cache-stats/reset` before each of the 7 queries ([`bench-large.sh`](../scripts/bench-large.sh)).
+   - **turbopuffer:** fresh ephemeral namespace per run series (simplest cold path); see [tpuf driver README](../benchmarks/tpuf_driver/README.md).
+4. **Execute** 7 cold queries; record client `latency_ms` per run in `cold_runs[]`.
+5. **Aggregate** — sort latencies ascending; **p50** = 50th percentile, **p95** = 95th percentile (same formula as [`tests/bench_cold.rs`](../tests/bench_cold.rs)).
+6. **Post-series** — one extra cold query for `s3_get_count` (openpuffer); then `/recall` with `recall_defaults`.
+
+**openpuffer (after ingest):**
+
+```bash
+export OPENPUFFER_S3_ENDPOINT=... OPENPUFFER_S3_BUCKET=... OPENPUFFER_S3_ACCESS_KEY=... OPENPUFFER_S3_SECRET_KEY=...
+export OPENPUFFER_ANN_VERSION=3
+export OPENPUFFER_COLD_S3_CONCURRENCY=32   # try 64 if RTT-bound on AWS
+
+./scripts/ingest-large.sh --tier l1
+./scripts/bench-large.sh --tier l1
+# Record-only if gates not met yet:
+OPENPUFFER_BENCH_ENFORCE_GATES=0 ./scripts/bench-large.sh --tier l1
+```
+
+**turbopuffer (same tier, same seed):**
+
+```bash
+export TURBOPUFFER_API_KEY=...   # never commit
+export TURBOPUFFER_REGION=aws-us-east-1   # align with EC2 + S3
+
+python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
+# Output: benchmarks/results/tpuf-l1.json
+```
+
+**Warm queries (secondary):** not automated in A3/A4. For openpuffer: non-empty `--cache-dir`, `POST /v1/namespaces/{ns}/warm`, 20 queries with `consistency: eventual`. Compare p50 to tpuf [warm cache](https://turbopuffer.com/docs/warm-cache) only if you add a manual warm section to the report.
+
+**Hybrid / filter (secondary):** use `filter_queries` / `hybrid_queries` in `queries.json` and integration patterns (`cold_hybrid_10k_*`); openpuffer gate `storage_roundtrips ≤ 4` still applies.
+
+### Phase 5 — Debugging playbook
+
+When gates fail or latencies look wrong, work in this order ([full detail in plan Phase 5](PLAN_LARGE_DATASET_BENCHMARK.md#phase-5--debugging-playbook)).
+
+#### 5.1 Index not caught up
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| Low recall, high `candidates_ratio`, slow scans | `GET /v1/namespaces/{ns}` → `index_cursor`, `wal_commit_seq`, `unindexed_bytes` | Wait; re-run `ingest-large.sh` poll; check indexer logs |
+
+#### 5.2 Cold path fetching too much
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| `storage_roundtrips > 4`, `cold_s3_keys_fetched` ≫ probed clusters | `performance.ann_probed_clusters`, `OPENPUFFER_ANN_*_PROBE`, `preferred_ann_version` | Re-index with v3; tune probes; see [ANN probe tuning](#ann-probe-tuning-serve--indexer) |
+
+#### 5.3 High latency, low roundtrips
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| p50 > 600 ms but `storage_roundtrips ≤ 4` | S3 RTT from EC2, region mismatch, `OPENPUFFER_COLD_S3_CONCURRENCY` | Same-region bucket + host; try 64; disable rerank for latency A/B |
+
+#### 5.4 Recall collapse
+
+| Check | Fix |
+|-------|-----|
+| v2 index / wrong seed | `OPENPUFFER_ANN_VERSION=3`; confirm `manifest.json` seed matches tpuf ingest |
+| Probes too low | Raise coarse/fine probe; watch `candidates_ratio` |
+| Rerank off | `OPENPUFFER_ANN_RERANK=1` for recall A/B (latency cost) |
+
+#### 5.5 Ingest stalls
+
+Expected **~1 WAL commit/s** per namespace — do not compare ingest wall time to tpuf without noting the cap ([1M ingest cadence](#1m-ingest-cadence)). On `503 SlowDown`, backoff and verify IAM.
+
+#### 5.6 turbopuffer-specific
+
+| Issue | Action |
+|-------|--------|
+| 429 / rate limit | Smaller write concurrency; SDK backoff |
+| High cold p50 | Closer `TURBOPUFFER_REGION`; same host as openpuffer bench |
+| Recall cost | Reduce `recall_defaults.num` on large namespaces |
+
+#### 5.7 S3 forensics (openpuffer)
+
+```bash
+aws s3 cp "s3://${OPENPUFFER_S3_BUCKET}/openpuffer/${NAMESPACE}/meta.json" - | jq .
+aws s3 ls "s3://${OPENPUFFER_S3_BUCKET}/openpuffer/${NAMESPACE}/index/" | wc -l
+```
+
+Compare with `index_object_count` in `large-aws-*.json`.
+
+### Phase 6 — Pass/fail rubric
+
+#### 6.1 openpuffer gates (by tier)
+
+| Tier | Environment | `storage_roundtrips` | `recall@10` | p50 cold | `candidates_ratio` |
+|------|-------------|---------------------|-------------|----------|-------------------|
+| 10k | MinIO CI | ≤ 4 | ≥ 0.85 (bench) | informational | lib gates |
+| 100k | MinIO nightly | ≤ 4 | ≥ 0.88 (bench) / 0.90 (lib) | informational | < 0.20 |
+| 100k | **AWS** (`bench-large.sh` l1) | ≤ 4 | ≥ **0.85** | **< 600 ms** | < 0.20 (target) |
+| 1M | AWS (`bench-large.sh` l3 or `bench-1m.sh`) | ≤ 4 | ≥ 0.85 | **< 600 ms** | < 0.20 (target) |
+
+Enforced automatically when `OPENPUFFER_BENCH_ENFORCE_GATES=1` (default in `bench-large.sh` / `bench-1m.sh`).
+
+#### 6.2 openpuffer vs turbopuffer (report interpretation)
+
+| Outcome | Meaning |
+|---------|---------|
+| openpuffer cold p50 **within ~2×** tpuf @ same tier/region | Competitive for self-hosted; tune concurrency/probes |
+| openpuffer cold p50 **> 2×** tpuf | Investigate RTT, probe clamp, indexer lag, rerank — not necessarily incorrect |
+| openpuffer recall **<<** tpuf | Expected if ANN simpler than prod SPFresh; tune probes/rerank |
+| openpuffer recall **≈** tpuf on synthetic | Strong signal; validate on real embeddings before product claims |
+| openpuffer ingest **much slower** | Expected (WAL cap); separate write-path narrative in report |
+
+**Ratio column:** `render-report.sh` computes op/tpuf for p50, recall, ingest when both JSON files exist.
+
+#### 6.3 Block release / block report merge
+
+- MinIO **correctness** regression (G2 + integration suite).
+- `storage_roundtrips > 4` on caught-up strong cold vector @ 10k/100k.
+- `recall@10` below tier gate on AWS after index catch-up.
+- Comparison report missing methodology (region, tier, seed, commit SHA).
+- Using **MinIO** latencies in the tpuf comparison table.
+
+#### 6.4 Merge report
+
+```bash
+./scripts/render-report.sh --date 2026-06-04
+# Requires benchmarks/results/large-aws-l1.json + tpuf-l1.json
+# Skeleton only: ./scripts/render-report.sh --dry-run
+```
+
+Then update [COMPARISON.md](COMPARISON.md) from measured rows ([plan Phase 7](PLAN_LARGE_DATASET_BENCHMARK.md#phase-7--comparison-report-deliverable)).
+
+---
+
 ## Feature: `bench`
 
 ```bash
@@ -284,4 +477,4 @@ facts check --tags bench-tpuf          # turbopuffer driver A4–A5, comparison 
 facts ll --tags spec          # list program spec facts
 ```
 
-Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` and `bench-tpuf` cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, and `render-report.sh`. Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
+Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` and `bench-tpuf` cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
