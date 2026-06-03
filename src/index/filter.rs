@@ -15,6 +15,7 @@ pub fn value_key(v: &FilterValue) -> String {
         FilterValue::String(s) => format!("s:{s}"),
         FilterValue::Bool(b) => format!("b:{b}"),
         FilterValue::Number(n) => format!("n:{n}"),
+        FilterValue::Null => "null".to_string(),
     }
 }
 

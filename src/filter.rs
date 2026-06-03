@@ -27,12 +27,13 @@ pub enum FilterExpr {
     },
 }
 
-/// Scalar filter value (string / number / bool).
+/// Scalar filter value (string / number / bool / null).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterValue {
     String(String),
     Number(f64),
     Bool(bool),
+    Null,
 }
 
 impl FilterValue {
@@ -44,7 +45,7 @@ impl FilterValue {
                 .as_f64()
                 .map(FilterValue::Number)
                 .ok_or_else(|| anyhow!("filter number must be finite")),
-            Value::Null => bail!("filter value cannot be null"),
+            Value::Null => Ok(FilterValue::Null),
             _ => bail!(
                 "filter value must be string, number, or bool (got {})",
                 v.to_string()
@@ -148,31 +149,74 @@ pub fn eval_filter(expr: &FilterExpr, doc: &Document) -> bool {
     }
 }
 
-fn eval_cmp(doc: &Document, field: &str, op: CmpOp, rhs: &FilterValue) -> bool {
-    let Some(attr) = doc.attributes.get(field) else {
-        return matches!(op, CmpOp::Ne);
-    };
-    let Some(lhs) = attr_to_filter_value(attr) else {
-        return matches!(op, CmpOp::Ne);
-    };
-    match op {
-        CmpOp::Eq => lhs == *rhs,
-        CmpOp::Ne => lhs != *rhs,
-        CmpOp::Gt => compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Greater),
-        CmpOp::Gte => matches!(
-            compare_values(&lhs, rhs),
-            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ),
-        CmpOp::Lt => compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Less),
-        CmpOp::Lte => matches!(
-            compare_values(&lhs, rhs),
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ),
+/// turbopuffer `upsert_condition`: create if missing; otherwise evaluate on current doc.
+pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, _new: &Document) -> bool {
+    match current {
+        None => true,
+        Some(doc) => eval_filter(expr, doc),
     }
+}
+
+fn eval_cmp(doc: &Document, field: &str, op: CmpOp, rhs: &FilterValue) -> bool {
+    let lhs = doc_field_value(doc, field);
+    match op {
+        CmpOp::Eq => match (&lhs, rhs) {
+            (None, FilterValue::Null) => true,
+            (None, _) => false,
+            (Some(_lhs), FilterValue::Null) => false,
+            (Some(lhs), rhs) => *lhs == *rhs,
+        },
+        CmpOp::Ne => match (&lhs, rhs) {
+            (None, FilterValue::Null) => false,
+            (None, _) => true,
+            (Some(_lhs), FilterValue::Null) => true,
+            (Some(lhs), rhs) => *lhs != *rhs,
+        },
+        CmpOp::Gt => {
+            let Some(lhs) = lhs else {
+                return false;
+            };
+            compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Greater)
+        }
+        CmpOp::Gte => {
+            let Some(lhs) = lhs else {
+                return false;
+            };
+            matches!(
+                compare_values(&lhs, rhs),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            )
+        }
+        CmpOp::Lt => {
+            let Some(lhs) = lhs else {
+                return false;
+            };
+            compare_values(&lhs, rhs) == Some(std::cmp::Ordering::Less)
+        }
+        CmpOp::Lte => {
+            let Some(lhs) = lhs else {
+                return false;
+            };
+            matches!(
+                compare_values(&lhs, rhs),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
+        }
+    }
+}
+
+/// Field value for filters: `id` uses document id; missing/null attributes → `None`.
+fn doc_field_value(doc: &Document, field: &str) -> Option<FilterValue> {
+    if field == "id" {
+        return Some(FilterValue::String(doc.id.clone()));
+    }
+    let attr = doc.attributes.get(field)?;
+    attr_to_filter_value(attr)
 }
 
 fn attr_to_filter_value(v: &Value) -> Option<FilterValue> {
     match v {
+        Value::Null => None,
         Value::String(s) => Some(FilterValue::String(s.clone())),
         Value::Bool(b) => Some(FilterValue::Bool(*b)),
         Value::Number(n) => n.as_f64().map(FilterValue::Number),
@@ -257,6 +301,47 @@ mod tests {
         ));
         assert!(eval_filter(
             &parse_filter(&json!(["missing", "Ne", 0])).unwrap(),
+            &doc
+        ));
+    }
+
+    #[test]
+    fn eval_eq_null_on_missing_field() {
+        let doc = Document {
+            id: "a".into(),
+            attributes: HashMap::new(),
+        };
+        let cond = parse_filter(&json!(["tag", "Eq", null])).unwrap();
+        assert!(eval_filter(&cond, &doc));
+    }
+
+    #[test]
+    fn insert_if_not_exists_via_id_eq_null() {
+        let existing = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("name".into(), json!("old"))]),
+        };
+        let new = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("name".into(), json!("new"))]),
+        };
+        let cond = parse_filter(&json!(["id", "Eq", null])).unwrap();
+        assert!(!should_apply_upsert(&cond, Some(&existing), &new));
+        assert!(should_apply_upsert(&cond, None, &new));
+    }
+
+    #[test]
+    fn id_field_uses_document_id() {
+        let doc = Document {
+            id: "doc-1".into(),
+            attributes: HashMap::new(),
+        };
+        assert!(eval_filter(
+            &parse_filter(&json!(["id", "Eq", "doc-1"])).unwrap(),
+            &doc
+        ));
+        assert!(!eval_filter(
+            &parse_filter(&json!(["id", "Eq", null])).unwrap(),
             &doc
         ));
     }

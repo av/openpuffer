@@ -52,6 +52,9 @@ pub struct WriteRequest {
     /// Copy all S3 objects from another namespace (destination must be empty).
     #[serde(default)]
     pub copy_from_namespace: Option<String>,
+    /// Conditional upserts (turbopuffer): same filter DSL as query; missing docs always insert.
+    #[serde(default)]
+    pub upsert_condition: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

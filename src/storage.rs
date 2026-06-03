@@ -1,6 +1,6 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::cache::SegmentCache;
-use crate::filter::parse_filter;
+use crate::filter::{parse_filter, should_apply_upsert};
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
 use crate::models::IndexStatus;
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
@@ -423,6 +423,7 @@ impl Storage {
         mut deletes: Vec<String>,
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
+        upsert_condition: Option<serde_json::Value>,
     ) -> Result<crate::models::WriteStats> {
         if let Some(filter_val) = delete_by_filter {
             if !filter_val.is_null() {
@@ -437,9 +438,19 @@ impl Storage {
             }
         }
 
+        let upserts = self
+            .apply_upsert_condition(namespace, upserts, upsert_condition)
+            .await?;
+
+        let stats = crate::models::WriteStats {
+            rows_upserted: upserts.len() as u64,
+            rows_patched: patches.len() as u64,
+            rows_deleted: deletes.len() as u64,
+        };
+
         let committed = self
             .write_buffer
-            .write(namespace, upserts, patches, deletes, schema_patch)
+            .write(namespace, upserts, patches, deletes, schema_patch, stats)
             .await?;
         let stats = committed.stats;
 
@@ -460,6 +471,40 @@ impl Storage {
             views.insert(namespace.to_string(), view);
         }
         Ok(stats)
+    }
+
+    /// Filter upserts by `upsert_condition` against committed namespace view (strong read).
+    async fn apply_upsert_condition(
+        &self,
+        namespace: &str,
+        upserts: Vec<Document>,
+        upsert_condition: Option<serde_json::Value>,
+    ) -> Result<Vec<Document>> {
+        let Some(cond_val) = upsert_condition.filter(|v| !v.is_null()) else {
+            return Ok(upserts);
+        };
+        let expr = parse_filter(&cond_val)?;
+        let docs = self.load_docs_for_conditional_write(namespace).await?;
+        let mut out = Vec::with_capacity(upserts.len());
+        for doc in upserts {
+            let current = docs.get(&doc.id);
+            if should_apply_upsert(&expr, current, &doc) {
+                out.push(doc);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Current doc map for conditional writes (empty if namespace not yet created).
+    async fn load_docs_for_conditional_write(
+        &self,
+        namespace: &str,
+    ) -> Result<HashMap<String, Document>> {
+        if !namespace_exists(&self.client, &self.bucket, namespace).await? {
+            return Ok(HashMap::new());
+        }
+        let view = self.load_view_snapshot(namespace).await?;
+        Ok(view.docs)
     }
 
     /// Resolve doc ids for `delete_by_filter` via filter index + WAL tail (strong consistency).

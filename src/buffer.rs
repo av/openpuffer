@@ -124,14 +124,11 @@ impl WriteBufferManager {
         patches: Vec<Document>,
         deletes: Vec<String>,
         schema_patch: Option<Value>,
+        stats: WriteStats,
     ) -> Result<CommittedBatch> {
         let buf = self.buffer_for(namespace).await;
         let (tx, rx) = oneshot::channel();
-        let req_stats = WriteStats {
-            rows_upserted: upserts.len() as u64,
-            rows_patched: patches.len() as u64,
-            rows_deleted: deletes.len() as u64,
-        };
+        let req_stats = stats;
 
         let flush_now = {
             let mut st = buf.state.lock().await;

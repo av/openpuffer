@@ -5,6 +5,7 @@ use crate::models::{
     NamespacesResponse, QueryRequest, WriteRequest,
 };
 use crate::schema::{merge_schema, validate_patch_attributes};
+use crate::filter::parse_filter;
 use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
@@ -425,6 +426,24 @@ async fn write_namespace(
         }
     }
 
+    let upsert_condition = match body
+        .upsert_condition
+        .as_ref()
+        .filter(|v| !v.is_null())
+    {
+        None => None,
+        Some(v) => match parse_filter(v) {
+            Ok(_) => body.upsert_condition.clone(),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{e:#}")})),
+                )
+                    .into_response();
+            }
+        },
+    };
+
     match state
         .storage
         .write_documents(
@@ -434,6 +453,7 @@ async fn write_namespace(
             body.deletes,
             body.schema,
             body.delete_by_filter,
+            upsert_condition,
         )
         .await
     {

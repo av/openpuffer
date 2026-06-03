@@ -10,6 +10,7 @@ use openpuffer::meta::{meta_key, NamespaceMeta};
 use openpuffer::models::ROOT_PREFIX;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -35,6 +36,7 @@ const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
+const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const STRESS_DOCS: usize = 10_000;
 const STRESS_BATCH: usize = 2_000;
 const STRESS_DIM: usize = 128;
@@ -1817,5 +1819,92 @@ async fn wal_compaction_after_full_index_query_still_works() {
     assert!(
         vector_ids.contains(&"compact-0".to_string()),
         "vector query after compaction, ids={vector_ids:?}"
+    );
+}
+
+/// `upsert_condition` with `["id","Eq",null]`: insert new ids, skip overwrites.
+#[tokio::test]
+async fn upsert_condition_insert_if_not_exists() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_UPSERT_COND,
+        json!({
+            "upsert_rows": [{
+                "id": "exists-1",
+                "attributes": { "name": "original" }
+            }]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!(
+        "{}/v2/namespaces/{NAMESPACE_UPSERT_COND}",
+        serve.base_url
+    );
+    let resp = http
+        .post(&write_url)
+        .json(&json!({
+            "upsert_condition": ["id", "Eq", null],
+            "upsert_rows": [
+                { "id": "exists-1", "attributes": { "name": "should-not-apply" } },
+                { "id": "new-1", "attributes": { "name": "inserted" } }
+            ]
+        }))
+        .send()
+        .await
+        .expect("conditional upsert");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("write json");
+    assert_eq!(body["rows_upserted"].as_u64(), Some(1), "body={body}");
+    assert_eq!(body["rows_affected"].as_u64(), Some(1));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let export = http
+        .get(format!(
+            "{}/v1/namespaces/{NAMESPACE_UPSERT_COND}/export",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("export");
+    assert_eq!(export.status(), StatusCode::OK);
+    let exported: Value = export.json().await.expect("export json");
+    let rows = exported["rows"].as_array().expect("export rows");
+    let mut names: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        let id = row["id"].as_str().expect("id");
+        let name = row["attributes"]["name"]
+            .as_str()
+            .expect("name attr")
+            .to_string();
+        names.insert(id.to_string(), name);
+    }
+    assert_eq!(
+        names.get("exists-1").map(String::as_str),
+        Some("original"),
+        "conditional upsert must not overwrite existing doc, names={names:?}"
+    );
+    assert_eq!(
+        names.get("new-1").map(String::as_str),
+        Some("inserted"),
+        "new doc must be inserted, names={names:?}"
     );
 }

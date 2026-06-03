@@ -10,7 +10,7 @@
 //!   GET  /v1/namespaces/{name}/export — WAL snapshot export (paginated by `last_id`)
 //!   POST /v1/namespaces/{name}/export — same with JSON body
 //!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
-//!   POST /v2/namespaces/{name}        — write (upsert_rows, schema, deletes, delete_by_filter)
+//!   POST /v2/namespaces/{name}        — write (upsert_rows, upsert_condition, deletes, …)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
 //!   DELETE /v2/namespaces/{name}
 //!
