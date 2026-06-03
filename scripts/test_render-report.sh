@@ -37,6 +37,11 @@ grep -q "Secondary queries" "$OUT"
 grep -q "filter-category-in-012" "$OUT"
 grep -q "hybrid-sum-vector-bm25" "$OUT"
 grep -q "1.50×" "$OUT" || grep -q "1.5" "$OUT"
+grep -q "Index wait (s)" "$OUT"
+grep -q "Ingest docs/s" "$OUT"
+grep -q "Batch upsert p50" "$OUT"
+grep -q "110" "$OUT"
+grep -q "8" "$OUT"
 
 if grep -E 'tpuf_[A-Za-z0-9]|tpuf_deadbeef' "$OUT"; then
   echo "FAIL: report leaked API key material" >&2

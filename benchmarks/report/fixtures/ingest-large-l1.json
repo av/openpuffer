@@ -1,0 +1,43 @@
+{
+  "benchmark": "ingest_large",
+  "environment": "aws-s3",
+  "tier": "l1",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+  "namespace": "bench-large-100000",
+  "num_docs": 100000,
+  "dim": 128,
+  "batch_size": 10000,
+  "batch_count": 10,
+  "ingest_elapsed_secs": 110,
+  "ingest_wall_sec": 110,
+  "index_wait_sec": 8,
+  "ingest_total_wall_sec": 118,
+  "ingest_batches_per_sec": 0.0909,
+  "ingest_docs_per_sec": 909.09,
+  "batch_sleep_sec": 1.1,
+  "seed": 42,
+  "embedding_fn": "bench_sin_v1",
+  "id_scheme": "doc-prefix",
+  "preferred_ann_version": 3,
+  "index_cursor": 10,
+  "wal_commit_seq": 10,
+  "index_cursor_eq_wal_commit_seq": true,
+  "index_timeout_sec": 7200,
+  "generator": "benchmarks/workloads/generate_synthetic.py",
+  "ingest_timing": {
+    "upsert_wall_sec": 110,
+    "index_wait_sec": 8,
+    "total_wall_sec": 118,
+    "batch_count": 10,
+    "batches_per_sec": 0.0909,
+    "docs_per_sec": 909.09,
+    "batch_latency_ms": {
+      "p50": 95,
+      "p95": 140,
+      "min": 72,
+      "max": 155
+    },
+    "batch_runs": []
+  },
+  "notes": "fixture for render-report ingest timing rows"
+}

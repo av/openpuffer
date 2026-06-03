@@ -82,5 +82,26 @@
   ],
   "index_keys_total": null,
   "index_object_count": null,
+  "ingest_summary_path": "benchmarks/results/ingest-large-l1-schema-minio.example.json",
+  "ingest_elapsed_secs": 27,
+  "index_wait_sec": 4,
+  "ingest_total_wall_sec": 31,
+  "ingest_docs_per_sec": 3703.7,
+  "ingest_batches_per_sec": 0.3704,
+  "ingest_timing": {
+    "upsert_wall_sec": 27,
+    "index_wait_sec": 4,
+    "total_wall_sec": 31,
+    "batch_count": 10,
+    "batches_per_sec": 0.3704,
+    "docs_per_sec": 3703.7,
+    "batch_latency_ms": {
+      "p50": 142,
+      "p95": 218,
+      "min": 98,
+      "max": 241
+    },
+    "batch_runs": []
+  },
   "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Regenerate: ./scripts/bench-large.sh --tier l1"
 }

@@ -62,6 +62,7 @@ ENFORCE_GATES="${OPENPUFFER_BENCH_ENFORCE_GATES:-1}"
 SKIP_SERVE="${OPENPUFFER_BENCH_SKIP_SERVE:-}"
 SKIP_INDEX_WAIT="${OPENPUFFER_BENCH_SKIP_INDEX_WAIT:-}"
 SKIP_INDEX_STATS="${OPENPUFFER_BENCH_SKIP_INDEX_STATS:-}"
+INGEST_JSON="${OPENPUFFER_BENCH_INGEST_JSON:-}"
 
 BASE_URL="http://${LISTEN}"
 
@@ -474,6 +475,37 @@ tier_recall_gate() {
   esac
 }
 
+resolve_ingest_json_path() {
+  if [[ -n "$INGEST_JSON" ]]; then
+    echo "$INGEST_JSON"
+    return 0
+  fi
+  echo "$ROOT/benchmarks/results/ingest-large-${DOCS}.json"
+}
+
+load_ingest_summary_for_bench() {
+  local path rel
+  path="$(resolve_ingest_json_path)"
+  if [[ ! -f "$path" ]]; then
+    INGEST_SUMMARY_JSON='{}'
+    echo "  ingest sidecar: (none at ${path})" >&2
+    return 0
+  fi
+  rel="${path#$ROOT/}"
+  INGEST_SUMMARY_JSON="$(jq -c \
+    --arg rel "$rel" \
+    '{
+      ingest_summary_path: $rel,
+      ingest_elapsed_secs: .ingest_elapsed_secs,
+      index_wait_sec: .index_wait_sec,
+      ingest_total_wall_sec: .ingest_total_wall_sec,
+      ingest_docs_per_sec: .ingest_docs_per_sec,
+      ingest_batches_per_sec: .ingest_batches_per_sec,
+      ingest_timing: .ingest_timing
+    }' "$path")"
+  echo "  ingest sidecar: ${rel}" >&2
+}
+
 validate_toolchain
 if [[ "$DRY_RUN" == "1" ]]; then
   run_dry_run
@@ -487,6 +519,7 @@ BENCH_ENVIRONMENT="${OPENPUFFER_BENCH_ENVIRONMENT:-$(large_preflight_detect_envi
 
 echo "bench-large: tier=${TIER} namespace=${NAMESPACE} docs=${DOCS}"
 echo "  workload=${WORKLOAD_DIR} query=${PRIMARY_QUERY_NAME}"
+load_ingest_summary_for_bench
 
 SERVE_PID=""
 cleanup() {
@@ -619,6 +652,7 @@ jq -n \
   --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE}${WARM_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}$([[ "$WARM_MODE" == "1" ]] && echo ' --warm')" \
   --argjson index_keys_total "${INDEX_KEYS_TOTAL:-null}" \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
+  --argjson ingest_summary "${INGEST_SUMMARY_JSON:-{}}" \
   '{
     benchmark: $benchmark,
     environment: $environment,
@@ -648,6 +682,7 @@ jq -n \
     index_object_count: $index_object_count,
     notes: $notes
   }
+  + $ingest_summary
   + (if ($warm_mode | tonumber) == 1 then {
       p50_warm_query_latency_ms: $warm_p50,
       p95_warm_query_latency_ms: $warm_p95,

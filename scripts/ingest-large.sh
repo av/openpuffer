@@ -213,18 +213,22 @@ verify_namespace_meta() {
 }
 
 wait_until_indexed() {
-  local deadline=$(( $(date +%s) + INDEX_TIMEOUT_SEC ))
+  local wait_t0
+  wait_t0=$(date +%s)
+  local deadline=$(( wait_t0 + INDEX_TIMEOUT_SEC ))
   while [[ $(date +%s) -lt $deadline ]]; do
     if verify_namespace_meta >/dev/null 2>&1; then
       local meta cursor pref
       meta="$(verify_namespace_meta)"
       cursor="$(echo "$meta" | jq -r '.index_cursor')"
       pref="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
-      echo "namespace ${NAMESPACE} indexed (cursor=${cursor}, preferred_ann_version=${pref})"
+      INDEX_WAIT_SEC=$(( $(date +%s) - wait_t0 ))
+      echo "namespace ${NAMESPACE} indexed (cursor=${cursor}, preferred_ann_version=${pref}, index_wait=${INDEX_WAIT_SEC}s)"
       return 0
     fi
     sleep 2
   done
+  INDEX_WAIT_SEC=$(( $(date +%s) - wait_t0 ))
   echo "timeout waiting for index_cursor == wal_commit_seq and preferred_ann_version==3 on ${NAMESPACE}" >&2
   verify_namespace_meta >&2 || true
   return 1
@@ -287,6 +291,7 @@ run_ingest_batches() {
   INGEST_BATCH_TIMES_MS=()
   t0=$(date +%s)
 
+  INGEST_BATCH_FILES=("${files[@]}")
   for f in "${files[@]}"; do
     i=$((i + 1))
     local bt0 bt1
@@ -308,6 +313,35 @@ run_ingest_batches() {
   INGEST_BATCH_COUNT="$total"
 }
 
+build_ingest_batch_runs_json() {
+  local -a runs=()
+  local i=0 f name
+  for f in "${INGEST_BATCH_FILES[@]:-}"; do
+    i=$((i + 1))
+    name="$(basename "$f")"
+    runs+=("$(jq -cn \
+      --argjson batch "$i" \
+      --arg file "$name" \
+      --argjson latency_ms "${INGEST_BATCH_TIMES_MS[$((i - 1))]}" \
+      '{batch:$batch, file:$file, latency_ms:$latency_ms}')")
+  done
+  printf '%s\n' "${runs[@]}" | jq -s '.'
+}
+
+compute_batch_latency_percentiles() {
+  local pct="$1"
+  printf '%s\n' "${INGEST_BATCH_TIMES_MS[@]}" | sort -n | python3 -c "
+import sys
+vals = [int(x) for x in sys.stdin if x.strip()]
+if not vals:
+    print(0)
+    raise SystemExit
+pct = float('$pct')
+idx = max(0, min(len(vals) - 1, int((len(vals) * pct + 99) // 100 - 1)))
+print(vals[idx])
+"
+}
+
 write_results_json() {
   local meta="$1"
   local out="${RESULTS:-$ROOT/benchmarks/results/ingest-large-${NUM_DOCS}.json}"
@@ -318,16 +352,47 @@ write_results_json() {
   pref_ann="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
   caught_up=$([[ "$cursor" == "$commit" && "$commit" != "0" ]] && echo true || echo false)
 
+  local upsert_sec="${INGEST_WALL_SEC:-0}"
+  local index_wait_sec="${INDEX_WAIT_SEC:-0}"
+  local total_sec=$((upsert_sec + index_wait_sec))
+  local batch_count="${INGEST_BATCH_COUNT:-0}"
+  local batches_per_sec docs_per_sec
+  batches_per_sec="$(python3 -c "b=${batch_count}; u=${upsert_sec}; print(round(b/u, 4) if u>0 and b>0 else 0)")"
+  docs_per_sec="$(python3 -c "d=${NUM_DOCS}; u=${upsert_sec}; print(round(d/u, 2) if u>0 else 0)")"
+
+  local batch_p50 batch_p95 batch_min batch_max batch_runs_json
+  batch_p50=0
+  batch_p95=0
+  batch_min=0
+  batch_max=0
+  batch_runs_json='[]'
+  if [[ ${#INGEST_BATCH_TIMES_MS[@]} -gt 0 ]]; then
+    batch_p50="$(compute_batch_latency_percentiles 50)"
+    batch_p95="$(compute_batch_latency_percentiles 95)"
+    batch_min="$(printf '%s\n' "${INGEST_BATCH_TIMES_MS[@]}" | sort -n | head -1)"
+    batch_max="$(printf '%s\n' "${INGEST_BATCH_TIMES_MS[@]}" | sort -n | tail -1)"
+    batch_runs_json="$(build_ingest_batch_runs_json)"
+  fi
+
+  local env_note="${INGEST_ENVIRONMENT:-}"
+  [[ -z "$env_note" ]] && env_note="$(large_preflight_detect_environment 2>/dev/null || echo "unknown")"
+
   jq -n \
     --arg benchmark "ingest_large" \
+    --arg environment "$env_note" \
     --arg tier "$TIER" \
     --arg workload_dir "$WORKLOAD_DIR" \
     --arg namespace "$NAMESPACE" \
     --argjson num_docs "$NUM_DOCS" \
     --argjson dim "$MANIFEST_DIM" \
     --argjson batch_size "$MANIFEST_BATCH_SIZE" \
-    --argjson batch_count "${INGEST_BATCH_COUNT:-0}" \
-    --argjson ingest_wall_sec "${INGEST_WALL_SEC:-0}" \
+    --argjson batch_count "$batch_count" \
+    --argjson ingest_elapsed_secs "$upsert_sec" \
+    --argjson ingest_wall_sec "$upsert_sec" \
+    --argjson index_wait_sec "$index_wait_sec" \
+    --argjson ingest_total_wall_sec "$total_sec" \
+    --argjson ingest_batches_per_sec "$batches_per_sec" \
+    --argjson ingest_docs_per_sec "$docs_per_sec" \
     --argjson batch_sleep_sec "${BATCH_SLEEP_SEC:-$MANIFEST_SLEEP}" \
     --argjson seed "$MANIFEST_SEED" \
     --arg embedding_fn "$MANIFEST_EMBEDDING_FN" \
@@ -338,9 +403,15 @@ write_results_json() {
     --argjson index_ready "$caught_up" \
     --argjson index_timeout_sec "$INDEX_TIMEOUT_SEC" \
     --arg generator "$GENERATOR" \
-    --arg notes "A2 ingest-large.sh; cadence from manifest ingest_cadence; no block_until_indexed" \
+    --argjson batch_p50_ms "$batch_p50" \
+    --argjson batch_p95_ms "$batch_p95" \
+    --argjson batch_min_ms "$batch_min" \
+    --argjson batch_max_ms "$batch_max" \
+    --argjson batch_runs "$batch_runs_json" \
+    --arg notes "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3" \
     '{
       benchmark: $benchmark,
+      environment: $environment,
       tier: $tier,
       workload_dir: $workload_dir,
       namespace: $namespace,
@@ -348,7 +419,12 @@ write_results_json() {
       dim: $dim,
       batch_size: $batch_size,
       batch_count: $batch_count,
+      ingest_elapsed_secs: $ingest_elapsed_secs,
       ingest_wall_sec: $ingest_wall_sec,
+      index_wait_sec: $index_wait_sec,
+      ingest_total_wall_sec: $ingest_total_wall_sec,
+      ingest_batches_per_sec: $ingest_batches_per_sec,
+      ingest_docs_per_sec: $ingest_docs_per_sec,
       batch_sleep_sec: $batch_sleep_sec,
       seed: $seed,
       embedding_fn: $embedding_fn,
@@ -359,6 +435,21 @@ write_results_json() {
       index_cursor_eq_wal_commit_seq: $index_ready,
       index_timeout_sec: $index_timeout_sec,
       generator: $generator,
+      ingest_timing: {
+        upsert_wall_sec: $ingest_elapsed_secs,
+        index_wait_sec: $index_wait_sec,
+        total_wall_sec: $ingest_total_wall_sec,
+        batch_count: $batch_count,
+        batches_per_sec: $ingest_batches_per_sec,
+        docs_per_sec: $ingest_docs_per_sec,
+        batch_latency_ms: {
+          p50: $batch_p50_ms,
+          p95: $batch_p95_ms,
+          min: $batch_min_ms,
+          max: $batch_max_ms
+        },
+        batch_runs: $batch_runs
+      },
       notes: $notes
     }' >"$out"
   echo "Wrote ${out}"

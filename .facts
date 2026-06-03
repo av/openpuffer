@@ -415,7 +415,7 @@
   command: test -f benchmarks/workloads/generate_synthetic.py && python3 -m pytest benchmarks/workloads/test_generate_synthetic.py -q && grep -q 'recall_defaults' benchmarks/workloads/generate_synthetic.py
   tags: [spec, bench-large, implemented]
 - label: scripts/ingest-large.sh tiered ingest dry-run validates synthetic-128 workload and meta poll knobs
-  command: test -x scripts/ingest-large.sh && grep -q 'synthetic-128' scripts/ingest-large.sh && grep -q 'index_cursor' scripts/ingest-large.sh && ./scripts/ingest-large.sh --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l2 --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l3 --dry-run >/dev/null
+  command: test -x scripts/ingest-large.sh && grep -q 'synthetic-128' scripts/ingest-large.sh && grep -q 'index_cursor' scripts/ingest-large.sh && grep -q 'ingest_timing' scripts/ingest-large.sh && ./scripts/ingest-large.sh --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l2 --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l3 --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
 - label: scripts/bench-large.sh tiered AWS bench dry-run reads queries.json recall_defaults and targets benchmarks/results/large-aws-{tier}.json
   command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && grep -q 'warm_query_protocol' scripts/bench-large.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null && ./scripts/bench-large.sh --warm --dry-run >/dev/null
@@ -428,6 +428,9 @@
   tags: [spec, bench-large, implemented]
 - label: MinIO L1 schema example bench and ingest JSON committed with environment minio and preferred_ann_version 3
   command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['preferred_ann_version']==3 and i['preferred_ann_version']==3 and b['index_cursor_eq_wal_commit_seq']"
+  tags: [spec, bench-large, implemented]
+- label: ingest-large JSON records per-batch timing breakdown ingest_timing batch_runs index_wait_sec and bench-large embeds ingest sidecar
+  command: test -x scripts/test_ingest-timing-schema.sh && ./scripts/test_ingest-timing-schema.sh
   tags: [spec, bench-large, implemented]
 - label: GET v1 namespace metadata exposes preferred_ann_version for large-tier index gates
   command: grep -q 'preferred_ann_version' src/models.rs && grep -q 'preferred_ann_version: meta.preferred_ann_version' src/storage.rs

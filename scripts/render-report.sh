@@ -225,6 +225,17 @@ jq_field() {
   jq -r "$filter // \"null\"" "$file" 2>/dev/null || echo "null"
 }
 
+ingest_field() {
+  local file="$1" top="$2" nested="$3"
+  local val
+  val="$(jq_field "$file" ".$top")"
+  if [[ "$val" != "null" ]]; then
+    echo "$val"
+    return 0
+  fi
+  jq_field "$file" ".$nested"
+}
+
 collect_tiers() {
   if [[ "$ALL_TIERS" == "1" ]]; then
     echo "l1 l2 l3"
@@ -324,12 +335,17 @@ EOF
 render_setup_summary() {
   local tier="$1" op_file="$2" tpuf_file="$3"
   local op_ns tpuf_ns op_caught tpuf_indexed op_ingest tpuf_ingest
+  local op_index_wait op_batches_ps op_docs_ps op_ingest_path
   op_ns="$(jq_field "$op_file" '.namespace' | redact_text)"
   tpuf_ns="$(jq_field "$tpuf_file" '.namespace' | redact_text)"
   op_caught="$(jq_field "$op_file" '.index_cursor_eq_wal_commit_seq')"
   tpuf_indexed="$(jq_field "$tpuf_file" '.index_up_to_date')"
-  op_ingest="$(jq_field "$op_file" '.ingest_elapsed_secs')"
+  op_ingest="$(ingest_field "$op_file" 'ingest_elapsed_secs' 'ingest_timing.upsert_wall_sec')"
   tpuf_ingest="$(jq_field "$tpuf_file" '.ingest_elapsed_secs')"
+  op_index_wait="$(ingest_field "$op_file" 'index_wait_sec' 'ingest_timing.index_wait_sec')"
+  op_batches_ps="$(ingest_field "$op_file" 'ingest_batches_per_sec' 'ingest_timing.batches_per_sec')"
+  op_docs_ps="$(ingest_field "$op_file" 'ingest_docs_per_sec' 'ingest_timing.docs_per_sec')"
+  op_ingest_path="$(jq_field "$op_file" '.ingest_summary_path')"
 
   cat <<EOF
 ## Setup summary @ tier ${tier}
@@ -338,10 +354,14 @@ render_setup_summary() {
 |------|------------|-------------|
 | Namespace | ${op_ns} | ${tpuf_ns} |
 | Index ready | index_cursor == wal_commit_seq: ${op_caught} | index up-to-date: ${tpuf_indexed} |
-| Ingest wall time (s) | $(fmt_num "$op_ingest") | $(fmt_num "$tpuf_ingest") |
+| Ingest upsert wall (s) | $(fmt_num "$op_ingest") | $(fmt_num "$tpuf_ingest") |
+| Index wait (s) | $(fmt_num "$op_index_wait") | n/a (included in tpuf ingest) |
+| Ingest docs/s | $(fmt_num "$op_docs_ps") | $(fmt_num "$(jq_field "$tpuf_file" '.ingest_docs_per_sec')") |
+| Ingest batches/s | $(fmt_num "$op_batches_ps") | — |
+| Ingest sidecar | $(if [[ "$op_ingest_path" != "null" ]]; then echo "\`${op_ingest_path}\`"; else echo "—"; fi) | — |
 | Workload dir | \`$(jq_field "$op_file" '.workload_dir')\` | \`$(jq_field "$tpuf_file" '.workload_dir')\` |
 
-_Notes:_ Namespace names may be redacted if they contained secrets. Fill ingest/index wait timestamps from run logs if not present in JSON.
+_Notes:_ openpuffer upsert is WAL-limited (~1 commit/s); \`index_wait_sec\` is meta poll until \`index_cursor == wal_commit_seq\` and \`preferred_ann_version == 3\`. tpuf \`ingest_elapsed_secs\` is write-path only.
 
 EOF
 }
@@ -356,6 +376,7 @@ render_results_table() {
   local op_warm_p50 op_warm_p95 tpuf_warm_p50 tpuf_warm_p95
   local op_recall tpuf_recall op_rt tpuf_rt op_cold tpuf_cold op_ratio tpuf_ratio op_idx tpuf_idx
   local op_ingest tpuf_ingest op_indexed tpuf_indexed
+  local op_index_wait op_batch_p50 tpuf_docs_ps
   local warm_protocol_note=""
 
   op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
@@ -376,8 +397,11 @@ render_results_table() {
   tpuf_ratio="$(jq_field "$tpuf_file" '.candidates_ratio')"
   op_idx="$(jq_field "$op_file" '.index_object_count')"
   tpuf_idx="$(jq_field "$tpuf_file" '.index_object_count')"
-  op_ingest="$(jq_field "$op_file" '.ingest_elapsed_secs')"
+  op_ingest="$(ingest_field "$op_file" 'ingest_elapsed_secs' 'ingest_timing.upsert_wall_sec')"
   tpuf_ingest="$(jq_field "$tpuf_file" '.ingest_elapsed_secs')"
+  op_index_wait="$(ingest_field "$op_file" 'index_wait_sec' 'ingest_timing.index_wait_sec')"
+  op_batch_p50="$(jq_field "$op_file" '.ingest_timing.batch_latency_ms.p50')"
+  tpuf_docs_ps="$(jq_field "$tpuf_file" '.ingest_docs_per_sec')"
   op_indexed="$(jq_field "$op_file" '.index_cursor_eq_wal_commit_seq')"
   tpuf_indexed="$(jq_field "$tpuf_file" '.index_up_to_date')"
   if [[ "$op_warm_p50" != "null" ]]; then
@@ -400,7 +424,10 @@ render_results_table() {
 
 | Metric | openpuffer (AWS) | turbopuffer | Ratio (op/tpuf) |
 |--------|-------------------|-------------|-----------------|
-| Ingest wall time (s) | $(fmt_num "$op_ingest") | $(fmt_num "$tpuf_ingest") | $(fmt_ratio "$op_ingest" "$tpuf_ingest") |
+| Ingest upsert wall (s) | $(fmt_num "$op_ingest") | $(fmt_num "$tpuf_ingest") | $(fmt_ratio "$op_ingest" "$tpuf_ingest") |
+| Index wait (s) | $(fmt_num "$op_index_wait") | — | — |
+| Batch upsert p50 (ms) | $(fmt_num "$op_batch_p50") | — | — |
+| Ingest docs/s | $(fmt_num "$(ingest_field "$op_file" 'ingest_docs_per_sec' 'ingest_timing.docs_per_sec')") | $(fmt_num "$tpuf_docs_ps") | $(fmt_ratio "$(ingest_field "$op_file" 'ingest_docs_per_sec' 'ingest_timing.docs_per_sec')" "$tpuf_docs_ps") |
 | Time to indexed | ${op_indexed} | ${tpuf_indexed} | — |
 | Cold p50 query (ms) | $(fmt_num "$op_p50") | $(fmt_num "$tpuf_p50") | $(fmt_ratio "$op_p50" "$tpuf_p50") |
 | Cold p95 query (ms) | $(fmt_num "$op_p95") | $(fmt_num "$tpuf_p95") | $(fmt_ratio "$op_p95" "$tpuf_p95") |

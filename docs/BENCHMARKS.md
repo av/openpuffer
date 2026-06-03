@@ -134,7 +134,10 @@ Collect the same **logical** metrics on both sides where APIs allow. JSON field 
 | Index catch-up | bool | `index_cursor_eq_wal_commit_seq` | driver index wait | Must be true before cold series |
 | `preferred_ann_version` | int | namespace meta | n/a | **3** required |
 | `index_object_count` | count | optional `aws s3api list-objects-v2` | n/a | openpuffer operability |
-| Ingest wall time | s | `ingest-large.sh` logs / meta poll | driver ingest logs | Not 1:1 vs tpuf (WAL ~1 commit/s/ns) |
+| Ingest upsert wall time | s | `ingest_elapsed_secs` / `ingest_timing.upsert_wall_sec` in `ingest-large-*.json` | `ingest_elapsed_secs` in `tpuf-*.json` | Not 1:1 vs tpuf (WAL ~1 commit/s/ns) |
+| Index wait time | s | `index_wait_sec` (meta poll after upsert) | n/a (tpuf driver includes in ingest wait) | openpuffer operability |
+| Ingest docs/s | docs/s | `ingest_docs_per_sec` | `ingest_docs_per_sec` | Upsert wall only |
+| Batch upsert p50 | ms | `ingest_timing.batch_latency_ms.p50` | — | Per-batch POST latency |
 | Per-run cold detail | JSON array | `cold_runs[]` | `cold_runs[]` | Latency + performance per run |
 
 **Recall billing (tpuf):** use `queries.json` `recall_defaults` (`num=20`, `top_k=10`) — same as openpuffer bench. Lower `num` on L2/L3 if cost-sensitive.
