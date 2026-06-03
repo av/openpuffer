@@ -14,9 +14,11 @@ Stateless vector and full-text search server backed by **S3-compatible object st
 | **Scale / polish** | Production multi-tenant | Single binary, MinIO integration tests; simplified ANN (one-level k-means, no SPFresh hierarchy) |
 | **API surface** | Full product API | Core write/query/metadata/export/warm; no billing portal, CMEK, or all v2 edge cases |
 
-**Honest gaps:** no managed cloud, no cross-region replication, ANN is a minimal k-means probe (not full SPFresh), throughput is ~1 WAL commit/s/namespace by default, and filter/FTS index merges are simpler than production turbopuffer.
+**Honest gaps:** no managed cloud, no cross-region replication, ANN is a simplified two-level k-means probe (not production SPFresh), throughput is ~1 WAL commit/s/namespace by default, and filter/FTS merges are simpler than turbopuffer at scale.
 
-Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Full comparison (implemented vs missing, when to use which):** [docs/COMPARISON.md](docs/COMPARISON.md).
+
+Design detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Architecture (high level)
 
