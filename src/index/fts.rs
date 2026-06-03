@@ -114,6 +114,20 @@ impl FtsSegment {
         self.postings.retain(|_, list| !list.is_empty());
     }
 
+    /// Doc ids that appear in posting lists for any query term (candidate generation).
+    pub fn candidate_doc_ids(&self, query: &str) -> HashSet<String> {
+        let terms = tokenize(query);
+        let mut ids = HashSet::new();
+        for term in terms {
+            if let Some(list) = self.postings.get(&term) {
+                for posting in list {
+                    ids.insert(posting.doc_id.clone());
+                }
+            }
+        }
+        ids
+    }
+
     /// BM25 scores for candidate doc ids from posting lists only.
     pub fn query_bm25(&self, query: &str, top_k: usize) -> Vec<(String, f64)> {
         let terms: Vec<String> = tokenize(query);

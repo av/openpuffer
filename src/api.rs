@@ -196,6 +196,7 @@ async fn query_namespace(
                 fts: loaded.fts.as_ref(),
                 vector: loaded.vector.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
+                consistency: search::QueryConsistency::default(),
             };
             match search::execute_query(&ctx, &body) {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),

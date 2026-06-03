@@ -9,7 +9,7 @@ use crate::models::Document;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How many nearest centroids to probe at query time (v1 default).
 pub const DEFAULT_PROBE_CLUSTERS: u32 = 8;
@@ -218,6 +218,31 @@ impl VectorIndex {
             centroids,
             clusters,
         }))
+    }
+
+    /// Doc ids reachable by probing nearest centroids (candidate generation, no scoring).
+    pub fn candidate_doc_ids(&self, query: &[f64]) -> HashSet<String> {
+        if query.len() != self.centroids.dimensions as usize {
+            return HashSet::new();
+        }
+        let m = if self.centroids.num_centroids <= 32 {
+            self.centroids.num_centroids as usize
+        } else {
+            self.centroids
+                .probe_clusters
+                .min(self.centroids.num_centroids)
+                .max(1) as usize
+        };
+        let probe = self.centroids.nearest_centroids(query, m);
+        let mut ids = HashSet::new();
+        for cid in probe {
+            if let Some(cluster) = self.clusters.get(&cid) {
+                for m in &cluster.members {
+                    ids.insert(m.doc_id.clone());
+                }
+            }
+        }
+        ids
     }
 
     /// ANN query: probe nearest centroids, score cluster members, return top-k.

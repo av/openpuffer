@@ -47,18 +47,27 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
 
-## Read path (current vs target)
+## Read path / query planner
 
-**Iteration 2 (implemented):** in-process [`NamespaceView`](../src/view.rs) caches `docs` + `last_applied_wal_seq`. Queries call `catch_up()` to fetch only `wal/{seq}.bin` for `seq > last_applied_wal_seq` instead of replaying `1..=N` every time. Legacy namespaces still load `manifest.json` + `docs/`.
+**Implemented** ([`search.rs`](../src/search.rs)):
 
-**Target (iter 3+):**
+1. Load `meta.json` + FTS/vector `index/` segments + in-process [`NamespaceView`](../src/view.rs) (incremental WAL catch-up).
+2. **Candidate generation** per `rank_by` subtree:
+   - BM25: FTS posting-list union + top posting hits (indexed docs only).
+   - Vector: ANN centroid probe + cluster member ids (indexed docs only).
+   - **Sum:** union child candidate sets; **Product:** intersection.
+3. **Score only candidates** (no full-namespace scan when indexes exist).
+4. **Hybrid** `Sum` / `Product`: min-max normalize each sub-ranker over the shared candidate set, then combine.
+5. Merge sort + `top_k` truncation.
 
-1. Load `meta.json` + relevant `index/` segments.
-2. Search indexed data (ANN + BM25 + filters).
-3. **Exhaustive scan** of unindexed WAL tail: `seq in (index_cursor, wal_commit_seq]`.
-4. Optional NVMe/memory cache on query nodes ([warm cache](https://turbopuffer.com/docs/warm-cache)).
+**Consistency** (query body `consistency`):
 
-Strong consistency: after a successful write, the next query sees data replayed from committed WAL.
+| Mode | Behavior |
+|------|----------|
+| `strong` (default) | Indexed segments + exhaustive scoring for doc ids touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`. Queries never block on the background indexer. |
+| `eventual` | Indexed segments only; skip WAL tail scan (faster; very recent writes may be invisible until indexed). |
+
+Legacy namespaces still load `manifest.json` + `docs/` when no `meta.json`.
 
 ## Background indexer
 

@@ -1,3 +1,6 @@
+//! Query planner: candidate generation from FTS postings / ANN clusters / WAL tail,
+//! then score-only-on-candidates ranked retrieval (hybrid Sum/Product supported).
+
 use crate::index::fts::{bm25_doc_score, extract_index_text, FtsSegment};
 use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, VectorIndex};
 
@@ -7,6 +10,26 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// How unindexed WAL tail participates in candidate collection and scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryConsistency {
+    /// Indexed segments + exhaustive scan of docs touched in `(index_cursor, wal_commit_seq]`.
+    #[default]
+    Strong,
+    /// Indexed segments only; skip WAL tail (faster, may miss very recent writes until indexed).
+    Eventual,
+}
+
+impl QueryConsistency {
+    pub fn parse(s: Option<&str>) -> Result<Self> {
+        match s.map(|x| x.to_ascii_lowercase()).as_deref() {
+            None | Some("strong") => Ok(Self::Strong),
+            Some("eventual") => Ok(Self::Eventual),
+            Some(other) => bail!("unknown consistency mode: {other} (use strong or eventual)"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QueryContext<'a> {
     pub docs: &'a HashMap<String, Document>,
@@ -14,6 +37,7 @@ pub struct QueryContext<'a> {
     pub fts: Option<&'a FtsSegment>,
     pub vector: Option<&'a VectorIndex>,
     pub tail_doc_ids: &'a HashSet<String>,
+    pub consistency: QueryConsistency,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +54,18 @@ enum Ranker {
     Product(Vec<Ranker>),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CandidateMerge {
+    Union,
+    Intersection,
+}
+
+struct QueryPlanner<'a, 'b> {
+    ctx: &'a QueryContext<'b>,
+    /// Widen indexed candidate pools before final top_k truncation.
+    candidate_pool: usize,
+}
+
 pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<QueryResponse> {
     if let Some(filters) = &req.filters {
         if !filters.is_null() {
@@ -38,32 +74,36 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     }
 
     let top_k = req.top_k.unwrap_or(10) as usize;
+    let consistency = QueryConsistency::parse(req.consistency.as_deref())?;
+    let effective_ctx = QueryContext {
+        docs: ctx.docs,
+        meta: ctx.meta,
+        fts: ctx.fts,
+        vector: ctx.vector,
+        tail_doc_ids: ctx.tail_doc_ids,
+        consistency,
+    };
+
     let ranker = parse_rank_by(&req.rank_by)?;
-    let mut scored: Vec<(String, f64)> = Vec::new();
+    let planner = QueryPlanner {
+        ctx: &effective_ctx,
+        candidate_pool: top_k.saturating_mul(8).max(64),
+    };
 
-    match &ranker {
-        Ranker::Bm25 { field, query } if ctx.fts.is_some() => {
-            scored = execute_bm25_indexed(ctx, field, query, top_k)?;
-        }
-        Ranker::Vector { field, query } if ctx.vector.is_some() => {
-            scored = execute_vector_indexed(ctx, field, query, top_k)?;
-        }
-        _ => {
-            for (id, doc) in ctx.docs {
-                let score = score_doc(doc, &ranker, ctx)?;
-                if score.is_finite() {
-                    scored.push((id.clone(), score));
-                }
-            }
-        }
-    }
+    let candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
+    let scored = if candidates.is_empty() {
+        Vec::new()
+    } else {
+        planner.score_candidates(&ranker, &candidates)?
+    };
 
-    scored.sort_by(|a, b| {
+    let mut ranked = scored;
+    ranked.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(&b.0))
     });
-    scored.truncate(top_k);
+    ranked.truncate(top_k);
 
     let include_attrs = match &req.include_attributes {
         None => true,
@@ -71,10 +111,10 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         Some(Value::Bool(true)) => true,
         Some(_) => true,
     };
-    let rows = scored
+    let rows = ranked
         .into_iter()
         .map(|(id, score)| {
-            let doc = ctx.docs.get(&id);
+            let doc = effective_ctx.docs.get(&id);
             let attributes = if include_attrs {
                 doc.map(|d| d.attributes.clone())
             } else {
@@ -91,103 +131,255 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     Ok(QueryResponse { rows })
 }
 
-/// BM25 via FTS posting lists for indexed docs + exhaustive scan on unindexed WAL tail only.
-fn execute_bm25_indexed(
-    ctx: &QueryContext<'_>,
-    field: &str,
-    query: &str,
-    top_k: usize,
-) -> Result<Vec<(String, f64)>> {
-    let fts = ctx.fts.expect("caller ensures fts is present");
-    let fts_field = if fts.field.is_empty() { field } else { &fts.field };
-
-    let mut scores: HashMap<String, f64> = HashMap::new();
-    let indexed_hits = fts.query_bm25(query, top_k.saturating_mul(4).max(32));
-    for (id, score) in indexed_hits {
-        if ctx.tail_doc_ids.contains(&id) {
-            continue;
-        }
-        if !ctx.docs.contains_key(&id) {
-            continue;
-        }
-        scores.insert(id, score);
+impl<'a, 'b> QueryPlanner<'a, 'b> {
+    fn use_tail(&self) -> bool {
+        self.ctx.consistency == QueryConsistency::Strong
     }
 
-    let avgdl = fts.avg_doc_len();
-    let num_docs = fts.num_docs.max(1);
-    for id in ctx.tail_doc_ids {
-        let Some(doc) = ctx.docs.get(id) else {
-            continue;
-        };
-        let text = extract_index_text(doc, fts_field);
-        let score = bm25_doc_score(&text, query, avgdl, num_docs);
-        if score > 0.0 && score.is_finite() {
-            scores.insert(id.clone(), score);
+    fn for_each_tail<F>(&self, mut f: F)
+    where
+        F: FnMut(&String),
+    {
+        if !self.use_tail() {
+            return;
+        }
+        for id in self.ctx.tail_doc_ids {
+            f(id);
         }
     }
 
-    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    ranked.truncate(top_k);
-    Ok(ranked)
+    /// Collect doc ids that may appear in the final ranking for this ranker subtree.
+    fn collect_candidates(&self, ranker: &Ranker, _merge: CandidateMerge) -> Result<HashSet<String>> {
+        match ranker {
+            Ranker::Bm25 { field, query } => self.collect_bm25_candidates(field, query),
+            Ranker::Vector { field, query } => self.collect_vector_candidates(field, query),
+            Ranker::Sum(subs) => self.merge_child_candidates(subs, CandidateMerge::Union),
+            Ranker::Product(subs) => {
+                self.merge_child_candidates(subs, CandidateMerge::Intersection)
+            }
+        }
+        .map(|set| self.filter_existing_docs(set))
+    }
+
+    fn merge_child_candidates(
+        &self,
+        subs: &[Ranker],
+        merge: CandidateMerge,
+    ) -> Result<HashSet<String>> {
+        let mut acc: Option<HashSet<String>> = None;
+        for sub in subs {
+            let child = self.collect_candidates(sub, merge)?;
+            acc = Some(match acc {
+                None => child,
+                Some(prev) => match merge {
+                    CandidateMerge::Union => prev.union(&child).cloned().collect(),
+                    CandidateMerge::Intersection => prev.intersection(&child).cloned().collect(),
+                },
+            });
+        }
+        Ok(acc.unwrap_or_default())
+    }
+
+    fn filter_existing_docs(&self, ids: HashSet<String>) -> HashSet<String> {
+        ids.into_iter()
+            .filter(|id| self.ctx.docs.contains_key(id))
+            .collect()
+    }
+
+    fn collect_bm25_candidates(&self, field: &str, query: &str) -> Result<HashSet<String>> {
+        let mut ids = HashSet::new();
+        if let Some(fts) = self.ctx.fts {
+            let _fts_field = if fts.field.is_empty() { field } else { &fts.field };
+            for id in fts.candidate_doc_ids(query) {
+                if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                    continue;
+                }
+                ids.insert(id);
+            }
+            // Also pull high-BM25 hits from index (posting union may miss rare terms).
+            for (id, _) in fts.query_bm25(query, self.candidate_pool) {
+                if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                    continue;
+                }
+                ids.insert(id);
+            }
+        }
+        self.for_each_tail(|id| {
+            if let Some(doc) = self.ctx.docs.get(id) {
+                let text = extract_index_text(doc, field);
+                if bm25_doc_score(
+                    &text,
+                    query,
+                    self.ctx.fts.map(|f| f.avg_doc_len()).unwrap_or(1.0),
+                    self.ctx.fts.map(|f| f.num_docs).unwrap_or(1).max(1),
+                ) > 0.0
+                {
+                    ids.insert(id.clone());
+                }
+            }
+        });
+        if self.ctx.fts.is_none() && ids.is_empty() {
+            // No index: fall back to tail-only or full doc map for BM25-only namespaces.
+            for (id, doc) in self.ctx.docs {
+                let text = extract_index_text(doc, field);
+                if bm25_doc_score(&text, query, 1.0, 1) > 0.0 {
+                    ids.insert(id.clone());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    fn collect_vector_candidates(&self, field: &str, query: &[f64]) -> Result<HashSet<String>> {
+        let mut ids = HashSet::new();
+        if let Some(vindex) = self.ctx.vector {
+            let _vfield = if vindex.centroids.vector_field.is_empty() {
+                field
+            } else {
+                &vindex.centroids.vector_field
+            };
+            if query.len() == vindex.centroids.dimensions as usize {
+                for id in vindex.candidate_doc_ids(query) {
+                    if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                        continue;
+                    }
+                    ids.insert(id);
+                }
+                for (id, _) in vindex.query_ann(query, self.candidate_pool) {
+                    if self.use_tail() && self.ctx.tail_doc_ids.contains(&id) {
+                        continue;
+                    }
+                    ids.insert(id);
+                }
+            }
+        }
+        self.for_each_tail(|id| {
+            if let Some(doc) = self.ctx.docs.get(id) {
+                if let Ok(doc_vec) = extract_vector(&doc.attributes, field) {
+                    if doc_vec.len() == query.len() {
+                        ids.insert(id.clone());
+                    }
+                }
+            }
+        });
+        if self.ctx.vector.is_none() && ids.is_empty() {
+            for (id, doc) in self.ctx.docs {
+                if extract_vector(&doc.attributes, field)
+                    .map(|v| v.len() == query.len())
+                    .unwrap_or(false)
+                {
+                    ids.insert(id.clone());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    fn score_candidates(
+        &self,
+        ranker: &Ranker,
+        candidates: &HashSet<String>,
+    ) -> Result<Vec<(String, f64)>> {
+        match ranker {
+            Ranker::Bm25 { field, query } => {
+                let raw: Vec<(String, f64)> = candidates
+                    .iter()
+                    .filter_map(|id| {
+                        let doc = self.ctx.docs.get(id)?;
+                        Some((id.clone(), self.bm25_raw_score(doc, field, query)))
+                    })
+                    .collect();
+                Ok(raw)
+            }
+            Ranker::Vector { field, query } => {
+                let raw: Vec<(String, f64)> = candidates
+                    .iter()
+                    .filter_map(|id| {
+                        let doc = self.ctx.docs.get(id)?;
+                        Some((id.clone(), self.vector_raw_score(doc, field, query)))
+                    })
+                    .collect();
+                Ok(raw)
+            }
+            Ranker::Sum(subs) => self.score_composite(subs, candidates, true),
+            Ranker::Product(subs) => self.score_composite(subs, candidates, false),
+        }
+    }
+
+    fn score_composite(
+        &self,
+        subs: &[Ranker],
+        candidates: &HashSet<String>,
+        sum: bool,
+    ) -> Result<Vec<(String, f64)>> {
+        let mut per_signal: Vec<HashMap<String, f64>> = Vec::with_capacity(subs.len());
+        for sub in subs {
+            let raw = self.score_candidates(sub, candidates)?;
+            per_signal.push(min_max_normalize(raw));
+        }
+        let mut out = Vec::new();
+        for id in candidates {
+            let mut parts = Vec::with_capacity(per_signal.len());
+            for norm in &per_signal {
+                parts.push(*norm.get(id).unwrap_or(&0.0));
+            }
+            let score: f64 = if sum {
+                parts.iter().sum::<f64>()
+            } else {
+                parts.iter().product::<f64>()
+            };
+            if score.is_finite() && score > 0.0 {
+                out.push((id.clone(), score));
+            }
+        }
+        Ok(out)
+    }
+
+    fn bm25_raw_score(&self, doc: &Document, field: &str, query: &str) -> f64 {
+        let text = extract_index_text(doc, field);
+        if let Some(fts) = self.ctx.fts {
+            bm25_doc_score(&text, query, fts.avg_doc_len(), fts.num_docs.max(1))
+        } else {
+            bm25_score_legacy(&text, query)
+        }
+    }
+
+    fn vector_raw_score(&self, doc: &Document, field: &str, query: &[f64]) -> f64 {
+        extract_vector(&doc.attributes, field)
+            .ok()
+            .filter(|v| v.len() == query.len())
+            .map(|v| score_vector(query, &v, self.ctx.meta.distance_metric))
+            .unwrap_or(f64::NEG_INFINITY)
+    }
 }
 
-/// ANN via centroid/cluster probe for indexed docs + exhaustive scan on unindexed WAL tail only.
-fn execute_vector_indexed(
-    ctx: &QueryContext<'_>,
-    field: &str,
-    query: &[f64],
-    top_k: usize,
-) -> Result<Vec<(String, f64)>> {
-    let vindex = ctx.vector.expect("caller ensures vector index is present");
-    let vfield = if vindex.centroids.vector_field.is_empty() {
-        field
-    } else {
-        &vindex.centroids.vector_field
-    };
-    let metric = ctx.meta.distance_metric;
-
-    let mut scores: HashMap<String, f64> = HashMap::new();
-    if query.len() == vindex.centroids.dimensions as usize {
-        for (id, score) in vindex.query_ann(query, top_k.saturating_mul(4).max(32)) {
-            if ctx.tail_doc_ids.contains(&id) {
-                continue;
-            }
-            if !ctx.docs.contains_key(&id) {
-                continue;
-            }
-            scores.insert(id, score);
+/// Min-max normalize scores to [0, 1] so BM25 and vector signals are comparable in hybrid Sum/Product.
+fn min_max_normalize(scored: Vec<(String, f64)>) -> HashMap<String, f64> {
+    if scored.is_empty() {
+        return HashMap::new();
+    }
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for (_, s) in &scored {
+        if s.is_finite() {
+            min = min.min(*s);
+            max = max.max(*s);
         }
     }
-
-    for id in ctx.tail_doc_ids {
-        let Some(doc) = ctx.docs.get(id) else {
-            continue;
-        };
-        let Ok(doc_vec) = extract_vector(&doc.attributes, vfield) else {
-            continue;
-        };
-        if doc_vec.len() != query.len() {
-            continue;
-        }
-        let score = score_vector(query, &doc_vec, metric);
-        if score.is_finite() {
-            scores.insert(id.clone(), score);
-        }
-    }
-
-    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    ranked.truncate(top_k);
-    Ok(ranked)
+    let span = (max - min).max(1e-12);
+    scored
+        .into_iter()
+        .map(|(id, s)| {
+            let norm = if !s.is_finite() {
+                0.0
+            } else if (max - min).abs() < 1e-12 {
+                if s > 0.0 { 1.0 } else { 0.0 }
+            } else {
+                ((s - min) / span).clamp(0.0, 1.0)
+            };
+            (id, norm)
+        })
+        .collect()
 }
 
 fn parse_rank_by(v: &Value) -> Result<Ranker> {
@@ -241,46 +433,6 @@ fn parse_rank_by(v: &Value) -> Result<Ranker> {
     }
 }
 
-fn score_doc(doc: &Document, ranker: &Ranker, ctx: &QueryContext<'_>) -> Result<f64> {
-    match ranker {
-        Ranker::Vector { field, query } => {
-            let doc_vec = extract_vector(&doc.attributes, field)?;
-            Ok(score_vector(query, &doc_vec, ctx.meta.distance_metric))
-        }
-        Ranker::Bm25 { field, query } => {
-            let text = extract_index_text(doc, field);
-            if let Some(fts) = ctx.fts {
-                let score = bm25_doc_score(&text, query, fts.avg_doc_len(), fts.num_docs.max(1));
-                Ok(score)
-            } else {
-                Ok(bm25_score_legacy(&text, query))
-            }
-        }
-        Ranker::Sum(subs) => {
-            let mut total = 0.0;
-            for sub in subs {
-                total += normalize_score(score_doc(doc, sub, ctx)?);
-            }
-            Ok(total)
-        }
-        Ranker::Product(subs) => {
-            let mut prod = 1.0;
-            for sub in subs {
-                prod *= normalize_score(score_doc(doc, sub, ctx)?);
-            }
-            Ok(prod)
-        }
-    }
-}
-
-fn normalize_score(s: f64) -> f64 {
-    if s.is_nan() {
-        0.0
-    } else {
-        s.clamp(0.0, 1.0)
-    }
-}
-
 /// Cosine similarity (higher is better). Re-exported for tests and legacy callers.
 pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     crate::index::vector::cosine_similarity(a, b)
@@ -295,9 +447,21 @@ pub fn bm25_score_legacy(document: &str, query: &str) -> f64 {
 mod tests {
     use super::*;
     use crate::index::fts::FtsSegment;
-    use crate::meta::NamespaceMeta;
+    use crate::index::vector::VectorIndex;
+    use crate::meta::{DistanceMetric, NamespaceMeta};
     use crate::models::{Document, QueryRequest};
     use serde_json::json;
+
+    fn doc(id: &str, text: &str, emb: Vec<f64>) -> Document {
+        Document {
+            id: id.into(),
+            attributes: [
+                ("text".into(), json!(text)),
+                ("embedding".into(), json!(emb)),
+            ]
+            .into(),
+        }
+    }
 
     #[test]
     fn cosine_identical() {
@@ -340,12 +504,14 @@ mod tests {
             fts: Some(&seg),
             vector: None,
             tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust programming"]),
             top_k: Some(1),
             filters: None,
             include_attributes: None,
+            consistency: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows[0].id, "a");
@@ -384,16 +550,155 @@ mod tests {
             fts: Some(&seg),
             vector: None,
             tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
             top_k: Some(5),
             filters: None,
             include_attributes: None,
+            consistency: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
-        // Current doc text has no "rust"; tail exhaustive should not return spurious high score from index.
         assert!(resp.rows.is_empty() || resp.rows[0].dist.unwrap_or(0.0) == 0.0);
+    }
+
+    #[test]
+    fn hybrid_sum_beats_single_signal_wrong_doc() {
+        // Doc A: great BM25 for "rust", vector far from query.
+        // Doc B: weak BM25, vector identical to query.
+        // Pure BM25 → A; pure vector → B; hybrid Sum should prefer B when both signals matter.
+        let mut map: HashMap<String, Document> = HashMap::new();
+        let query_vec = vec![1.0, 0.0, 0.0, 0.0];
+        map.insert(
+            "lexical-winner".into(),
+            doc(
+                "lexical-winner",
+                "rust rust rust programming systems kernel",
+                vec![0.0, 1.0, 0.0, 0.0],
+            ),
+        );
+        // Weak BM25 (one token) but near-perfect vector → hybrid Sum beats BM25-only pick.
+        map.insert(
+            "vector-winner".into(),
+            doc("vector-winner", "rust", query_vec.clone()),
+        );
+        map.insert(
+            "decoy".into(),
+            doc("decoy", "python java kotlin", vec![0.0, 0.0, 1.0, 0.0]),
+        );
+
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let fts = FtsSegment::build(1, "text", &pairs);
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+        )
+        .unwrap()
+        .expect("vector index");
+
+        let bm25_only = QueryRequest {
+            rank_by: json!(["BM25", "text", "rust programming systems"]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let vector_only = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", query_vec.clone()]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+        let hybrid = QueryRequest {
+            rank_by: json!([
+                "Sum",
+                ["BM25", "text", "rust programming systems"],
+                ["vector", "ANN", "embedding", query_vec]
+            ]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+        };
+
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            fts_segment_id: 1,
+            vector_segment_id: 1,
+            dimensions: 4,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: Some(&fts),
+            vector: Some(&vindex),
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+
+        let bm25_resp = execute_query(&ctx, &bm25_only).unwrap();
+        assert_eq!(bm25_resp.rows[0].id, "lexical-winner");
+
+        let vec_resp = execute_query(&ctx, &vector_only).unwrap();
+        assert_eq!(vec_resp.rows[0].id, "vector-winner");
+
+        let hybrid_resp = execute_query(&ctx, &hybrid).unwrap();
+        assert_eq!(hybrid_resp.rows[0].id, "vector-winner");
+    }
+
+    #[test]
+    fn eventual_consistency_skips_tail_scan() {
+        let mut map = HashMap::new();
+        map.insert(
+            "a".into(),
+            Document {
+                id: "a".into(),
+                attributes: [("text".into(), json!("brand new unindexed rust"))].into(),
+            },
+        );
+        let indexed = vec![(
+            "b".into(),
+            Document {
+                id: "b".into(),
+                attributes: [("text".into(), json!("python only"))].into(),
+            },
+        )];
+        let seg = FtsSegment::build(1, "text", &indexed);
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 2,
+            fts_segment_id: 1,
+            ..Default::default()
+        };
+        let mut tail = HashSet::new();
+        tail.insert("a".into());
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: Some(&seg),
+            vector: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Eventual,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "rust"]),
+            top_k: Some(5),
+            filters: None,
+            include_attributes: None,
+            consistency: Some("eventual".into()),
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert!(resp.rows.is_empty() || resp.rows.iter().all(|r| r.id != "a"));
     }
 
     #[test]
@@ -416,6 +721,7 @@ mod tests {
             fts: None,
             vector: None,
             tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
         };
         let req = QueryRequest {
             rank_by: Value::Array(vec![
@@ -426,6 +732,7 @@ mod tests {
             top_k: Some(1),
             filters: None,
             include_attributes: Some(Value::Bool(false)),
+            consistency: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows.len(), 1);

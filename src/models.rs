@@ -65,6 +65,9 @@ pub struct QueryRequest {
     pub filters: Option<Value>,
     #[serde(default)]
     pub include_attributes: Option<Value>,
+    /// `strong` (default): indexed segments + unindexed WAL tail. `eventual`: indexed only.
+    #[serde(default)]
+    pub consistency: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
