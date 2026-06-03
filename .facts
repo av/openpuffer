@@ -418,7 +418,7 @@
   command: test -x scripts/ingest-large.sh && grep -q 'synthetic-128' scripts/ingest-large.sh && grep -q 'index_cursor' scripts/ingest-large.sh && ./scripts/ingest-large.sh --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l2 --dry-run >/dev/null && ./scripts/ingest-large.sh --tier l3 --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
 - label: scripts/bench-large.sh tiered AWS bench dry-run reads queries.json recall_defaults and targets benchmarks/results/large-aws-{tier}.json
-  command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null
+  command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && grep -q 'warm_query_protocol' scripts/bench-large.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null && ./scripts/bench-large.sh --warm --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
 - label: G3 run-aws-large-benchmark.sh dry-run and large-benchmark-preflight.sh exist with tier workload validation
   command: test -x scripts/run-aws-large-benchmark.sh && test -f scripts/lib/large-benchmark-preflight.sh && grep -q 'large_preflight_guard_aws_results_path' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-aws-large-benchmark.sh --dry-run >/dev/null

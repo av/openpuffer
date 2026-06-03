@@ -416,6 +416,12 @@ def queries_dict(
             "runs": 7,
             "primary_query": "vector_queries[0]",
         },
+        "warm_query_protocol": {
+            "top_k": 10,
+            "consistency": "eventual",
+            "runs": 20,
+            "primary_query": "vector_queries[0]",
+        },
         "spot_check": spot_check_dict(count=spot_check_count),
     }
 

@@ -30,6 +30,8 @@ grep -q "Cold p50 query" "$OUT"
 grep -q "recall@10" "$OUT"
 grep -q "420" "$OUT"
 grep -q "280" "$OUT"
+grep -q "Warm p50 query" "$OUT"
+grep -q "18" "$OUT"
 grep -q "1.50×" "$OUT" || grep -q "1.5" "$OUT"
 
 if grep -E 'tpuf_[A-Za-z0-9]|tpuf_deadbeef' "$OUT"; then

@@ -6,6 +6,7 @@
 #   ./scripts/bench-large.sh                 # L1 (100k) after ingest-large
 #   ./scripts/bench-large.sh --tier l3       # 1M namespace
 #   ./scripts/bench-large.sh --dry-run       # validate tools + env, no S3/serve
+#   ./scripts/bench-large.sh --warm         # cold runs + warm phase (§4.3)
 #   OPENPUFFER_BENCH_TIER=l1 ./scripts/bench-large.sh
 #
 # Prerequisites: ingest via ./scripts/ingest-large.sh; see docs/PLAN_LARGE_DATASET_BENCHMARK.md.
@@ -18,19 +19,24 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 
 DRY_RUN=0
+WARM_MODE=0
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n) DRY_RUN=1 ;;
+    --warm) WARM_MODE=1 ;;
     --tier=*) TIER="${arg#*=}" ;;
     --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
     -h|--help)
-      sed -n '2,14p' "$0"
+      sed -n '2,15p' "$0"
       exit 0
       ;;
   esac
 done
 [[ "${OPENPUFFER_BENCH_DRY_RUN:-}" == "1" ]] && DRY_RUN=1
+[[ "${OPENPUFFER_BENCH_WARM:-}" == "1" ]] && WARM_MODE=1
+
+WARM_CACHE_DIR="${OPENPUFFER_BENCH_WARM_CACHE_DIR:-}"
 
 ANN_VERSION="${OPENPUFFER_ANN_VERSION:-3}"
 if [[ "$ANN_VERSION" != "3" ]]; then
@@ -150,6 +156,9 @@ load_query_protocol() {
   QUERY_CONSISTENCY="strong"
   PRIMARY_QUERY_NAME="vector-q00"
   QUERY_VEC=""
+  WARM_RUNS="${OPENPUFFER_BENCH_WARM_RUNS:-20}"
+  WARM_QUERY_TOP_K=10
+  WARM_CONSISTENCY="eventual"
 
   if [[ -n "$qf" && -f "$qf" ]]; then
     COLD_RUNS="${OPENPUFFER_BENCH_COLD_RUNS:-$(jq -r '.cold_query_protocol.runs // 7' "$qf")}"
@@ -159,6 +168,9 @@ load_query_protocol() {
     QUERY_VEC="$(jq -c '.vector_queries[0].vector' "$qf")"
     RECALL_NUM="${OPENPUFFER_BENCH_RECALL_NUM:-$(jq -r '.recall_defaults.num // 20' "$qf")}"
     RECALL_TOP_K="${OPENPUFFER_BENCH_RECALL_TOP_K:-$(jq -r '.recall_defaults.top_k // 10' "$qf")}"
+    WARM_RUNS="${OPENPUFFER_BENCH_WARM_RUNS:-$(jq -r '.warm_query_protocol.runs // 20' "$qf")}"
+    WARM_QUERY_TOP_K="$(jq -r '.warm_query_protocol.top_k // 10' "$qf")"
+    WARM_CONSISTENCY="$(jq -r '.warm_query_protocol.consistency // "eventual"' "$qf")"
     QUERIES_JSON="$qf"
   else
     echo "warning: no queries.json under ${WORKLOAD_DIR}; using bench_sin_v1 fallback vector" >&2
@@ -171,6 +183,20 @@ load_query_protocol() {
     --argjson top_k "$QUERY_TOP_K" \
     --arg consistency "$QUERY_CONSISTENCY" \
     '{rank_by:["vector","ANN","embedding",$q], top_k:$top_k, consistency:$consistency}')"
+
+  WARM_QUERY_BODY="$(jq -cn \
+    --argjson q "$QUERY_VEC" \
+    --argjson top_k "$WARM_QUERY_TOP_K" \
+    --arg consistency "$WARM_CONSISTENCY" \
+    '{rank_by:["vector","ANN","embedding",$q], top_k:$top_k, consistency:$consistency}')"
+}
+
+default_warm_cache_dir() {
+  if [[ -n "$WARM_CACHE_DIR" ]]; then
+    echo "$WARM_CACHE_DIR"
+    return 0
+  fi
+  echo "${TMPDIR:-/tmp}/openpuffer-bench-warm-${TIER}-${NAMESPACE:-unknown}"
 }
 
 build_fallback_query_vec() {
@@ -192,7 +218,22 @@ run_dry_run() {
   echo "  listen=${LISTEN} results=${RESULTS}"
   echo "  cold_runs=${COLD_RUNS} primary_query=${PRIMARY_QUERY_NAME}"
   echo "  recall_num=${RECALL_NUM} index_timeout=${INDEX_TIMEOUT_SEC}s"
-  echo "  enforce_gates=${ENFORCE_GATES} ann_version=${ANN_VERSION}"
+  echo "  enforce_gates=${ENFORCE_GATES} ann_version=${ANN_VERSION} warm_mode=${WARM_MODE}"
+  if [[ "$WARM_MODE" == "1" ]]; then
+    echo "  warm_runs=${WARM_RUNS} warm_consistency=${WARM_CONSISTENCY} warm_top_k=${WARM_QUERY_TOP_K}"
+    echo "  warm_cache_dir=$(default_warm_cache_dir)"
+    if [[ -n "$qf" ]]; then
+      local warm_runs_in_file
+      warm_runs_in_file="$(jq -r '.warm_query_protocol.runs // empty' "$qf")"
+      if [[ -z "$warm_runs_in_file" || "$warm_runs_in_file" == "null" ]]; then
+        echo "bench-large dry-run: queries.json missing warm_query_protocol (regenerate workloads)" >&2
+        exit 1
+      fi
+    else
+      echo "bench-large dry-run: --warm requires queries.json under workload dir" >&2
+      exit 1
+    fi
+  fi
   if [[ -n "$qf" ]]; then
     local n_filter n_hybrid
     n_filter="$(jq -r '.filter_queries | length' "$qf")"
@@ -297,6 +338,93 @@ cold_query_once() {
   echo "${ms} ${roundtrips} ${ratio} ${cold_keys}"
 }
 
+warm_query_once() {
+  local t0 ms body ratio
+  t0=$(date +%s%3N)
+  body="$(curl -sf -X POST "${QUERY_URL}" \
+    -H 'Content-Type: application/json' \
+    -d "$WARM_QUERY_BODY")"
+  ms=$(( $(date +%s%3N) - t0 ))
+  ratio="$(echo "$body" | jq '.performance.candidates_ratio // null')"
+  echo "${ms} ${ratio}"
+}
+
+post_warm_endpoint() {
+  local warm_url="${BASE_URL}/v1/namespaces/${NAMESPACE}/warm"
+  local body status pinned
+  body="$(curl -sf -X POST "$warm_url")"
+  status="$(echo "$body" | jq -r '.status // empty')"
+  pinned="$(echo "$body" | jq -r '.pinned // false')"
+  if [[ "$status" != "ok" ]]; then
+    echo "warm endpoint returned unexpected status: ${body}" >&2
+    return 1
+  fi
+  if [[ "$pinned" != "true" ]]; then
+    echo "warm endpoint: pinned=${pinned} (expected true): ${body}" >&2
+    return 1
+  fi
+  echo "$body"
+}
+
+start_serve() {
+  local cache_dir="$1"
+  if [[ -n "$SERVE_PID" ]]; then
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+    SERVE_PID=""
+  fi
+  echo "Starting serve (cache-dir=${cache_dir:-<empty>}, ann-version=${ANN_VERSION}) on ${LISTEN}…"
+  target/release/openpuffer serve \
+    --listen "$LISTEN" \
+    --cache-dir "${cache_dir}" \
+    --s3-endpoint "$OPENPUFFER_S3_ENDPOINT" \
+    --s3-bucket "$OPENPUFFER_S3_BUCKET" \
+    --s3-region "${OPENPUFFER_S3_REGION:-us-east-1}" \
+    --s3-access-key "$OPENPUFFER_S3_ACCESS_KEY" \
+    --s3-secret-key "$OPENPUFFER_S3_SECRET_KEY" \
+    --ann-version "$ANN_VERSION" &
+  SERVE_PID=$!
+  wait_for_health
+}
+
+run_warm_phase() {
+  local cache_dir="$1"
+  local warm_p50 warm_p95 warm_runs_json
+  mkdir -p "$cache_dir"
+  WARM_CACHE_DIR="$cache_dir"
+
+  start_serve "$cache_dir"
+
+  echo "POST ${BASE_URL}/v1/namespaces/${NAMESPACE}/warm …"
+  post_warm_endpoint >/dev/null
+
+  echo "Running ${WARM_RUNS} warm vector queries (${PRIMARY_QUERY_NAME}, consistency=${WARM_CONSISTENCY}, no cache bust)…"
+  local -a warm_latencies=()
+  local -a warm_run_lines=()
+  local run_i=0 ms ratio
+  for _ in $(seq 1 "$WARM_RUNS"); do
+    run_i=$((run_i + 1))
+    read -r ms ratio < <(warm_query_once)
+    warm_latencies+=("$ms")
+    warm_run_lines+=("$(jq -cn \
+      --argjson run "$run_i" \
+      --argjson latency_ms "$ms" \
+      --argjson candidates_ratio "${ratio:-null}" \
+      --arg query_name "$PRIMARY_QUERY_NAME" \
+      --arg consistency "$WARM_CONSISTENCY" \
+      '{run:$run, query_name:$query_name, latency_ms:$latency_ms, candidates_ratio:$candidates_ratio, consistency:$consistency}')")
+  done
+
+  IFS=$'\n' warm_sorted=($(printf '%s\n' "${warm_latencies[@]}" | sort -n))
+  warm_p50="$(percentile_ms 50 "${warm_sorted[@]}")"
+  warm_p95="$(percentile_ms 95 "${warm_sorted[@]}")"
+  warm_runs_json="$(printf '%s\n' "${warm_run_lines[@]}" | jq -s '.')"
+
+  WARM_P50_MS="$warm_p50"
+  WARM_P95_MS="$warm_p95"
+  WARM_RUNS_JSON="$warm_runs_json"
+}
+
 percentile_ms() {
   local pct="$1"
   shift
@@ -369,18 +497,7 @@ trap cleanup EXIT
 if [[ -z "$SKIP_SERVE" ]]; then
   echo "Building openpuffer (release)…"
   cargo build --release --features integration -q
-  echo "Starting serve (no cache, ann-version=${ANN_VERSION}) on ${LISTEN}…"
-  target/release/openpuffer serve \
-    --listen "$LISTEN" \
-    --cache-dir "" \
-    --s3-endpoint "$OPENPUFFER_S3_ENDPOINT" \
-    --s3-bucket "$OPENPUFFER_S3_BUCKET" \
-    --s3-region "${OPENPUFFER_S3_REGION:-us-east-1}" \
-    --s3-access-key "$OPENPUFFER_S3_ACCESS_KEY" \
-    --s3-secret-key "$OPENPUFFER_S3_SECRET_KEY" \
-    --ann-version "$ANN_VERSION" &
-  SERVE_PID=$!
-  wait_for_health
+  start_serve ""
 else
   wait_for_health
 fi
@@ -448,6 +565,13 @@ COLD_RUNS_JSON="$(printf '%s\n' "${RUN_LINES[@]}" | jq -s '.')"
 RECALL_GATE="$(tier_recall_gate)"
 BENCHMARK_NAME="cold_large_${TIER}"
 
+WARM_P50_MS=""
+WARM_P95_MS=""
+WARM_RUNS_JSON="[]"
+if [[ "$WARM_MODE" == "1" ]]; then
+  run_warm_phase "$(default_warm_cache_dir)"
+fi
+
 mkdir -p "$(dirname "$RESULTS")"
 
 HOST_NOTE=""
@@ -457,6 +581,9 @@ fi
 if [[ -n "${OPENPUFFER_BENCH_CLIENT_MODE:-}" ]]; then
   HOST_NOTE="${HOST_NOTE} client_mode=${OPENPUFFER_BENCH_CLIENT_MODE}"
 fi
+
+WARM_NOTE=""
+[[ "$WARM_MODE" == "1" ]] && WARM_NOTE=" Warm phase: cache-dir=${WARM_CACHE_DIR}, POST /warm, ${WARM_RUNS}× eventual."
 
 jq -n \
   --arg benchmark "$BENCHMARK_NAME" \
@@ -482,7 +609,14 @@ jq -n \
   --argjson recall_at_10 "$RECALL_AT_10" \
   --argjson cold_query_runs "$COLD_RUNS" \
   --argjson cold_runs "$COLD_RUNS_JSON" \
-  --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}" \
+  --argjson warm_mode "$WARM_MODE" \
+  --argjson warm_p50 "$( [[ -n "$WARM_P50_MS" ]] && echo "$WARM_P50_MS" || echo null )" \
+  --argjson warm_p95 "$( [[ -n "$WARM_P95_MS" ]] && echo "$WARM_P95_MS" || echo null )" \
+  --argjson warm_runs_count "$( [[ "$WARM_MODE" == "1" ]] && echo "$WARM_RUNS" || echo null )" \
+  --arg warm_consistency "$( [[ "$WARM_MODE" == "1" ]] && echo "$WARM_CONSISTENCY" || echo null )" \
+  --arg warm_cache_dir "$( [[ "$WARM_MODE" == "1" ]] && echo "$WARM_CACHE_DIR" || echo null )" \
+  --argjson warm_runs "$WARM_RUNS_JSON" \
+  --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE}${WARM_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}$([[ "$WARM_MODE" == "1" ]] && echo ' --warm')" \
   --argjson index_keys_total "${INDEX_KEYS_TOTAL:-null}" \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
   '{
@@ -513,7 +647,15 @@ jq -n \
     index_keys_total: $index_keys_total,
     index_object_count: $index_object_count,
     notes: $notes
-  }' >"$RESULTS"
+  }
+  + (if ($warm_mode | tonumber) == 1 then {
+      p50_warm_query_latency_ms: $warm_p50,
+      p95_warm_query_latency_ms: $warm_p95,
+      warm_query_runs: $warm_runs_count,
+      warm_consistency: $warm_consistency,
+      warm_cache_dir: $warm_cache_dir,
+      warm_runs: $warm_runs
+    } else {} end)' >"$RESULTS"
 
 echo "Wrote ${RESULTS}"
 jq . "$RESULTS"

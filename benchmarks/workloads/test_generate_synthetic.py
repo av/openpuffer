@@ -77,6 +77,8 @@ def test_manifest_and_queries_counts() -> None:
     assert len(queries["hybrid_queries"]) == 4
     assert queries["vector_queries"][0]["doc_index"] == 0
     assert queries["cold_query_protocol"]["runs"] == 7
+    assert queries["warm_query_protocol"]["runs"] == 20
+    assert queries["warm_query_protocol"]["consistency"] == "eventual"
     assert queries["spot_check"]["count"] == 10
     assert queries["spot_check"]["top_k"] == 10
 

@@ -246,18 +246,25 @@ validate_tier() {
 render_executive_summary() {
   local tier="$1" op_file="$2" tpuf_file="$3"
   local op_p50 tpuf_p50 op_recall tpuf_recall ratio
+  local op_warm_p50 tpuf_warm_p50 warm_line=""
   op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
   tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
   tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
   ratio="$(fmt_ratio "$op_p50" "$tpuf_p50")"
+  op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
+  tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
+  if [[ "$op_warm_p50" != "null" || "$tpuf_warm_p50" != "null" ]]; then
+    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual, see plan §4.3).
+"
+  fi
 
   cat <<EOF
 ## Executive summary
 
 - **Workload:** synthetic-128, tier **${tier}** ($(tier_docs_label "$tier") docs × 128-dim cosine, seed from manifest).
 - **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio ${ratio}).
-- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
+${warm_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
 - **Self-host vs managed:** openpuffer exposes S3 cold-path metrics (\`storage_roundtrips\`, \`cold_s3_keys_fetched\`); turbopuffer is managed (those fields n/a).
 - _Interpretation (edit after review):_ see [COMPARISON.md](../COMPARISON.md) § measured maturity and plan §6.2 outcome table.
 
@@ -346,11 +353,17 @@ render_results_table() {
   seed="$(jq_field "$op_file" '.seed')"
 
   local op_p50 op_p95 tpuf_p50 tpuf_p95
+  local op_warm_p50 op_warm_p95 tpuf_warm_p50 tpuf_warm_p95
   local op_recall tpuf_recall op_rt tpuf_rt op_cold tpuf_cold op_ratio tpuf_ratio op_idx tpuf_idx
   local op_ingest tpuf_ingest op_indexed tpuf_indexed
+  local warm_protocol_note=""
 
   op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
   op_p95="$(jq_field "$op_file" '.p95_query_latency_ms')"
+  op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
+  op_warm_p95="$(jq_field "$op_file" '.p95_warm_query_latency_ms')"
+  tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
+  tpuf_warm_p95="$(jq_field "$tpuf_file" '.p95_warm_query_latency_ms')"
   tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
   tpuf_p95="$(jq_field "$tpuf_file" '.p95_query_latency_ms')"
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
@@ -367,6 +380,13 @@ render_results_table() {
   tpuf_ingest="$(jq_field "$tpuf_file" '.ingest_elapsed_secs')"
   op_indexed="$(jq_field "$op_file" '.index_cursor_eq_wal_commit_seq')"
   tpuf_indexed="$(jq_field "$tpuf_file" '.index_up_to_date')"
+  if [[ "$op_warm_p50" != "null" ]]; then
+    local warm_runs warm_consistency warm_cache
+    warm_runs="$(jq_field "$op_file" '.warm_query_runs')"
+    warm_consistency="$(jq_field "$op_file" '.warm_consistency')"
+    warm_cache="$(jq_field "$op_file" '.warm_cache_dir')"
+    warm_protocol_note=" **Warm (openpuffer):** ${warm_runs} runs, consistency=${warm_consistency}, cache-dir=\`${warm_cache}\`, no cache bust between runs."
+  fi
 
   cat <<EOF
 ## Results @ $(tier_docs_label "$tier") × 128-dim cosine (synthetic seed=${seed})
@@ -377,14 +397,15 @@ render_results_table() {
 | Time to indexed | ${op_indexed} | ${tpuf_indexed} | — |
 | Cold p50 query (ms) | $(fmt_num "$op_p50") | $(fmt_num "$tpuf_p50") | $(fmt_ratio "$op_p50" "$tpuf_p50") |
 | Cold p95 query (ms) | $(fmt_num "$op_p95") | $(fmt_num "$tpuf_p95") | $(fmt_ratio "$op_p95" "$tpuf_p95") |
-| Warm p50 query (ms) | — | — | — |
+| Warm p50 query (ms) | $(fmt_num "$op_warm_p50") | $(fmt_num "$tpuf_warm_p50") | $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50") |
+| Warm p95 query (ms) | $(fmt_num "$op_warm_p95") | $(fmt_num "$tpuf_warm_p95") | $(fmt_ratio "$op_warm_p95" "$tpuf_warm_p95") |
 | recall@10 (num=20) | $(fmt_recall "$op_recall") | $(fmt_recall "$tpuf_recall") | $(fmt_ratio "$op_recall" "$tpuf_recall") |
 | storage_roundtrips | $(fmt_num "$op_rt") | n/a | — |
 | cold_s3_keys_fetched | $(fmt_num "$op_cold") | n/a | — |
 | candidates_ratio | $(fmt_num "$op_ratio") | $(fmt_num "$tpuf_ratio") | $(fmt_ratio "$op_ratio" "$tpuf_ratio") |
 | index_object_count | $(fmt_num "$op_idx") | n/a | — |
 
-**Query protocol:** strong consistency, vector-only ANN, top_k=10, cache cold (openpuffer: POST cache reset each run), ${docs} docs.
+**Query protocol:** strong consistency, vector-only ANN, top_k=10, cache cold (openpuffer: POST cache reset each run), ${docs} docs.${warm_protocol_note}
 
 **Client:** EC2 localhost (openpuffer \`serve\`) vs turbopuffer SDK from same host (_document instance type in Methodology_).
 
