@@ -1,0 +1,13 @@
+{
+  "ann_probed_clusters": 8,
+  "ann_version": 3,
+  "benchmark": "cold_50k_v3",
+  "candidates_ratio": 0.0016,
+  "cold_s3_keys_fetched": 15,
+  "environment": "minio-testcontainers",
+  "index_object_count": 175,
+  "ingest_elapsed_secs": 12,
+  "namespace_docs": 50000,
+  "recall_at_10": 1.0,
+  "storage_roundtrips": 2
+}

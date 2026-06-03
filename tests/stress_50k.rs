@@ -342,6 +342,20 @@ async fn fifty_thousand_docs_v3_cold_probed_validation() {
     });
     println!("{}", serde_json::to_string(&report).expect("bench json"));
 
+    if std::env::var_os("OPENPUFFER_BENCH_WRITE_RESULTS").is_some() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/results/cold-50k-v3.json");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create benchmarks/results");
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).expect("pretty json"),
+        )
+        .expect("write cold-50k-v3.json");
+        eprintln!("wrote {}", path.display());
+    }
+
     assert!(
         ratio < MAX_CANDIDATES_RATIO,
         "candidates_ratio {ratio} must be < {MAX_CANDIDATES_RATIO}"

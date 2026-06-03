@@ -240,7 +240,7 @@ async fn bench_cold_10k_baseline() {
         "index_object_count": index_object_count,
         "index_keys_total": index_keys.len(),
         "cold_query_runs": COLD_QUERY_RUNS,
-        "notes": "Post-Phase-A probed cold load. Regenerate: OPENPUFFER_BENCH_WRITE_BASELINE=1 cargo test -F bench bench_cold_10k_baseline -- --nocapture"
+        "notes": "Post-Phase-A probed cold load (v2 index, 2026-06-03 MinIO). storage_roundtrips=2; cluster GETs bounded by probe plan (index_object_count on disk ≠ cold_s3_keys_fetched). s3_get_count=0 expected (cold uses s3_batch). Regenerate: OPENPUFFER_BENCH_WRITE_BASELINE=1 cargo test -F bench bench_cold_10k_baseline -- --nocapture"
     });
 
     println!("{}", serde_json::to_string(&report).expect("baseline json"));
