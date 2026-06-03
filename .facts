@@ -386,13 +386,19 @@
 
 - label: bench feature provides tests/bench_cold.rs scripts/bench-1m.sh and docs/BENCHMARKS.md
   command: test -f tests/bench_cold.rs && test -f scripts/bench-1m.sh && test -f docs/BENCHMARKS.md && grep -q 'bench = \["integration"\]' Cargo.toml
-  tags: [implemented]
-- label: baseline artifact benchmarks/results/baseline-10k.json records cold 10k storage_roundtrips s3_get_count p50_query_latency_ms candidates_ratio index_object_count
-  command: python3 -c "import json; d=json.load(open('benchmarks/results/baseline-10k.json')); assert all(k in d for k in ('storage_roundtrips','s3_get_count','p50_query_latency_ms','candidates_ratio','index_object_count','benchmark')) and d['benchmark']=='cold_10k'"
-  tags: [implemented]
+  tags: [bench, implemented]
+- label: baseline artifact benchmarks/results/baseline-10k.json records cold 10k storage_roundtrips s3_get_count p50_query_latency_ms candidates_ratio index_object_count cold_s3_keys_fetched
+  command: python3 -c "import json; d=json.load(open('benchmarks/results/baseline-10k.json')); assert all(k in d for k in ('storage_roundtrips','s3_get_count','p50_query_latency_ms','candidates_ratio','index_object_count','cold_s3_keys_fetched','benchmark')) and d['benchmark']=='cold_10k'"
+  tags: [bench, implemented]
 - label: cargo test -F bench bench_cold_10k_baseline is not ignored and compiles with integration harness
   command: grep -q 'async fn bench_cold_10k_baseline' tests/bench_cold.rs && ! grep -B1 'bench_cold_10k_baseline' tests/bench_cold.rs | grep -q '#\[ignore' && cargo test -F bench --test bench_cold bench_cold_10k_baseline --no-run -q
-  tags: [implemented]
+  tags: [bench, implemented]
+- label: mid-tier artifact benchmarks/results/cold-50k-v3.json records cold_50k_v3 storage_roundtrips recall_at_10 index_object_count
+  command: python3 -c "import json; d=json.load(open('benchmarks/results/cold-50k-v3.json')); assert d['benchmark']=='cold_50k_v3' and all(k in d for k in ('storage_roundtrips','recall_at_10','index_object_count','candidates_ratio','cold_s3_keys_fetched'))"
+  tags: [bench, implemented]
+- label: large_stress fifty_thousand_docs_v3_cold_probed_validation is ignored mid-tier v3 cold gate
+  command: grep -q 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs && grep -B2 'async fn fifty_thousand_docs_v3_cold_probed_validation' tests/stress_50k.rs | grep -q '#\[ignore'
+  tags: [bench, implemented]
 
 # index/ann
 
@@ -428,4 +434,10 @@
   tags: [spec, cold, bench, implemented]
 - label: strong caught-up cold query on 10k namespace reports storage_roundtrips at most 4
   command: cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four -q --test bench_cold
+  tags: [spec, cold, implemented]
+- label: plan_cold_query round3 keys are 8 to 64 not num_fine_total when num_fine_total is 4000
+  command: cargo test --lib plan_cold_query_round3_bounded_at_4k_fine_total -q
+  tags: [spec, cold, implemented]
+- label: OPENPUFFER_COLD_MAX_KEYS_PER_ROUND sub-batches parallel GETs within one storage_roundtrip
+  command: grep -q 'OPENPUFFER_COLD_MAX_KEYS_PER_ROUND' src/s3_batch.rs && cargo test --lib cold_fetch_sub_batch_count_caps_parallel_gets -q && cargo test --lib plan_cold_query_500_round3_keys_one_roundtrip_unchanged -q
   tags: [spec, cold, implemented]
