@@ -11,7 +11,7 @@ use crate::index::vector::{
     primary_vector_field, CentroidIndexL0, CentroidIndexL1, ClusterSegment, VectorIndex,
 };
 use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
-use crate::namespace::{fetch_meta, replay_wal_entries};
+use crate::namespace::{fetch_meta, read_wal_entry, replay_wal_entries};
 use crate::wal::{collect_index_delta, WalEntry};
 
 use anyhow::{anyhow, Context, Result};
@@ -40,7 +40,6 @@ pub async fn index_wal_range(
 
         let from = meta.index_cursor.saturating_add(1);
         let to = meta.wal_commit_seq;
-        let entries = replay_wal_entries(client, bucket, namespace, from, to).await?;
 
         let field = primary_fts_field(&meta);
         let mut segment =
@@ -51,17 +50,6 @@ pub async fn index_wal_range(
                 field: field.clone(),
                 ..Default::default()
             });
-
-        let (upserts, deletes) = index_delta_from_wal_entries(
-            client,
-            bucket,
-            namespace,
-            meta.index_cursor,
-            &entries,
-        )
-        .await?;
-        segment.apply_delta(&upserts, &deletes);
-        segment.segment_id = to;
 
         let mut filter_segment = load_filter_segment(
             client,
@@ -75,7 +63,20 @@ pub async fn index_wal_range(
             segment_id: to,
             ..Default::default()
         });
-        filter_segment.apply_delta(&meta.schema, &upserts, &deletes);
+
+        let (upserts, deletes) = stream_index_delta_from_wal(
+            client,
+            bucket,
+            namespace,
+            meta.index_cursor,
+            from,
+            to,
+            &mut segment,
+            &mut filter_segment,
+            &meta.schema,
+        )
+        .await?;
+        segment.segment_id = to;
         filter_segment.segment_id = to;
         let filter_key = FilterSegment::key(namespace, to);
         let filter_body = filter_segment.encode()?;
@@ -629,6 +630,49 @@ pub async fn load_vector_index_for_query(
     }
 
     Ok(Some(VectorIndex { l0, l1, clusters }))
+}
+
+/// Replay WAL `from..=to` one segment at a time; apply FTS/filter deltas per batch.
+async fn stream_index_delta_from_wal(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    index_cursor: u64,
+    from: u64,
+    to: u64,
+    fts: &mut FtsSegment,
+    filter: &mut FilterSegment,
+    schema: &serde_json::Value,
+) -> Result<(Vec<(String, crate::models::Document)>, Vec<String>)> {
+    let fts_initial = fts.clone();
+    let filter_initial = filter.clone();
+    let mut upserts = Vec::new();
+    let mut deletes = Vec::new();
+    for seq in from..=to {
+        let entry = read_wal_entry(client, bucket, namespace, seq).await?;
+        if !entry.patches.is_empty() {
+            *fts = fts_initial.clone();
+            *filter = filter_initial.clone();
+            let entries = replay_wal_entries(client, bucket, namespace, from, to).await?;
+            let (u, d) =
+                index_delta_from_wal_entries(client, bucket, namespace, index_cursor, &entries)
+                    .await?;
+            fts.apply_delta(&u, &d);
+            filter.apply_delta(schema, &u, &d);
+            return Ok((u, d));
+        }
+        let mut batch_deletes = entry.deletes.clone();
+        let batch_upserts: Vec<(String, crate::models::Document)> = entry
+            .into_documents()?
+            .into_iter()
+            .map(|doc| (doc.id.clone(), doc))
+            .collect();
+        fts.apply_delta(&batch_upserts, &batch_deletes);
+        filter.apply_delta(schema, &batch_upserts, &batch_deletes);
+        deletes.append(&mut batch_deletes);
+        upserts.extend(batch_upserts);
+    }
+    Ok((upserts, deletes))
 }
 
 async fn index_delta_from_wal_entries(

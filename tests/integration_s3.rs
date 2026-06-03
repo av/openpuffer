@@ -33,6 +33,10 @@ const NAMESPACE_WAL_RATE: &str = "itest-wal-rate";
 const NAMESPACE_COPY_SRC: &str = "itest-copy-src";
 const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
+const NAMESPACE_10K: &str = "itest-10k";
+const STRESS_DOCS: usize = 10_000;
+const STRESS_BATCH: usize = 2_000;
+const STRESS_DIM: usize = 128;
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -377,6 +381,26 @@ async fn upsert_documents(base_url: &str) {
     );
 }
 
+async fn query_response_ns(
+    base_url: &str,
+    namespace: &str,
+    body: Value,
+) -> Value {
+    let resp = reqwest::Client::new()
+        .post(format!("{base_url}/v2/namespaces/{namespace}/query"))
+        .json(&body)
+        .send()
+        .await
+        .expect("query request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "query failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+    resp.json().await.expect("query json")
+}
+
 async fn query_ids_ns(
     base_url: &str,
     namespace: &str,
@@ -390,19 +414,7 @@ async fn query_ids_ns(
     if let Some(f) = filters {
         body["filters"] = f;
     }
-    let resp = reqwest::Client::new()
-        .post(format!("{base_url}/v2/namespaces/{namespace}/query"))
-        .json(&body)
-        .send()
-        .await
-        .expect("query request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "query failed: {}",
-        resp.text().await.unwrap_or_default()
-    );
-    let v: Value = resp.json().await.expect("query json");
+    let v = query_response_ns(base_url, namespace, body).await;
     v["rows"]
         .as_array()
         .expect("rows array")
@@ -1509,4 +1521,138 @@ async fn deep_health_and_namespace_metadata_fields() {
     assert_eq!(lag_meta["approx_row_count"].as_u64(), Some(4));
 
     serve.stop();
+}
+
+fn stress_upsert_columns(start: usize, count: usize) -> Value {
+    let mut ids = Vec::with_capacity(count);
+    let mut texts = Vec::with_capacity(count);
+    let mut embeddings = Vec::with_capacity(count);
+    for i in start..start + count {
+        ids.push(json!(format!("doc-{i}")));
+        texts.push(json!(format!("stressterm document number {i}")));
+        let emb: Vec<f64> = (0..STRESS_DIM)
+            .map(|d| ((i * STRESS_DIM + d) as f64 * 0.001).sin())
+            .collect();
+        embeddings.push(json!(emb));
+    }
+    json!({
+        "id": ids,
+        "text": texts,
+        "embedding": embeddings
+    })
+}
+
+/// 10k-column upsert, background index, warm, ANN + FTS under candidate-ratio guard.
+#[tokio::test]
+async fn ten_thousand_docs_indexed_query() {
+    let test_started = std::time::Instant::now();
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn_with_options(
+        &endpoint,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_10K;
+    let schema = json!({
+        "text": {"type": "string", "full_text_search": true},
+        "embedding": "[128]f32"
+    });
+
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    assert_eq!(batches * STRESS_BATCH, STRESS_DOCS);
+
+    let write_started = std::time::Instant::now();
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body = json!({ "upsert_columns": stress_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    let write_elapsed = write_started.elapsed();
+
+    wait_until_indexed_ns(&serve.base_url, ns, Duration::from_secs(120)).await;
+    let index_elapsed = write_started.elapsed();
+
+    let warm_resp = reqwest::Client::new()
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve.base_url))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK);
+
+    let query_vec: Vec<f64> = (0..STRESS_DIM)
+        .map(|d| (d as f64 * 0.02).cos())
+        .collect();
+    let vector_body = json!({
+        "rank_by": ["vector", "ANN", "embedding", query_vec],
+        "top_k": 10
+    });
+    let vector_resp = query_response_ns(&serve.base_url, ns, vector_body).await;
+    let rows = vector_resp["rows"].as_array().expect("vector rows");
+    assert!(!rows.is_empty(), "vector query returned no rows");
+    assert!(rows.len() <= 10, "top_k=10 but got {} rows", rows.len());
+    let perf = vector_resp["performance"].as_object().expect("performance");
+    let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
+    assert!(
+        ratio < 0.15,
+        "candidates_ratio {ratio} must be < 0.15 for 10k indexed ANN"
+    );
+    assert_eq!(perf["approx_namespace_size"].as_u64(), Some(STRESS_DOCS as u64));
+
+    let fts_resp = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["BM25", "text", "stressterm"],
+            "top_k": 10
+        }),
+    )
+    .await;
+    let fts_rows = fts_resp["rows"].as_array().expect("fts rows");
+    assert!(
+        !fts_rows.is_empty(),
+        "FTS on common term stressterm should return hits"
+    );
+    assert!(
+        fts_rows.len() <= 10,
+        "FTS top_k=10 but got {} rows",
+        fts_rows.len()
+    );
+
+    let meta = fetch_namespace_meta(&s3, BUCKET, ns).await;
+    assert_eq!(meta.index_cursor, meta.wal_commit_seq);
+    assert!(meta.wal_commit_seq >= 1);
+
+    eprintln!(
+        "ten_thousand_docs_indexed_query: writes={write_elapsed:?} index+query={:?} wal_commits={}",
+        index_elapsed,
+        meta.wal_commit_seq
+    );
+    assert!(
+        test_started.elapsed() < Duration::from_secs(120),
+        "test exceeded 120s wall clock"
+    );
 }

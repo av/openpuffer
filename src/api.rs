@@ -9,12 +9,15 @@ use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
+
+/// Max JSON write body (large `upsert_columns` batches, e.g. 2k × 128-dim vectors).
+const MAX_WRITE_BODY_BYTES: usize = 64 * 1024 * 1024;
 use crate::models::QueryPerformance;
 use std::sync::Arc;
 use tracing::error;
@@ -44,7 +47,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/debug/cache-stats", get(cache_stats_debug))
         .route("/v1/debug/cache-stats/reset", post(cache_stats_reset_debug));
 
-    r.with_state(state)
+    r.layer(DefaultBodyLimit::max(MAX_WRITE_BODY_BYTES))
+        .with_state(state)
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

@@ -22,6 +22,17 @@ pub async fn fetch_meta(
     get_meta(client, bucket, &meta_key(namespace)).await
 }
 
+/// Fetch and decode one WAL segment.
+pub async fn read_wal_entry(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    seq: u64,
+) -> Result<WalEntry> {
+    let bytes = read_wal_segment(client, bucket, namespace, seq).await?;
+    decode(&bytes).context("decode wal entry")
+}
+
 /// Fetch and decode WAL segments `from_seq..=to_seq` without applying.
 pub async fn replay_wal_entries(
     client: &Client,
@@ -35,8 +46,7 @@ pub async fn replay_wal_entries(
     }
     let mut entries = Vec::new();
     for seq in from_seq..=to_seq {
-        let bytes = read_wal_segment(client, bucket, namespace, seq).await?;
-        entries.push(decode(&bytes)?);
+        entries.push(read_wal_entry(client, bucket, namespace, seq).await?);
     }
     Ok(entries)
 }
