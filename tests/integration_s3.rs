@@ -17,6 +17,7 @@ const NAMESPACE: &str = "itest";
 const NAMESPACE_INCR: &str = "itest-incr";
 const NAMESPACE_WARM: &str = "itest-warm";
 const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
+const NAMESPACE_UUID_FILTER: &str = "itest-uuid-filter";
 const NAMESPACE_PATCH_FILTER: &str = "itest-patch-filter";
 const NAMESPACE_PATCH: &str = "itest-patch";
 const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
@@ -588,6 +589,129 @@ async fn schema_on_write_and_delete_by_filter() {
     assert!(
         filter_ids.is_empty(),
         "deleted free-tier doc must not match filter query, got {filter_ids:?}"
+    );
+}
+
+/// Schema `uuid` validates on write (canonical string) and filter index supports Eq.
+#[tokio::test]
+async fn filter_uuid_eq() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    const UUID_A: &str = "550e8400-e29b-41d4-a716-446655440001";
+    const UUID_B: &str = "550e8400-e29b-41d4-a716-446655440002";
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_UUID_FILTER,
+        json!({
+            "schema": {
+                "text": {"type": "string", "full_text_search": true},
+                "tenant_id": "uuid",
+                "permissions": "[]uuid"
+            },
+            "upsert_rows": [
+                {
+                    "id": "doc-a",
+                    "attributes": {
+                        "text": "uuid tenant alpha",
+                        "tenant_id": "550E8400-E29B-41D4-A716-446655440001",
+                        "permissions": ["550e8400e29b41d4a716446655440010"]
+                    }
+                },
+                {
+                    "id": "doc-b",
+                    "attributes": {
+                        "text": "uuid tenant beta",
+                        "tenant_id": "550e8400-e29b-41d4-a716-446655440002",
+                        "permissions": []
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_UUID_FILTER, Duration::from_secs(30)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_UUID_FILTER).await;
+    assert_eq!(meta.schema["tenant_id"], json!("uuid"));
+
+    let wal_entry = decode_wal_entry_from_s3(
+        &fixture.client,
+        &fixture.bucket,
+        NAMESPACE_UUID_FILTER,
+        1,
+    )
+    .await;
+    let wal_docs = wal_entry.into_documents().expect("decode WAL documents");
+    let doc_a = wal_docs
+        .iter()
+        .find(|d| d.id == "doc-a")
+        .expect("doc-a in WAL");
+    assert_eq!(
+        doc_a.attributes.get("tenant_id").and_then(|v| v.as_str()),
+        Some(UUID_A),
+        "uuid must be stored as canonical lowercase string"
+    );
+    assert_eq!(
+        doc_a.attributes.get("permissions").and_then(|v| v.as_array()),
+        Some(&vec![json!("550e8400-e29b-41d4-a716-446655440010")]),
+        "[]uuid elements stored as canonical strings"
+    );
+
+    let filter_a = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_UUID_FILTER,
+        json!(["BM25", "text", "tenant"]),
+        Some(json!(["tenant_id", "Eq", UUID_A])),
+    )
+    .await;
+    assert_eq!(
+        filter_a,
+        vec!["doc-a".to_string()],
+        "Eq filter on uuid tenant_id should return doc-a only, got {filter_a:?}"
+    );
+
+    let filter_b = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_UUID_FILTER,
+        json!(["BM25", "text", "tenant"]),
+        Some(json!(["tenant_id", "Eq", UUID_B])),
+    )
+    .await;
+    assert_eq!(
+        filter_b,
+        vec!["doc-b".to_string()],
+        "Eq filter on uuid tenant_id should return doc-b only, got {filter_b:?}"
+    );
+
+    let client = reqwest::Client::new();
+    let bad = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_UUID_FILTER
+        ))
+        .json(&json!({
+            "upsert_rows": [{
+                "id": "doc-bad",
+                "attributes": {
+                    "text": "invalid uuid",
+                    "tenant_id": "not-a-uuid"
+                }
+            }]
+        }))
+        .send()
+        .await
+        .expect("invalid uuid upsert");
+    assert_eq!(
+        bad.status(),
+        StatusCode::BAD_REQUEST,
+        "invalid uuid must be rejected: {}",
+        bad.text().await.unwrap_or_default()
     );
 }
 

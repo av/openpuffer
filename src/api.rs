@@ -5,7 +5,9 @@ use crate::models::{
     validate_doc_id, ApiErrorResponse, Document, ExportRequest, ExportResponse, HealthResponse,
     NamespaceSummary, NamespacesResponse, QueryRequest, WriteRequest,
 };
-use crate::schema::{merge_schema, validate_patch_attributes};
+use crate::schema::{
+    merge_schema, validate_and_normalize_document_attributes, validate_patch_attributes,
+};
 use crate::filter::parse_filter;
 use crate::meta::{parse_distance_metric, resolve_distance_metric};
 use crate::storage::s3_error_hint;
@@ -491,7 +493,7 @@ async fn write_namespace(
         }
     }
 
-    let patch_by_filter = match body
+    let mut patch_by_filter = match body
         .patch_by_filter
         .as_ref()
         .filter(|v| !v.is_null())
@@ -509,7 +511,7 @@ async fn write_namespace(
         &state,
         &name,
         body.schema.as_ref(),
-        !patches.is_empty() || patch_by_filter.is_some(),
+        !upserts.is_empty() || !patches.is_empty() || patch_by_filter.is_some(),
     )
     .await
     {
@@ -567,6 +569,32 @@ async fn write_namespace(
             crate::vector_encoding::normalize_document_vectors(&mut doc.attributes, &norm_meta)
         {
             return api_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
+        }
+        if let Err(msg) =
+            validate_and_normalize_document_attributes(&mut doc.attributes, &effective_schema)
+        {
+            return api_error(StatusCode::BAD_REQUEST, msg);
+        }
+    }
+
+    for patch in &mut patches {
+        if let Err(e) =
+            crate::vector_encoding::normalize_document_vectors(&mut patch.attributes, &norm_meta)
+        {
+            return api_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
+        }
+        if let Err(msg) =
+            validate_and_normalize_document_attributes(&mut patch.attributes, &effective_schema)
+        {
+            return api_error(StatusCode::BAD_REQUEST, msg);
+        }
+    }
+
+    if let Some((_, ref mut patch_attrs)) = patch_by_filter {
+        if let Err(msg) =
+            validate_and_normalize_document_attributes(patch_attrs, &effective_schema)
+        {
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     }
 

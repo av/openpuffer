@@ -3,6 +3,8 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 use crate::index::vector::vector_fields_from_schema;
 use crate::meta::MAX_VECTOR_FIELDS;
@@ -179,8 +181,85 @@ fn scalar_type_filterable(t: &str) -> bool {
         || t.contains("uint")
         || t.contains("float")
         || t == "number"
-        || t.contains("uuid")
+        || t == "uuid"
         || t.contains("datetime")
+}
+
+/// Type name from shorthand or `{ "type": "..." }` object spec.
+pub fn field_type_name(spec: &Value) -> Option<String> {
+    match spec {
+        Value::String(s) => Some(s.trim().to_ascii_lowercase()),
+        Value::Object(m) => m
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|t| t.trim().to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// Scalar `uuid` column (turbopuffer `uuid` schema type).
+pub fn field_is_uuid_scalar(spec: &Value) -> bool {
+    field_type_name(spec).as_deref() == Some("uuid")
+}
+
+/// `[]uuid` column (array of UUID strings).
+pub fn field_is_uuid_array(spec: &Value) -> bool {
+    field_type_name(spec).as_deref() == Some("[]uuid")
+}
+
+/// Parse and canonicalize a UUID string (lowercase hyphenated RFC 4122).
+pub fn canonicalize_uuid_str(raw: &str) -> Result<String, String> {
+    Uuid::parse_str(raw.trim())
+        .map(|u| u.hyphenated().to_string())
+        .map_err(|e| format!("invalid uuid '{raw}': {e}"))
+}
+
+/// Validate and normalize attribute values for schema-declared `uuid` / `[]uuid` fields.
+pub fn validate_and_normalize_document_attributes(
+    attributes: &mut HashMap<String, Value>,
+    schema: &Value,
+) -> Result<(), String> {
+    let Some(schema_obj) = schema.as_object() else {
+        return Ok(());
+    };
+    for (key, value) in attributes.iter_mut() {
+        let Some(spec) = schema_obj.get(key) else {
+            continue;
+        };
+        if field_is_uuid_scalar(spec) {
+            *value = normalize_uuid_scalar_value(value, key)?;
+        } else if field_is_uuid_array(spec) {
+            *value = normalize_uuid_array_value(value, key)?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_uuid_scalar_value(value: &Value, field: &str) -> Result<Value, String> {
+    let Some(s) = value.as_str() else {
+        return Err(format!(
+            "attribute '{field}' has type uuid; value must be a string"
+        ));
+    };
+    Ok(Value::String(canonicalize_uuid_str(s)?))
+}
+
+fn normalize_uuid_array_value(value: &Value, field: &str) -> Result<Value, String> {
+    let Some(arr) = value.as_array() else {
+        return Err(format!(
+            "attribute '{field}' has type []uuid; value must be an array of uuid strings"
+        ));
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let Some(s) = item.as_str() else {
+            return Err(format!(
+                "attribute '{field}' []uuid element {i} must be a string"
+            ));
+        };
+        out.push(Value::String(canonicalize_uuid_str(s)?));
+    }
+    Ok(Value::Array(out))
 }
 
 #[cfg(test)]
@@ -247,5 +326,58 @@ mod tests {
         assert!(validate_patch_attributes(&attrs, &schema).is_err());
         let ok = [("text".into(), json!("hi"))].into();
         assert!(validate_patch_attributes(&ok, &schema).is_ok());
+    }
+
+    #[test]
+    fn uuid_scalar_and_array_schema_types() {
+        assert!(field_is_uuid_scalar(&json!("uuid")));
+        assert!(field_is_uuid_array(&json!("[]uuid")));
+        assert!(!field_is_uuid_scalar(&json!("[]uuid")));
+        assert!(field_filterable(&json!("uuid")));
+        assert!(!field_filterable(&json!("[]uuid")));
+    }
+
+    #[test]
+    fn canonicalize_uuid_normalizes_case_and_hyphens() {
+        let raw = "550E8400E29B41D4A716446655440000";
+        let canon = canonicalize_uuid_str(raw).unwrap();
+        assert_eq!(canon, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn validate_uuid_attributes_on_write() {
+        let schema = json!({
+            "tenant_id": "uuid",
+            "permissions": "[]uuid"
+        });
+        let mut attrs = HashMap::from([
+            (
+                "tenant_id".into(),
+                json!("550E8400-E29B-41D4-A716-446655440001"),
+            ),
+            (
+                "permissions".into(),
+                json!(["550e8400e29b41d4a716446655440002", "550e8400-e29b-41d4-a716-446655440003"]),
+            ),
+        ]);
+        validate_and_normalize_document_attributes(&mut attrs, &schema).unwrap();
+        assert_eq!(
+            attrs["tenant_id"],
+            json!("550e8400-e29b-41d4-a716-446655440001")
+        );
+        assert_eq!(
+            attrs["permissions"],
+            json!([
+                "550e8400-e29b-41d4-a716-446655440002",
+                "550e8400-e29b-41d4-a716-446655440003"
+            ])
+        );
+    }
+
+    #[test]
+    fn validate_uuid_rejects_invalid() {
+        let schema = json!({"tenant_id": "uuid"});
+        let mut bad = HashMap::from([("tenant_id".into(), json!("not-a-uuid"))]);
+        assert!(validate_and_normalize_document_attributes(&mut bad, &schema).is_err());
     }
 }
