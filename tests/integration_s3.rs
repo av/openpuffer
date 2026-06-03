@@ -2343,6 +2343,65 @@ async fn query_performance_billing_fields_smoke() {
     assert!(queried >= returned, "queried >= returned for top_k=2");
 }
 
+/// Query rows expose turbopuffer `$dist` (serde from `QueryRow::dist`) for BM25 and vector rank_by.
+#[tokio::test]
+async fn query_row_dist_present_for_bm25_and_vector() {
+    const NS: &str = "itest-query-dist";
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NS,
+        json!({
+            "upsert_rows": [
+                {
+                    "id": "qd-1",
+                    "attributes": {
+                        "text": "dist smoke alpha bravo",
+                        "embedding": [1.0, 0.0, 0.0]
+                    }
+                },
+                {
+                    "id": "qd-2",
+                    "attributes": {
+                        "text": "dist smoke charlie delta",
+                        "embedding": [0.0, 1.0, 0.0]
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let bm25 = query_response_ns(
+        &serve.base_url,
+        NS,
+        json!({
+            "rank_by": ["BM25", "text", "dist smoke alpha"],
+            "top_k": 2
+        }),
+    )
+    .await;
+    assert_rows_have_numeric_dist(&bm25["rows"]);
+
+    let vector = query_response_ns(
+        &serve.base_url,
+        NS,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 2
+        }),
+    )
+    .await;
+    assert_rows_have_numeric_dist(&vector["rows"]);
+}
+
 /// `order_by` breaks ties after `rank_by` scoring (turbopuffer attribute sort shape).
 #[tokio::test]
 async fn order_by_sorts_tied_bm25_results_by_attribute() {

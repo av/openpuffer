@@ -623,6 +623,26 @@ pub async fn query_response_ns(base_url: &str, namespace: &str, body: Value) -> 
     resp.json().await.expect("query json")
 }
 
+/// Assert each query row has turbopuffer `$dist` (from `QueryRow::dist`) as a finite number.
+pub fn assert_rows_have_numeric_dist(rows: &Value) {
+    let rows = rows.as_array().expect("rows array");
+    assert!(!rows.is_empty(), "expected at least one row with $dist");
+    for (i, row) in rows.iter().enumerate() {
+        let dist = row
+            .get("$dist")
+            .and_then(|v| v.as_f64())
+            .filter(|d| d.is_finite());
+        assert!(
+            dist.is_some(),
+            "row {i} missing numeric $dist: {row}"
+        );
+        assert!(
+            row.get("dist").is_none(),
+            "JSON must use $dist not dist: {row}"
+        );
+    }
+}
+
 pub async fn query_ids_ns(
     base_url: &str,
     namespace: &str,

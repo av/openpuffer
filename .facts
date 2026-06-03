@@ -330,6 +330,9 @@
 - label: integration test query_performance_billing_fields_smoke returns billing fields on MinIO query
   command: cargo test -F integration --test integration_s3 query_performance_billing_fields_smoke -q
   tags: [implemented]
+- label: query rows expose turbopuffer $dist score field for BM25 and vector rank_by
+  command: grep -q 'rename = "\$dist"' src/models.rs && cargo test -F integration --test integration_s3 query_row_dist_present_for_bm25_and_vector -q
+  tags: [implemented]
 - label: integration test warm_eventual_query_zero_s3_gets_with_unindexed_tail proves eventual fast path after warm
   command: cargo test -F integration --test integration_s3 warm_eventual_query_zero_s3_gets_with_unindexed_tail -q
   tags: [implemented]
