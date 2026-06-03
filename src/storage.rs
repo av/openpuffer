@@ -479,10 +479,28 @@ impl Storage {
         loaded: &mut LoadedNamespace,
         probes: &[(String, Vec<f64>)],
     ) -> Result<()> {
-        if loaded.cold_vector_l0.is_empty() || probes.is_empty() {
+        if probes.is_empty() {
             return Ok(());
         }
         let cold_batch = !self.cache.enabled();
+        if cold_batch && loaded.cold_vector_l0.is_empty() {
+            let (l0_map, l0_roundtrips, l0_keys) = crate::s3_batch::fetch_cold_vector_l0(
+                &self.client,
+                &self.bucket,
+                name,
+                &loaded.meta,
+            )
+            .await?;
+            loaded.cold_vector_l0 = l0_map;
+            if let Some(rt) = loaded.storage_roundtrips.as_mut() {
+                *rt = rt.saturating_add(l0_roundtrips);
+            }
+            loaded.cold_s3_keys_fetched =
+                loaded.cold_s3_keys_fetched.saturating_add(l0_keys);
+        }
+        if loaded.cold_vector_l0.is_empty() {
+            return Ok(());
+        }
         let mut by_field: HashMap<String, Vec<f64>> = HashMap::new();
         for (field, query) in probes {
             by_field.insert(field.clone(), query.clone());

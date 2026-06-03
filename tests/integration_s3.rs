@@ -74,6 +74,7 @@ const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 const NAMESPACE_COLD_HYBRID_FILTER: &str = "itest-cold-hybrid-filter";
+const NAMESPACE_COLD_FTS_BM25: &str = "itest-cold-fts-bm25-filter";
 const NAMESPACE_COLD_HYBRID_PRODUCT: &str = "itest-cold-hybrid-product";
 const NAMESPACE_COLD_HYBRID_10K: &str = "itest-cold-hybrid-10k";
 const NAMESPACE_COLD_TWO_VEC: &str = "itest-cold-two-vector-fields";
@@ -4452,12 +4453,114 @@ async fn cold_hybrid_product_vector_on_minio() {
     );
 }
 
+/// Cold path: BM25-only `rank_by` + attribute filter — no vector probe round, roundtrips ≤ 4.
+#[tokio::test]
+async fn cold_fts_bm25_filter_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_FTS_BM25;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "cold-fts-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold fts alpha stressterm",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "cold-fts-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "cold fts alpha stressterm",
+                    "tier": "free"
+                }
+            },
+            {
+                "id": "cold-fts-c",
+                "attributes": {
+                    "embedding": [0.0, 0.0, 1.0],
+                    "text": "cold fts bravo other",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["BM25", "text", "alpha"],
+            "filters": ["tier", "Eq", "pro"],
+            "top_k": 5,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains(&"cold-fts-a".to_string()),
+        "BM25+filter cold query must return pro-tier alpha doc, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"cold-fts-b".to_string()),
+        "filter must exclude free-tier doc, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"cold-fts-c".to_string()),
+        "BM25 alpha must not return bravo doc, got {ids:?}"
+    );
+
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips <= 4,
+        "BM25-only cold storage_roundtrips {roundtrips} must be ≤ 4"
+    );
+    let probed = perf
+        .get("ann_probed_clusters")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert_eq!(
+        probed, 0,
+        "BM25-only cold query must not probe ANN clusters, got {probed}"
+    );
+}
+
 /// 10k indexed namespace: cold hybrid `Sum` (vector + BM25) + filter; FTS in bootstrap round 2.
 #[tokio::test]
 async fn cold_hybrid_10k_fts_vector_filter_on_minio() {
     use openpuffer::index::fts::FtsSegment;
     use openpuffer::s3_batch::{
-        fetch_cold_index_bootstrap, plan_cold_query, round2_bootstrap_keys, ColdPlanOpts,
+        fetch_cold_index_bootstrap, fetch_cold_vector_l0, plan_cold_query, round2_bootstrap_keys,
+        ColdPlanOpts,
     };
 
     let test_started = std::time::Instant::now();
@@ -4523,11 +4626,18 @@ async fn cold_hybrid_10k_fts_vector_filter_on_minio() {
         bootstrap.fts.is_some(),
         "cold bootstrap on probed vector path must decode FTS index"
     );
+    let (l0_by_field, _, _) = fetch_cold_vector_l0(&fixture.client, &fixture.bucket, ns, &meta)
+        .await
+        .expect("cold L0 fetch for hybrid planner");
+    assert!(
+        !l0_by_field.is_empty(),
+        "hybrid cold planner needs L0 for probed round-3 keys"
+    );
     let plan = plan_cold_query(
         ns,
         &meta,
         &[("embedding".into(), query_vec.clone())],
-        &bootstrap.l0_by_field,
+        &l0_by_field,
         None,
         ColdPlanOpts {
             include_wal_round: false,

@@ -187,17 +187,32 @@ pub fn cold_plan_storage_roundtrips(plan: &ColdQueryPlan) -> u32 {
     n
 }
 
-/// L0 + FTS + filter keys for cold query bootstrap (round 2).
+/// L0 centroid keys only (round 2 extension for vector / hybrid cold queries).
+pub fn l0_keys_for_meta(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
+    let mut keys = Vec::new();
+    for cfg in effective_vector_fields(meta) {
+        if cfg.segment_id > 0 && meta.index_cursor > 0 && cfg.dimensions > 0 {
+            if vector_index_uses_legacy_paths(meta, &cfg.name) {
+                keys.push(CentroidIndexL0::legacy_key(namespace));
+            } else {
+                keys.push(CentroidIndexL0::key(namespace, &cfg.name));
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// FTS + filter keys for cold query bootstrap (round 2). Omits L0 so BM25-only / filter-only
+/// queries do not fetch vector index metadata.
 ///
 /// FTS must be loaded here (not in the probed L1/cluster round) so hybrid
 /// `Sum`/`Product` queries have a BM25 index on the cold vector path.
 pub fn round2_bootstrap_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
-    let mut keys = round1_index_keys(namespace, meta);
+    let mut keys = Vec::new();
     if meta.fts_segment_id > 0 && meta.index_cursor > 0 {
-        let fts_key = FtsSegment::key(namespace, meta.fts_segment_id);
-        if !keys.contains(&fts_key) {
-            keys.push(fts_key);
-        }
+        keys.push(FtsSegment::key(namespace, meta.fts_segment_id));
     }
     if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
@@ -614,8 +629,6 @@ pub async fn fetch_cold_index_bootstrap(
         fetch_round(client, bucket, &r2_keys).await?
     };
 
-    let l0_by_field = decode_l0_by_field_from_fetched(namespace, meta, &fetched);
-
     let mut fts = decode_fts_from_round(namespace, meta, &fetched)?;
     if fts.is_none() && meta.fts_segment_id > 0 && meta.index_cursor > 0 {
         let fts_key = FtsSegment::key(namespace, meta.fts_segment_id);
@@ -630,10 +643,30 @@ pub async fn fetch_cold_index_bootstrap(
     Ok(ColdBootstrapArtifacts {
         fts,
         filter,
-        l0_by_field,
+        l0_by_field: HashMap::new(),
         storage_roundtrips,
         s3_keys_fetched,
     })
+}
+
+/// Fetch L0 centroids for vector / hybrid cold queries (one logical roundtrip; not used for BM25-only).
+pub async fn fetch_cold_vector_l0(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> Result<(HashMap<String, CentroidIndexL0>, u32, u32)> {
+    let keys = l0_keys_for_meta(namespace, meta);
+    if keys.is_empty() {
+        return Ok((HashMap::new(), 0, 0));
+    }
+    let fetched = fetch_round(client, bucket, &keys).await?;
+    let l0_by_field = decode_l0_by_field_from_fetched(namespace, meta, &fetched);
+    Ok((
+        l0_by_field,
+        1,
+        record_cold_s3_keys_fetched(keys.len()),
+    ))
 }
 
 /// After probed vector fetch, ensure FTS is present for hybrid BM25 (bootstrap should have loaded it).
@@ -1480,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn round2_bootstrap_keys_l0_fts_filter_no_clusters() {
+    fn round2_bootstrap_keys_fts_filter_no_l0_no_clusters() {
         let meta = NamespaceMeta {
             index_cursor: 3,
             fts_segment_id: 3,
@@ -1498,10 +1531,12 @@ mod tests {
             ..Default::default()
         };
         let keys = round2_bootstrap_keys("ns", &meta);
-        assert!(keys.iter().any(|k| k.contains("centroids-l0")));
+        assert!(!keys.iter().any(|k| k.contains("centroids-l0")));
         assert!(keys.iter().any(|k| k.contains("fts-")));
         assert!(keys.iter().any(|k| k.contains("filter-")));
         assert!(!keys.iter().any(|k| k.contains("clusters-")));
+        let l0_keys = l0_keys_for_meta("ns", &meta);
+        assert!(l0_keys.iter().any(|k| k.contains("centroids-l0")));
     }
 
     #[test]
