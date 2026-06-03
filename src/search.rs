@@ -498,8 +498,14 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         sum: bool,
     ) -> Result<Vec<(String, f64)>> {
         let mut per_signal: Vec<HashMap<String, f64>> = Vec::with_capacity(subs.len());
+        let mut any_positive_raw: HashMap<String, bool> = HashMap::new();
         for sub in subs {
             let raw = self.score_candidates(sub, candidates)?;
+            for (id, s) in &raw {
+                if s.is_finite() && *s > 0.0 {
+                    any_positive_raw.insert(id.clone(), true);
+                }
+            }
             per_signal.push(min_max_normalize(raw));
         }
         let mut out = Vec::new();
@@ -513,8 +519,17 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
             } else {
                 parts.iter().product::<f64>()
             };
-            if score.is_finite() && score > 0.0 {
-                out.push((id.clone(), score));
+            // Min-max per signal can zero every normalized part for a doc that still has
+            // positive raw BM25/vector (common for strong WAL tail docs in hybrid Sum).
+            let keep = if sum {
+                score.is_finite()
+                    && (score > 0.0
+                        || any_positive_raw.get(id).copied().unwrap_or(false))
+            } else {
+                score.is_finite() && score > 0.0
+            };
+            if keep {
+                out.push((id.clone(), score.max(0.0)));
             }
         }
         Ok(out)
@@ -938,6 +953,116 @@ mod tests {
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows[0].dist.unwrap_or(0.0) == 0.0);
+    }
+
+    #[test]
+    fn hybrid_sum_filter_includes_strong_tail_doc_during_index_lag() {
+        let mut map: HashMap<String, Document> = HashMap::new();
+        map.insert(
+            "indexed-pro".into(),
+            Document {
+                id: "indexed-pro".into(),
+                attributes: [
+                    ("embedding".into(), json!([1.0, 0.0, 0.0])),
+                    ("text".into(), json!("indexed baseline alpha")),
+                    ("tier".into(), json!("pro")),
+                ]
+                .into(),
+            },
+        );
+        map.insert(
+            "indexed-free".into(),
+            Document {
+                id: "indexed-free".into(),
+                attributes: [
+                    ("embedding".into(), json!([0.0, 1.0, 0.0])),
+                    ("text".into(), json!("indexed baseline bravo")),
+                    ("tier".into(), json!("free")),
+                ]
+                .into(),
+            },
+        );
+        map.insert(
+            "tail-pro-hybrid".into(),
+            Document {
+                id: "tail-pro-hybrid".into(),
+                attributes: [
+                    ("embedding".into(), json!([0.99, 0.01, 0.0])),
+                    ("text".into(), json!("tail alpha stressterm unindexed")),
+                    ("tier".into(), json!("pro")),
+                ]
+                .into(),
+            },
+        );
+        let indexed_pairs: Vec<(String, Document)> = map
+            .iter()
+            .filter(|(id, _)| *id != "tail-pro-hybrid")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let fts = FtsSegment::build(1, "text", &indexed_pairs);
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &indexed_pairs,
+            &json!({}),
+            crate::config::AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("vector index");
+        let filter_seg = FilterSegment::build(
+            1,
+            &json!({ "tier": { "type": "string" } }),
+            &indexed_pairs,
+        );
+        let mut tail = HashSet::new();
+        tail.insert("tail-pro-hybrid".into());
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 2,
+            fts_segment_id: 1,
+            vector_segment_id: 1,
+            filter_segment_id: 1,
+            dimensions: 3,
+            ..Default::default()
+        };
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: Some(&fts),
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            filter_index: Some(&filter_seg),
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
+            ann_rerank: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!([
+                "Sum",
+                ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+                ["BM25", "text", "alpha"]
+            ]),
+            top_k: Some(5),
+            filters: Some(json!(["tier", "Eq", "pro"])),
+            include_attributes: None,
+            consistency: None,
+            order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        let ids: Vec<_> = resp.rows.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"tail-pro-hybrid"),
+            "hybrid Sum + filter must include strong tail doc, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"indexed-free"),
+            "filter must exclude free-tier doc, got {ids:?}"
+        );
     }
 
     #[test]
@@ -1628,6 +1753,19 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].0, "embedding");
         assert_eq!(specs[0].1.len(), 4);
+    }
+
+    #[test]
+    fn vector_probe_specs_collects_two_vector_fields_in_sum() {
+        let rank_by = json!([
+            "Sum",
+            ["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]],
+            ["vector", "ANN", "embedding_b", [0.0, 1.0, 0.0, 0.0]]
+        ]);
+        let specs = super::vector_probe_specs(&rank_by).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].0, "embedding_a");
+        assert_eq!(specs[1].0, "embedding_b");
     }
 
     #[test]

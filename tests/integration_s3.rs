@@ -69,6 +69,12 @@ const NAMESPACE_BB3_F16_HYBRID: &str = "itest-bb3-f16-hybrid";
 const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
+const NAMESPACE_COLD_HYBRID_FILTER: &str = "itest-cold-hybrid-filter";
+const NAMESPACE_COLD_TWO_VEC: &str = "itest-cold-two-vector-fields";
+const NAMESPACE_COLD_INDEX_LAG_FILTER: &str = "itest-cold-index-lag-filter";
+const NAMESPACE_COLD_EMPTY_DOCS: &str = "itest-cold-empty-docs";
+const NAMESPACE_S3_V3_ANN: &str = "itest-s3-ann-v3";
+const NAMESPACE_NONEXISTENT_COLD: &str = "itest-namespace-never-created-cold";
 const NAMESPACE_FULL_ARCH: &str = "itest-full-arch";
 const NAMESPACE_FULL_ARCH_BRANCH: &str = "itest-full-arch-branch";
 const NAMESPACE_WAL_CORRUPT_FAIL: &str = "itest-wal-corrupt-fail";
@@ -3790,6 +3796,475 @@ async fn cold_strong_unindexed_wal_tail_round4_on_minio() {
     assert!(
         !plan_keys.is_empty(),
         "planner round-4 keys should be non-empty while index lags commit"
+    );
+}
+
+/// Cold path: hybrid `Sum` (vector + BM25) with attribute filter returns only matching tier.
+#[tokio::test]
+async fn cold_hybrid_sum_vector_filter_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_HYBRID_FILTER;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "cold-hybrid-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold hybrid alpha stressterm",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "cold-hybrid-b",
+                "attributes": {
+                    "embedding": [0.9, 0.1, 0.0],
+                    "text": "cold hybrid alpha stressterm",
+                    "tier": "free"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": [
+                "Sum",
+                ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+                ["BM25", "text", "alpha"]
+            ],
+            "filters": ["tier", "Eq", "pro"],
+            "top_k": 3,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["cold-hybrid-a".to_string()],
+        "hybrid+filter cold query must return only pro-tier doc, got {ids:?}"
+    );
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips >= 2 && roundtrips <= 4,
+        "cold hybrid+filter should report batched roundtrips, got {roundtrips}"
+    );
+    let probed = perf["ann_probed_clusters"]
+        .as_u64()
+        .expect("ann_probed_clusters");
+    assert!(probed >= 1, "hybrid cold query must probe ANN clusters, got {probed}");
+}
+
+/// Cold path: two vector columns — probed fetch only for the `rank_by` field.
+#[tokio::test]
+async fn cold_two_vector_fields_query_probes_ranked_field_only() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_TWO_VEC;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        ns,
+        json!({
+            "schema": {
+                "embedding_a": "[4]f32",
+                "embedding_b": "[4]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "doc-a",
+                    "attributes": {
+                        "embedding_a": [1.0, 0.0, 0.0, 0.0],
+                        "embedding_b": [0.0, 1.0, 0.0, 0.0]
+                    }
+                },
+                {
+                    "id": "doc-b",
+                    "attributes": {
+                        "embedding_a": [0.0, 1.0, 0.0, 0.0],
+                        "embedding_b": [1.0, 0.0, 0.0, 0.0]
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(60)).await;
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding_b", [1.0, 0.0, 0.0, 0.0]],
+            "top_k": 2
+        }),
+    )
+    .await;
+    let perf = body["performance"].as_object().expect("performance");
+    assert!(
+        perf["ann_probed_clusters"].as_u64().unwrap_or(0) >= 1,
+        "cold ANN on embedding_b must report probed clusters: {perf:?}"
+    );
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some("doc-b"),
+        "cold ANN on embedding_b should rank doc-b first, got {ids:?}"
+    );
+}
+
+/// Cold query on a namespace that was indexed then emptied returns zero rows (not an error).
+#[tokio::test]
+async fn cold_query_empty_indexed_namespace_returns_empty_rows() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_EMPTY_DOCS;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "gone-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "ephemeral alpha"
+                }
+            },
+            {
+                "id": "gone-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "ephemeral bravo"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let del = reqwest::Client::new()
+        .post(format!("{}/v2/namespaces/{ns}", serve.base_url))
+        .json(&json!({ "deletes": ["gone-a", "gone-b"] }))
+        .send()
+        .await
+        .expect("delete batch");
+    assert_eq!(del.status(), StatusCode::OK);
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 5,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    assert!(
+        body["rows"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        "empty namespace cold query must return no rows, got {:?}",
+        body["rows"]
+    );
+    let perf = body["performance"].as_object().expect("performance");
+    assert_eq!(
+        perf["approx_namespace_size"].as_u64(),
+        Some(0),
+        "performance must report empty namespace size"
+    );
+}
+
+/// Strong cold query while index lags: hybrid + filter sees unindexed tail doc matching tier.
+#[tokio::test]
+async fn cold_strong_index_lag_hybrid_filter_tail_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_INDEX_LAG_FILTER;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "indexed-pro",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "indexed baseline alpha",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "indexed-free",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "indexed baseline bravo",
+                    "tier": "free"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "tail-pro-hybrid",
+            "attributes": {
+                "embedding": [0.99, 0.01, 0.0],
+                "text": "tail alpha stressterm unindexed",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(
+        meta.index_cursor < meta.wal_commit_seq,
+        "index lag required: cursor={} commit={}",
+        meta.index_cursor,
+        meta.wal_commit_seq
+    );
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": [
+                "Sum",
+                ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+                ["BM25", "text", "alpha"]
+            ],
+            "filters": ["tier", "Eq", "pro"],
+            "top_k": 5,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains(&"tail-pro-hybrid".to_string()),
+        "strong cold hybrid+filter must include unindexed pro tail doc, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"indexed-free".to_string()),
+        "filter tier=pro must exclude free-tier indexed doc, got {ids:?}"
+    );
+    let perf = body["performance"].as_object().expect("performance");
+    let exhaustive = perf["exhaustive_search_count"]
+        .as_u64()
+        .expect("exhaustive_search_count");
+    assert!(
+        exhaustive >= 1,
+        "tail doc should be scored exhaustively during index lag, got {exhaustive}"
+    );
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips >= 3 && roundtrips <= 5,
+        "index-lag cold hybrid should use bootstrap + probe + WAL tail, got {roundtrips}"
+    );
+}
+
+/// Cold query on a namespace that does not exist returns 404.
+#[tokio::test]
+async fn cold_query_nonexistent_namespace_returns_not_found() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(NAMESPACE_NONEXISTENT_COLD)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 1
+        }))
+        .send()
+        .await
+        .expect("cold query missing namespace");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "query on missing namespace must be 404, body={}",
+        resp.text().await.unwrap_or_default()
+    );
+}
+
+/// ANN v3 index build on MinIO: cold vector query + dual-read of v2-shaped L0 bytes.
+#[tokio::test]
+async fn s3_ann_v3_cold_query_and_v2_l0_dual_read_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_S3_V3_ANN;
+
+    let serve = ServeHandle::spawn_with_limits_and_ann_version(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(3),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "v3-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "ann v3 alpha"
+                }
+            },
+            {
+                "id": "v3-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "ann v3 bravo"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let l0_key = centroids_l0_s3_key(ns, "embedding");
+    let l0_bytes = get_object_bytes(&fixture.client, &fixture.bucket, &l0_key).await;
+    let l0 = openpuffer::index::vector::CentroidIndexL0::decode(&l0_bytes)
+        .expect("decode centroids-l0");
+    assert_eq!(
+        l0.ann_version, 3,
+        "v3 server must write ann_version=3 in L0 metadata"
+    );
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 2,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some("v3-a"),
+        "v3 cold ANN query should rank v3-a first, got {ids:?}"
+    );
+    let perf = body["performance"].as_object().expect("performance");
+    assert!(
+        perf["ann_probed_clusters"].as_u64().unwrap_or(0) >= 1,
+        "v3 cold query must report probed clusters"
     );
 }
 

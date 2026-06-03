@@ -611,6 +611,30 @@ impl ServeHandle {
         max_filter_batch_rows: Option<usize>,
         wal_corrupt_policy: Option<&str>,
     ) -> Self {
+        Self::spawn_with_limits_and_ann_version(
+            fixture,
+            listen,
+            cache_dir,
+            write_max_batch_ops,
+            write_max_delay_ms,
+            max_upsert_rows,
+            max_filter_batch_rows,
+            wal_corrupt_policy,
+            None,
+        )
+    }
+
+    pub fn spawn_with_limits_and_ann_version(
+        fixture: &S3Fixture,
+        listen: &str,
+        cache_dir: Option<PathBuf>,
+        write_max_batch_ops: Option<usize>,
+        write_max_delay_ms: Option<u64>,
+        max_upsert_rows: Option<usize>,
+        max_filter_batch_rows: Option<usize>,
+        wal_corrupt_policy: Option<&str>,
+        ann_version: Option<u8>,
+    ) -> Self {
         let bin = openpuffer_bin();
         assert!(
             bin.exists(),
@@ -655,6 +679,10 @@ impl ServeHandle {
         if let Some(policy) = wal_corrupt_policy {
             args.push("--wal-corrupt-policy".to_string());
             args.push(policy.to_string());
+        }
+        if let Some(ver) = ann_version {
+            args.push("--ann-version".to_string());
+            args.push(ver.to_string());
         }
         let child = Command::new(&bin)
             .args(&args)
