@@ -31,6 +31,9 @@ jobs:
       - name: cargo test (unit)
         run: cargo test
 
+      - name: synthetic-128 fixture gates (G2, no Docker)
+        run: cargo test --test synthetic_workload_gate -- --nocapture
+
   integration:
     name: integration (MinIO / testcontainers)
     runs-on: ubuntu-latest

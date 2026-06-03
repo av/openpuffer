@@ -70,3 +70,15 @@ done
 | L3 | 1M | generate locally |
 
 **Default comparison tier: L1 (100k).**
+
+## Correctness gates (G2)
+
+Rust tests load this directory’s `manifest.json` / `queries.json` (no batch vectors required in git):
+
+| Test | Command |
+|------|---------|
+| Fixture consistency | `cargo test --test synthetic_workload_gate` |
+| Integration smoke (10k MinIO) | `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` |
+| Bench cold gate | `cargo test -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate` |
+
+Preflight script: [`scripts/run-minio-correctness-gates.sh`](../../../scripts/run-minio-correctness-gates.sh). See [`docs/BENCHMARKS.md`](../../../docs/BENCHMARKS.md) § G2.

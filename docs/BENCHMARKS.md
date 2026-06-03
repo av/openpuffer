@@ -2,6 +2,34 @@
 
 Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md). Work is fact-driven: `@spec` facts under `index/ann` and `query/cold` in `.facts` are checked with `facts check --tags cold,ann`.
 
+## Large-dataset program — G2 correctness gates (MinIO)
+
+Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md) Phase 2–3), prove API semantics on the **shared synthetic-128 fixture** (`benchmarks/workloads/synthetic-128/l1-100k/`).
+
+| Gate | Command | What it checks |
+|------|---------|----------------|
+| Fixture vectors | `cargo test --test synthetic_workload_gate` | `queries.json` vectors match `bench_sin_v1`; `recall_defaults` num=20, top_k=10 |
+| Integration smoke | `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` | 10k ingest with workload schema; `/recall`, filter, hybrid, cold query from `queries.json` |
+| Bench cold | `cargo test -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate` | Same workload on bench path; recall ≥ 0.85; `storage_roundtrips ≤ 4` |
+
+**One-shot preflight** (subset; fast path for Phase 2.3):
+
+```bash
+./scripts/run-minio-correctness-gates.sh
+```
+
+**Full MinIO preflight** (plan §2.3 — longer):
+
+```bash
+cargo test -F integration --test integration_s3 -- --nocapture
+cargo test -F bench --test bench_cold -- --nocapture
+cargo test --release -F bench --test bench_cold -- --ignored --nocapture   # 100k nightly
+```
+
+Helpers live in [`tests/common/synthetic_workload.rs`](../tests/common/synthetic_workload.rs). Ingest/query scripts use the same manifest via [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) and [`scripts/bench-large.sh`](../scripts/bench-large.sh).
+
+---
+
 ## Feature: `bench`
 
 ```bash
@@ -81,6 +109,7 @@ On AWS 1M, try raising concurrency (e.g. `64`) if RTT-bound; lower on memory-con
 GitHub Actions job **`bench-10k`** runs:
 
 ```bash
+cargo test --test synthetic_workload_gate -- --nocapture
 cargo test -F bench --test bench_cold -- --nocapture
 cargo test --lib recall_v3_at_least_five_points_above_v2_on_10k_fixture -- --nocapture
 cargo test --lib recall_at_10_10k_with_rerank_at_least_point_nine_two -- --nocapture

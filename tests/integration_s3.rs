@@ -6,6 +6,10 @@
 mod common;
 
 use common::s3_harness::*;
+use common::synthetic_workload::{
+    cold_query_protocol, load_manifest, load_queries, l1_workload_dir, recall_defaults,
+    resolve_openpuffer_query, synthetic_128_schema, upsert_columns_batch,
+};
 use openpuffer::models::ROOT_PREFIX;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -32,6 +36,7 @@ const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_RECALL: &str = "itest-recall";
 const NAMESPACE_RECALL_FILTER: &str = "itest-recall-filter";
+const NAMESPACE_SYNTHETIC_128: &str = "itest-synthetic-128-g2";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_PATCH_COND: &str = "itest-patch-cond";
@@ -1852,6 +1857,153 @@ async fn recall_http_response_shape_on_minio() {
     assert!(
         test_started.elapsed() < Duration::from_secs(300),
         "recall test exceeded 300s wall clock"
+    );
+    serve.stop();
+}
+
+/// G2 gate: ingest synthetic-128 column shape, `/recall` defaults from `queries.json`, filter + hybrid smoke.
+#[tokio::test]
+async fn synthetic_128_g2_correctness_gates_on_minio() {
+    let test_started = std::time::Instant::now();
+    let workload_dir = l1_workload_dir();
+    let manifest = load_manifest(&workload_dir);
+    let queries = load_queries(&workload_dir);
+    let dim = manifest["dim"].as_u64().expect("dim") as usize;
+    let docs = STRESS_DOCS;
+    let batch = STRESS_BATCH;
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let mut serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let ns = NAMESPACE_SYNTHETIC_128;
+    let schema = synthetic_128_schema(dim);
+    let batches = docs / batch;
+    assert_eq!(batches * batch, docs);
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * batch;
+        let mut body = json!({ "upsert_columns": upsert_columns_batch(start, batch, dim) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(300)).await;
+
+    let (recall_num, recall_top_k) = recall_defaults(&queries);
+    let recall_resp = reqwest::Client::new()
+        .post(format!("{}/v1/namespaces/{ns}/recall", serve.base_url))
+        .json(&json!({ "num": recall_num, "top_k": recall_top_k }))
+        .send()
+        .await
+        .expect("recall request");
+    assert_eq!(recall_resp.status(), StatusCode::OK);
+    let recall_body: Value = recall_resp.json().await.expect("recall json");
+    let avg_recall = recall_body["avg_recall"].as_f64().expect("avg_recall");
+    assert!(
+        avg_recall >= 0.85,
+        "synthetic-128 recall@{} (num={recall_num}) avg_recall {avg_recall} must be >= 0.85",
+        recall_top_k
+    );
+
+    let filter_spec = &queries["filter_queries"][0];
+    let filter_query = resolve_openpuffer_query(
+        filter_spec.get("openpuffer_query").expect("filter openpuffer_query"),
+        filter_spec.get("vector").expect("filter vector"),
+    );
+    let filter_resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&filter_query)
+        .send()
+        .await
+        .expect("filter query");
+    assert_eq!(filter_resp.status(), StatusCode::OK, "filter query failed");
+    let filter_body: Value = filter_resp.json().await.expect("filter json");
+    let filter_rows = filter_body["rows"].as_array().expect("filter rows");
+    assert!(
+        !filter_rows.is_empty(),
+        "filter query {} must return rows",
+        filter_spec["name"]
+    );
+
+    let hybrid_spec = &queries["hybrid_queries"][0];
+    let hybrid_query = resolve_openpuffer_query(
+        hybrid_spec.get("openpuffer_query").expect("hybrid openpuffer_query"),
+        hybrid_spec.get("vector").expect("hybrid vector"),
+    );
+    let hybrid_resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&hybrid_query)
+        .send()
+        .await
+        .expect("hybrid query");
+    assert_eq!(hybrid_resp.status(), StatusCode::OK, "hybrid query failed");
+    let hybrid_body: Value = hybrid_resp.json().await.expect("hybrid json");
+    let hybrid_rows = hybrid_body["rows"].as_array().expect("hybrid rows");
+    assert!(
+        !hybrid_rows.is_empty(),
+        "hybrid query {} must return rows",
+        hybrid_spec["name"]
+    );
+
+    let cold_proto = cold_query_protocol(&queries);
+    let vector_spec = &queries["vector_queries"][0];
+    let cold_query = resolve_openpuffer_query(
+        vector_spec.get("openpuffer_query").expect("vector openpuffer_query"),
+        vector_spec.get("vector").expect("vector"),
+    );
+    assert_eq!(cold_query["top_k"], cold_proto["top_k"]);
+    assert_eq!(cold_query["consistency"], cold_proto["consistency"]);
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    let cold_resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&cold_query)
+        .send()
+        .await
+        .expect("cold vector query");
+    assert_eq!(cold_resp.status(), StatusCode::OK);
+    let cold_body: Value = cold_resp.json().await.expect("cold json");
+    let roundtrips = cold_body["performance"]["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips <= 4,
+        "synthetic-128 cold query storage_roundtrips {roundtrips} must be ≤ 4"
+    );
+
+    assert!(
+        test_started.elapsed() < Duration::from_secs(360),
+        "synthetic_128_g2 test exceeded 360s wall clock"
     );
     serve.stop();
 }

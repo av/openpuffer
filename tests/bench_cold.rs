@@ -7,6 +7,10 @@
 mod common;
 
 use common::s3_harness::*;
+use common::synthetic_workload::{
+    cold_query_protocol, load_queries, l1_workload_dir, recall_defaults, resolve_openpuffer_query,
+    synthetic_128_schema, upsert_columns_batch,
+};
 use openpuffer::index::vector::brute_force_top_k;
 use openpuffer::meta::DistanceMetric;
 use openpuffer::models::ROOT_PREFIX;
@@ -19,6 +23,7 @@ use tokio::time::sleep;
 
 const NAMESPACE: &str = "bench-cold-10k";
 const NAMESPACE_100K: &str = "bench-cold-100k";
+const NAMESPACE_SYNTHETIC_128: &str = "bench-synthetic-128-10k";
 const DOCS: usize = 10_000;
 const DOCS_100K: usize = 100_000;
 const BATCH: usize = 2_000;
@@ -445,6 +450,99 @@ async fn bench_cold_10k_warm_vs_cold() {
     assert!(
         st_cold_keys > warm_cold_keys,
         "cold strong cold_s3_keys_fetched ({st_cold_keys}) must exceed warm ({warm_cold_keys})"
+    );
+}
+
+/// G2 gate: 10k ingest uses synthetic-128 schema; `/recall` + cold query follow `queries.json`.
+#[tokio::test]
+async fn bench_cold_10k_synthetic_128_workload_gate() {
+    let queries = load_queries(&l1_workload_dir());
+    let dim = queries["dim"].as_u64().expect("dim") as usize;
+    let (recall_num, recall_top_k) = recall_defaults(&queries);
+    let cold_proto = cold_query_protocol(&queries);
+    let vector_spec = &queries["vector_queries"][0];
+    let cold_query = resolve_openpuffer_query(
+        vector_spec.get("openpuffer_query").expect("openpuffer_query"),
+        vector_spec.get("vector").expect("vector"),
+    );
+    assert_eq!(cold_query["top_k"], cold_proto["top_k"]);
+    assert_eq!(cold_query["consistency"], cold_proto["consistency"]);
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+
+    let schema = synthetic_128_schema(dim);
+    let batches = DOCS / BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * BATCH;
+        let mut body = json!({ "upsert_columns": upsert_columns_batch(start, BATCH, dim) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, NAMESPACE_SYNTHETIC_128, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(
+        &serve.base_url,
+        NAMESPACE_SYNTHETIC_128,
+        Duration::from_secs(300),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let recall_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{}/recall",
+            serve.base_url,
+            namespace_path_segment(NAMESPACE_SYNTHETIC_128)
+        ))
+        .json(&json!({ "num": recall_num, "top_k": recall_top_k }))
+        .send()
+        .await
+        .expect("recall");
+    assert_eq!(recall_resp.status(), StatusCode::OK);
+    let recall_body: Value = recall_resp.json().await.expect("recall json");
+    let avg_recall = recall_body["avg_recall"].as_f64().expect("avg_recall");
+    assert!(
+        avg_recall >= 0.85,
+        "synthetic-128 workload recall@{} avg_recall {avg_recall} must be >= 0.85",
+        recall_top_k
+    );
+
+    client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    let resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve.base_url,
+            namespace_path_segment(NAMESPACE_SYNTHETIC_128)
+        ))
+        .json(&cold_query)
+        .send()
+        .await
+        .expect("cold query");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("query json");
+    let roundtrips = body["performance"]["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips <= 4,
+        "synthetic-128 cold storage_roundtrips {roundtrips} must be ≤ 4"
     );
 }
 

@@ -77,6 +77,10 @@ name = "bench_cold"
 path = "tests/bench_cold.rs"
 required-features = ["bench"]
 
+[[test]]
+name = "synthetic_workload_gate"
+path = "tests/synthetic_workload_gate.rs"
+
 [dev-dependencies]
 tempfile = "3"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
