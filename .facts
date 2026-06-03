@@ -57,6 +57,18 @@
 - label: cold namespace load uses s3_batch two-round parallel fetch with storage_roundtrips in query performance
   command: test -f src/s3_batch.rs && grep -q 'fetch_cold_index_artifacts' src/s3_batch.rs && cargo test --lib query_performance_includes_storage_roundtrips -q
   tags: [implemented]
+- label: vector index build uses k-means++ centroid initialization and namespace distance_metric in Lloyd iterations
+  command: grep -q 'kmeans_plus_plus_init' src/index/vector.rs && cargo test --lib kmeans_plus_plus_differs_from_first_k_seeds -q
+  tags: [implemented]
+- label: serve and indexer accept OPENPUFFER_ANN_COARSE_PROBE and OPENPUFFER_ANN_FINE_PROBE written into centroids-l0.bin
+  command: grep -q 'OPENPUFFER_ANN_COARSE_PROBE' src/config.rs && grep -q 'probe_coarse' src/index/vector.rs
+  tags: [implemented]
+- label: BackgroundIndexer fair round-robin schedules lagging namespaces with per-tick time slices
+  command: grep -q 'fair round-robin' src/indexer.rs && cargo test -F integration --test integration_s3 fair_multi_namespace_background_indexer -q
+  tags: [implemented]
+- label: namespace meta supports at most two vector_fields with per-field centroids-l0 and cluster segments on S3
+  command: grep -q 'MAX_VECTOR_FIELDS' src/meta.rs && cargo test -F integration --test integration_s3 two_vector_columns_query_each_field -q
+  tags: [implemented]
 
 # write
 
@@ -92,6 +104,9 @@
   tags: [implemented]
 - label: write accepts upsert_condition evaluated against committed WAL and pending buffer
   command: grep -q 'upsert_condition' src/models.rs && grep -q 'overlay_pending_writes' src/buffer.rs
+  tags: [implemented]
+- label: limits module enforces namespace name pattern max upsert rows filter batch cap and 64 MiB write body
+  command: test -f src/limits.rs && grep -q 'validate_namespace_name' src/limits.rs && cargo test -F integration --test integration_s3 server_limits_reject_invalid_namespace_and_batch_sizes -q
   tags: [implemented]
 
 # query
@@ -132,11 +147,20 @@
 - label: perf test on 5k docs asserts candidates_ratio stays below 12 percent
   command: cargo test -F perf --test perf_namespace -q
   tags: [implemented]
+- label: query accepts consistency eventual to skip unindexed WAL tail replay on pinned views
+  command: grep -q 'skip_wal_tail' src/storage.rs && cargo test -F integration --test integration_s3 warm_eventual_query_zero_s3_gets_with_unindexed_tail -q
+  tags: [implemented]
+- label: query performance.billing exposes billable_logical_bytes_queried and billable_logical_bytes_returned estimates
+  command: test -f src/billing.rs && grep -q 'billable_logical_bytes_queried' src/models.rs && cargo test --lib query_performance_billing_estimates_queried_and_returned -q
+  tags: [implemented]
 
 # stack
 
 - label: implementation language is Rust edition 2021
   command: grep -q 'edition = "2021"' Cargo.toml
+  tags: [implemented]
+- label: docker-compose provides MinIO and minio-init bucket openpuffer-dev for local development
+  command: test -f docker-compose.yml && grep -q 'openpuffer-dev' docker-compose.yml && test -f scripts/dev-up.sh && test -f scripts/dev-serve.sh
   tags: [implemented]
 
 # cli
@@ -257,6 +281,18 @@
   tags: [implemented]
 - label: integration test copy_from_namespace_hybrid_filter_query_cross_feature copy dest hybrid filtered query
   command: cargo test -F integration --test integration_s3 copy_from_namespace_hybrid_filter -q
+  tags: [implemented]
+- label: integration test query_performance_billing_fields_smoke returns billing fields on MinIO query
+  command: cargo test -F integration --test integration_s3 query_performance_billing_fields_smoke -q
+  tags: [implemented]
+- label: integration test warm_eventual_query_zero_s3_gets_with_unindexed_tail proves eventual fast path after warm
+  command: cargo test -F integration --test integration_s3 warm_eventual_query_zero_s3_gets_with_unindexed_tail -q
+  tags: [implemented]
+- label: NamespaceView catch_up reloads WAL when wal_snapshot_seq advances ahead of pinned view after compaction
+  command: grep -q 'wal_snapshot_seq' src/view.rs && cargo test -F integration --test integration_s3 wal_compaction_warm_eventual -q
+  tags: [implemented]
+- label: integration tests assert S3 object bytes via tests/common/s3_harness Head Get and WAL decode helpers
+  command: test -f tests/common/s3_harness.rs && cargo test -F integration --test integration_s3 s3_wal_bytes_match_http_write -q
   tags: [implemented]
 - label: integration tests run via cargo test with integration feature and MinIO testcontainers
   command: cargo test -F integration --test integration_s3 -q
