@@ -4,6 +4,7 @@
 //! The write hot path only durably appends WAL + CAS `wal_commit_seq`; queries still see
 //! strong consistency via indexed segments + unindexed WAL tail scan.
 
+use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
 use crate::meta::{meta_key, NamespaceMeta, META_RETRIES};
@@ -52,6 +53,21 @@ pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> 
         segment.apply_delta(&upserts, &deletes);
         segment.segment_id = to;
 
+        let all_for_filter = docs_at_index_cursor(client, bucket, namespace, to).await?;
+        let filter_pairs: Vec<(String, crate::models::Document)> =
+            all_for_filter.into_iter().collect();
+        let filter_segment = FilterSegment::build(to, &meta.schema, &filter_pairs);
+        let filter_key = FilterSegment::key(namespace, to);
+        let filter_body = filter_segment.encode()?;
+        client
+            .put_object()
+            .bucket(bucket)
+            .key(&filter_key)
+            .body(ByteStream::from(filter_body))
+            .send()
+            .await
+            .with_context(|| format!("put filter segment {to:08}"))?;
+
         let key = FtsSegment::key(namespace, to);
         let body = segment.encode()?;
         client
@@ -86,6 +102,7 @@ pub async fn index_wal_range(client: &Client, bucket: &str, namespace: &str) -> 
 
         let next_meta = meta_after_index_commit(
             &meta,
+            to,
             to,
             to,
             vector_segment_id,
@@ -379,11 +396,44 @@ async fn load_fts_segment(
     }
 }
 
+async fn load_filter_segment(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    segment_id: u64,
+) -> Result<Option<FilterSegment>> {
+    if segment_id == 0 {
+        return Ok(None);
+    }
+    let key = FilterSegment::key(namespace, segment_id);
+    let out = client.get_object().bucket(bucket).key(&key).send().await;
+    match out {
+        Ok(resp) => {
+            let bytes = resp
+                .body
+                .collect()
+                .await
+                .context("read filter segment")?
+                .into_bytes();
+            Ok(Some(FilterSegment::decode(&bytes)?))
+        }
+        Err(e) => {
+            let service = e.into_service_error();
+            if service.is_no_such_key() {
+                Ok(None)
+            } else {
+                Err(anyhow!("get filter segment: {service}"))
+            }
+        }
+    }
+}
+
 /// CAS payload after indexer merges WAL through `index_cursor`.
 pub fn meta_after_index_commit(
     meta: &NamespaceMeta,
     index_cursor: u64,
     fts_segment_id: u64,
+    filter_segment_id: u64,
     vector_segment_id: u64,
     vector_field: String,
     dimensions: u32,
@@ -403,10 +453,24 @@ pub fn meta_after_index_commit(
     let mut next = meta.clone();
     next.index_cursor = index_cursor;
     next.fts_segment_id = fts_segment_id;
+    next.filter_segment_id = filter_segment_id;
     next.vector_segment_id = vector_segment_id;
     next.vector_field = vector_field;
     next.dimensions = dimensions;
     Ok(next)
+}
+
+/// Load filter index segment for queries.
+pub async fn load_filter_segment_for_query(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> Result<Option<FilterSegment>> {
+    if meta.filter_segment_id == 0 || meta.index_cursor == 0 {
+        return Ok(None);
+    }
+    load_filter_segment(client, bucket, namespace, meta.filter_segment_id).await
 }
 
 /// Load FTS segment for queries (returns None if not yet indexed).
@@ -511,9 +575,10 @@ mod tests {
             index_cursor: 2,
             ..Default::default()
         };
-        let next = meta_after_index_commit(&meta, 5, 5, 5, "emb".into(), 3).unwrap();
+        let next = meta_after_index_commit(&meta, 5, 5, 5, 5, "emb".into(), 3).unwrap();
         assert_eq!(next.index_cursor, 5);
         assert_eq!(next.fts_segment_id, 5);
+        assert_eq!(next.filter_segment_id, 5);
         assert_eq!(next.vector_segment_id, 5);
         assert_eq!(next.vector_field, "emb");
         assert_eq!(next.dimensions, 3);
@@ -526,7 +591,7 @@ mod tests {
             wal_commit_seq: 5,
             ..Default::default()
         };
-        assert!(meta_after_index_commit(&meta, 5, 5, 0, String::new(), 0).is_err());
+        assert!(meta_after_index_commit(&meta, 5, 5, 5, 0, String::new(), 0).is_err());
     }
 
     #[test]

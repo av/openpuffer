@@ -1,6 +1,8 @@
 //! Query planner: candidate generation from FTS postings / ANN clusters / WAL tail,
 //! then score-only-on-candidates ranked retrieval (hybrid Sum/Product supported).
 
+use crate::filter::{eval_filter, parse_filter, FilterExpr};
+use crate::index::filter::FilterSegment;
 use crate::index::fts::{bm25_doc_score, extract_index_text, FtsSegment};
 use crate::index::vector::{extract_vector, score_vector, value_to_f64_vec, VectorIndex};
 
@@ -36,6 +38,7 @@ pub struct QueryContext<'a> {
     pub meta: &'a NamespaceMeta,
     pub fts: Option<&'a FtsSegment>,
     pub vector: Option<&'a VectorIndex>,
+    pub filter_index: Option<&'a FilterSegment>,
     pub tail_doc_ids: &'a HashSet<String>,
     pub consistency: QueryConsistency,
 }
@@ -67,11 +70,11 @@ struct QueryPlanner<'a, 'b> {
 }
 
 pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<QueryResponse> {
-    if let Some(filters) = &req.filters {
-        if !filters.is_null() {
-            bail!("filters are not supported in v1");
-        }
-    }
+    let filter_expr = match req.filters.as_ref() {
+        None => None,
+        Some(v) if v.is_null() => None,
+        Some(v) => Some(parse_filter(v)?),
+    };
 
     let top_k = req.top_k.unwrap_or(10) as usize;
     let consistency = QueryConsistency::parse(req.consistency.as_deref())?;
@@ -80,6 +83,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         meta: ctx.meta,
         fts: ctx.fts,
         vector: ctx.vector,
+        filter_index: ctx.filter_index,
         tail_doc_ids: ctx.tail_doc_ids,
         consistency,
     };
@@ -90,7 +94,14 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         candidate_pool: top_k.saturating_mul(8).max(64),
     };
 
-    let candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
+    let mut candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
+    if let Some(expr) = filter_expr.as_ref() {
+        let allowed = planner.filter_matching_ids(expr)?;
+        candidates = candidates
+            .into_iter()
+            .filter(|id| allowed.contains(id))
+            .collect();
+    }
     let scored = if candidates.is_empty() {
         Vec::new()
     } else {
@@ -184,6 +195,44 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
         ids.into_iter()
             .filter(|id| self.ctx.docs.contains_key(id))
             .collect()
+    }
+
+    /// Doc ids matching the filter (indexed segment + WAL tail corrections).
+    fn filter_matching_ids(&self, expr: &FilterExpr) -> Result<HashSet<String>> {
+        let mut ids = if let Some(seg) = self.ctx.filter_index {
+            seg.matching_doc_ids(expr)
+        } else {
+            HashSet::new()
+        };
+
+        if self.ctx.filter_index.is_none() {
+            // No index yet: exhaustive scan over loaded docs.
+            for (id, doc) in self.ctx.docs {
+                if eval_filter(expr, doc) {
+                    ids.insert(id.clone());
+                }
+            }
+            return Ok(ids);
+        }
+
+        if self.use_tail() {
+            for id in self.ctx.tail_doc_ids {
+                let Some(doc) = self.ctx.docs.get(id) else {
+                    ids.remove(id);
+                    continue;
+                };
+                if eval_filter(expr, doc) {
+                    ids.insert(id.clone());
+                } else {
+                    ids.remove(id);
+                }
+            }
+        }
+
+        Ok(ids
+            .into_iter()
+            .filter(|id| self.ctx.docs.contains_key(id))
+            .collect())
     }
 
     fn collect_bm25_candidates(&self, field: &str, query: &str) -> Result<HashSet<String>> {
@@ -446,6 +495,7 @@ pub fn bm25_score_legacy(document: &str, query: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::filter::FilterSegment;
     use crate::index::fts::FtsSegment;
     use crate::index::vector::VectorIndex;
     use crate::meta::{DistanceMetric, NamespaceMeta};
@@ -503,6 +553,7 @@ mod tests {
             meta: &meta,
             fts: Some(&seg),
             vector: None,
+            filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
         };
@@ -549,6 +600,7 @@ mod tests {
             meta: &meta,
             fts: Some(&seg),
             vector: None,
+            filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
         };
@@ -642,6 +694,7 @@ mod tests {
             meta: &meta,
             fts: Some(&fts),
             vector: Some(&vindex),
+            filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
         };
@@ -687,6 +740,7 @@ mod tests {
             meta: &meta,
             fts: Some(&seg),
             vector: None,
+            filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
         };
@@ -720,6 +774,7 @@ mod tests {
             meta: &meta,
             fts: None,
             vector: None,
+            filter_index: None,
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
         };
@@ -737,5 +792,90 @@ mod tests {
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows.len(), 1);
         assert!(resp.rows[0].attributes.is_none());
+    }
+
+    #[test]
+    fn filter_eq_with_vector_query_returns_subset() {
+        let mut map: HashMap<String, Document> = HashMap::new();
+        map.insert(
+            "pro-close".into(),
+            Document {
+                id: "pro-close".into(),
+                attributes: [
+                    ("text".into(), json!("text")),
+                    ("embedding".into(), json!([0.99, 0.01, 0.0, 0.0])),
+                    ("tier".into(), json!("pro")),
+                ]
+                .into(),
+            },
+        );
+        map.insert(
+            "pro-exact".into(),
+            Document {
+                id: "pro-exact".into(),
+                attributes: [
+                    ("text".into(), json!("text")),
+                    ("embedding".into(), json!([1.0, 0.0, 0.0, 0.0])),
+                    ("tier".into(), json!("pro")),
+                ]
+                .into(),
+            },
+        );
+        map.insert(
+            "free-exact".into(),
+            Document {
+                id: "free-exact".into(),
+                attributes: [
+                    ("text".into(), json!("text")),
+                    ("embedding".into(), json!([1.0, 0.0, 0.0, 0.0])),
+                    ("tier".into(), json!("free")),
+                ]
+                .into(),
+            },
+        );
+
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &pairs,
+        )
+        .unwrap()
+        .expect("vector index");
+        let filter_seg = FilterSegment::build(1, &json!({}), &pairs);
+
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            vector_segment_id: 1,
+            filter_segment_id: 1,
+            dimensions: 4,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: Some(&vindex),
+            filter_index: Some(&filter_seg),
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
+            top_k: Some(5),
+            filters: Some(json!(["tier", "Eq", "pro"])),
+            include_attributes: None,
+            consistency: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert!(!resp.rows.is_empty());
+        assert!(resp.rows.iter().all(|r| r.id == "pro-close" || r.id == "pro-exact"));
+        assert!(!resp.rows.iter().any(|r| r.id == "free-exact"));
     }
 }

@@ -195,6 +195,7 @@ async fn query_namespace(
                 meta: &loaded.meta,
                 fts: loaded.fts.as_ref(),
                 vector: loaded.vector.as_ref(),
+                filter_index: loaded.filter_index.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
                 consistency: search::QueryConsistency::default(),
             };

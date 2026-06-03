@@ -114,7 +114,13 @@ Distance uses `distance_metric` from `meta.json` (`cosine_distance` default).
 | Metadata | `meta.json` | 1 |
 | Indexed ANN / FTS | `index/*` | 3–4 (implemented) |
 | Unindexed tail | `wal/*.bin` after `index_cursor` | 1 (full replay), 6 (tail only) |
-| Filters | attribute indexes | 7 |
+| Filters | `index/filter-{seg:08}.bin` | 7 (implemented) |
+
+**Filters (`filters: ["field", "Eq", value]` …):**
+
+1. Parse turbopuffer-style DSL: `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `And`, `Or` (unsupported ops → 400).
+2. Load inverted filter segment from S3: `(field, value_key) → doc_id` sets.
+3. Intersect filter matches with ANN/FTS **candidates before scoring**; WAL tail docs re-evaluated with `eval_filter` under strong consistency.
 
 ## Consistency
 

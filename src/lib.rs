@@ -19,6 +19,7 @@
 pub mod api;
 pub mod buffer;
 pub mod config;
+pub mod filter;
 pub mod index;
 pub mod indexer;
 pub mod meta;

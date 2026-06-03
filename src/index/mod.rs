@@ -2,5 +2,6 @@
 //!
 //! FTS inverted postings; ANN centroid/cluster segments (SPFresh-style, v1 simplified).
 
+pub mod filter;
 pub mod fts;
 pub mod vector;
