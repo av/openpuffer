@@ -177,6 +177,7 @@ impl SegmentCache {
             let got = Self::get_object_bytes(client, bucket, s3_key).await?;
             if got.is_some() {
                 self.s3_gets.fetch_add(1, Ordering::SeqCst);
+                crate::metrics::inc_s3_get();
             }
             return Ok(got.map(|(b, _)| b));
         }
@@ -194,6 +195,7 @@ impl SegmentCache {
         let got = Self::get_object_bytes(client, bucket, s3_key).await?;
         if let Some((bytes, etag)) = &got {
             self.s3_gets.fetch_add(1, Ordering::SeqCst);
+            crate::metrics::inc_s3_get();
             if let Some(etag) = etag {
                 self.write_local(bucket, s3_key, bytes, etag);
             }

@@ -2,8 +2,8 @@ use crate::config::AppConfig;
 use crate::export::MAX_EXPORT_LIMIT;
 use crate::limits::{self, validate_namespace_name};
 use crate::models::{
-    validate_doc_id, Document, ExportRequest, ExportResponse, HealthResponse, NamespaceSummary,
-    NamespacesResponse, QueryRequest, WriteRequest,
+    validate_doc_id, ApiErrorResponse, Document, ExportRequest, ExportResponse, HealthResponse,
+    NamespaceSummary, NamespacesResponse, QueryRequest, WriteRequest,
 };
 use crate::schema::{merge_schema, validate_patch_attributes};
 use crate::filter::parse_filter;
@@ -30,9 +30,19 @@ pub struct AppState {
     pub config: AppConfig,
 }
 
+/// turbopuffer-style `{"error": "...", "status": "error"}` with the given HTTP status.
+fn api_error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    (status, Json(ApiErrorResponse::new(message))).into_response()
+}
+
 pub fn router(state: AppState) -> Router {
     let r = Router::new()
-        .route("/health", get(health))
+        .route("/health", get(health));
+
+    #[cfg(feature = "metrics")]
+    let r = r.route("/metrics", get(prometheus_metrics));
+
+    let r = r
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces/{name}", get(get_namespace_metadata))
         .route(
@@ -59,16 +69,13 @@ async fn reject_oversized_write_body(req: Request<Body>, next: Next) -> Response
         if let Ok(s) = v.to_str() {
             if let Ok(n) = s.parse::<usize>() {
                 if n > limits::MAX_WRITE_BODY_BYTES {
-                    return (
+                    return api_error(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": format!(
-                                "request body exceeds maximum write size of {} MiB",
-                                limits::MAX_WRITE_BODY_BYTES / (1024 * 1024)
-                            )
-                        })),
-                    )
-                        .into_response();
+                        format!(
+                            "request body exceeds maximum write size of {} MiB",
+                            limits::MAX_WRITE_BODY_BYTES / (1024 * 1024)
+                        ),
+                    );
                 }
             }
         }
@@ -77,22 +84,31 @@ async fn reject_oversized_write_body(req: Request<Body>, next: Next) -> Response
 }
 
 fn namespace_name_error_response(name: &str) -> Option<axum::response::Response> {
-    if let Err(msg) = validate_namespace_name(name) {
-        return Some(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": msg})),
-            )
-                .into_response(),
-        );
-    }
-    None
+    validate_namespace_name(name)
+        .err()
+        .map(|msg| api_error(StatusCode::BAD_REQUEST, msg))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct HealthQuery {
     #[serde(default)]
     deep: Option<u8>,
+}
+
+#[cfg(feature = "metrics")]
+async fn prometheus_metrics() -> impl IntoResponse {
+    match crate::metrics::render() {
+        Ok(body) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            error!("prometheus encode: {e}");
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "metrics encode failed")
+        }
+    }
 }
 
 async fn health(
@@ -216,11 +232,7 @@ async fn export_namespace_impl(
     }
     if let Some(id) = last_id {
         if let Err(msg) = validate_doc_id(id) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     }
     let limit = limit.map(|n| n.min(MAX_EXPORT_LIMIT));
@@ -233,11 +245,7 @@ async fn export_namespace_impl(
         Err(e) => {
             error!("export namespace {name}: {e:#}");
             if e.to_string().contains("namespace not found") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "namespace not found"})),
-                )
-                    .into_response();
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
             }
             storage_error_response(e)
         }
@@ -267,11 +275,7 @@ fn export_page_response(
             match serde_json::to_string(row) {
                 Ok(line) => body.push_str(&line),
                 Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": e.to_string()})),
-                    )
-                        .into_response();
+                    return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
                 }
             }
         }
@@ -302,11 +306,7 @@ async fn warm_namespace_handler(
         Err(e) => {
             error!("warm namespace {name}: {e:#}");
             if e.to_string().contains("namespace not found") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "namespace not found"})),
-                )
-                    .into_response();
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
             }
             storage_error_response(e)
         }
@@ -344,11 +344,7 @@ async fn get_namespace_metadata(
         Err(e) => {
             error!("namespace metadata {name}: {e:#}");
             if e.to_string().contains("namespace not found") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "namespace not found"})),
-                )
-                    .into_response();
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
             }
             storage_error_response(e)
         }
@@ -382,13 +378,10 @@ async fn write_namespace(
     }
 
     if body.copy_from_namespace.is_some() && body.branch_from_namespace.is_some() {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "copy_from_namespace and branch_from_namespace are mutually exclusive"
-            })),
-        )
-            .into_response();
+            "copy_from_namespace and branch_from_namespace are mutually exclusive",
+        );
     }
 
     if let Some(source) = body.branch_from_namespace.as_deref() {
@@ -423,22 +416,19 @@ async fn write_namespace(
 
     let explicit_rows = limits::count_explicit_write_rows(&body);
     if explicit_rows > state.config.limits.max_upsert_rows {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!(
-                    "write request has {explicit_rows} rows; maximum is {}",
-                    state.config.limits.max_upsert_rows
-                )
-            })),
-        )
-            .into_response();
+            format!(
+                "write request has {explicit_rows} rows; maximum is {}",
+                state.config.limits.max_upsert_rows
+            ),
+        );
     }
 
     let mut upserts = Vec::new();
     for row in body.upsert_rows {
         if let Err(msg) = validate_doc_id(&row.id) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
         upserts.push(Document {
             id: row.id,
@@ -447,7 +437,7 @@ async fn write_namespace(
     }
     for id in &body.deletes {
         if let Err(msg) = validate_doc_id(id) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     }
 
@@ -455,11 +445,7 @@ async fn write_namespace(
         match apply_column_batch(&mut upserts, cols, false) {
             Ok(()) => {}
             Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": err})),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, err);
             }
         }
     }
@@ -467,7 +453,7 @@ async fn write_namespace(
     let mut patches = Vec::new();
     for row in body.patch_rows {
         if let Err(msg) = validate_doc_id(&row.id) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
         patches.push(Document {
             id: row.id,
@@ -478,11 +464,7 @@ async fn write_namespace(
         match apply_column_batch(&mut patches, cols, true) {
             Ok(()) => {}
             Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": err})),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, err);
             }
         }
     }
@@ -496,11 +478,7 @@ async fn write_namespace(
         Some(v) => match parse_patch_by_filter(v) {
             Ok(parsed) => Some(parsed),
             Err(msg) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": msg})),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, msg);
             }
         },
     };
@@ -515,41 +493,25 @@ async fn write_namespace(
     {
         Ok(s) => s,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     };
 
     if let Some((_, ref patch_attrs)) = patch_by_filter {
         if let Err(msg) = validate_patch_attributes(patch_attrs, &effective_schema) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     }
 
     for patch in &patches {
         if let Err(msg) = validate_patch_attributes(&patch.attributes, &effective_schema) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, msg);
         }
     }
 
     if let Some((ref filters, _)) = patch_by_filter {
         if let Err(e) = parse_filter(filters) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e:#}")})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
         }
     }
 
@@ -561,13 +523,7 @@ async fn write_namespace(
         None => None,
         Some(v) => match parse_filter(v) {
             Ok(_) => body.upsert_condition.clone(),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("{e:#}")})),
-                )
-                    .into_response();
-            }
+            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
         },
     };
 
@@ -576,13 +532,7 @@ async fn write_namespace(
         Some(s) if s.is_empty() => None,
         Some(s) => match parse_distance_metric(s) {
             Ok(m) => Some(m),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("{e:#}")})),
-                )
-                    .into_response();
-            }
+            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
         },
     };
 
@@ -594,11 +544,7 @@ async fn write_namespace(
         if let Err(e) =
             crate::vector_encoding::normalize_document_vectors(&mut doc.attributes, &norm_meta)
         {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e:#}")})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
         }
     }
 
@@ -611,11 +557,7 @@ async fn write_namespace(
         .await
         {
             if let Err(e) = resolve_distance_metric(&meta, Some(metric)) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("{e:#}")})),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, format!("{e:#}"));
             }
         }
     }
@@ -647,11 +589,7 @@ async fn write_namespace(
             error!("write namespace {name}: {e:#}");
             let msg = e.to_string();
             if msg.contains("distance_metric") || msg.contains("filter matched") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": msg})),
-                )
-                    .into_response();
+                return api_error(StatusCode::BAD_REQUEST, msg);
             }
             storage_error_response(e)
         }
@@ -768,13 +706,7 @@ async fn query_namespace(
     }
     let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
         Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()),
     };
     match state
         .storage
@@ -797,11 +729,7 @@ async fn query_namespace(
                 let headers = query_performance_headers(resp.performance.as_ref());
                 (StatusCode::OK, headers, Json(resp)).into_response()
             }
-            Err(e) => (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response(),
+            Err(e) => api_error(StatusCode::BAD_REQUEST, e.to_string()),
             }
         }
         Err(e) => {
@@ -827,11 +755,7 @@ async fn delete_namespace(
         Err(e) => {
             error!("delete namespace {name}: {e:#}");
             if e.to_string().contains("namespace not found") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "namespace not found"})),
-                )
-                    .into_response();
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
             }
             storage_error_response(e)
         }
@@ -873,20 +797,16 @@ async fn handle_namespace_s3_clone(
     op: NamespaceS3CloneOp,
 ) -> axum::response::Response {
     if source.is_empty() {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("{field} must not be empty")})),
-        )
-            .into_response();
+            format!("{field} must not be empty"),
+        );
     }
     if write_has_row_ops(body) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("{field} cannot be combined with other write operations")
-            })),
-        )
-            .into_response();
+            format!("{field} cannot be combined with other write operations"),
+        );
     }
     let result = match op {
         NamespaceS3CloneOp::Copy => state.storage.copy_from_namespace(dest, source).await,
@@ -920,7 +840,7 @@ fn copy_namespace_error_response(e: impl Into<anyhow::Error>) -> axum::response:
     } else {
         return storage_error_response(err);
     };
-    (status, Json(serde_json::json!({"error": msg}))).into_response()
+    api_error(status, msg)
 }
 
 fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {
@@ -936,9 +856,5 @@ fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Respon
         ),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
-    (
-        status,
-        Json(serde_json::json!({"error": message})),
-    )
-        .into_response()
+    api_error(status, message)
 }

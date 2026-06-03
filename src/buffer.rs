@@ -449,6 +449,7 @@ impl WriteBufferManager {
 
                     match result {
                         Ok((seq, entry)) => {
+                            crate::metrics::inc_wal_commits();
                             *buf.last_committed_at.lock().await = Some(Instant::now());
                             for w in waiters {
                                 let batch = CommittedBatch {

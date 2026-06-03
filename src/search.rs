@@ -223,6 +223,9 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         ),
         billable_logical_bytes_returned: billable_logical_bytes_returned(&rows),
     };
+    let elapsed = started.elapsed();
+    crate::metrics::observe_query_duration_seconds(elapsed.as_secs_f64());
+
     let performance = QueryPerformance {
         approx_namespace_size: namespace_size,
         candidates: candidate_count,
@@ -232,7 +235,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
             .stats
             .full_scan_docs
             .saturating_add(planner.stats.tail_docs_examined),
-        query_execution_us: started.elapsed().as_micros() as u64,
+        query_execution_us: elapsed.as_micros() as u64,
         storage_roundtrips: effective_ctx.storage_roundtrips,
         billing,
     };

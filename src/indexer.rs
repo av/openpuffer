@@ -582,6 +582,9 @@ impl BackgroundIndexer {
 
         sort_namespaces_by_index_lag(&mut active, &lag);
 
+        let max_lag = lag.values().copied().max().unwrap_or(0);
+        crate::metrics::set_index_lag_segments(max_lag);
+
         let mut queued = self.queued.lock().await;
         let mut queue = self.queue.lock().await;
         queue.clear();

@@ -49,6 +49,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 default = []
 integration = []
 perf = []
+metrics = ["dep:prometheus"]
+
+[dependencies.prometheus]
+version = "0.13"
+optional = true
 
 [[test]]
 name = "perf_namespace"
