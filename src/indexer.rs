@@ -1319,7 +1319,7 @@ mod tests {
     #[test]
     fn probed_cluster_ids_bounded_vs_full_index() {
         use crate::index::vector::{DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE};
-        use crate::s3_batch::fine_ids_for_probed_query;
+        use crate::index::vector::probe_fine_centroids_parts;
 
         let l0 = CentroidIndexL0 {
             vector_field: "emb".into(),
@@ -1349,7 +1349,7 @@ mod tests {
                 },
             );
         }
-        let probed = fine_ids_for_probed_query(&l0, &l1, &query, None, &HashMap::new());
+        let probed = probe_fine_centroids_parts(&l0, &l1, None, &HashMap::new(), &query);
         assert!(probed.len() >= 8 && probed.len() <= 64);
         assert!(probed.len() < l0.num_fine_total as usize / 10);
     }

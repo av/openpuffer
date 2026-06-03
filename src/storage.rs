@@ -431,19 +431,12 @@ impl Storage {
                 storage_roundtrips = storage_roundtrips.saturating_add(tail_roundtrips);
                 cold_s3_keys_fetched = cold_s3_keys_fetched.saturating_add(tail_keys);
                 entries
+            } else if let Some((from, to)) =
+                crate::s3_batch::unindexed_wal_tail_range(&view.meta)
+            {
+                replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
             } else {
-                let to = view.meta.wal_commit_seq;
-                let from = if view.meta.wal_snapshot_seq > 0 {
-                    crate::wal_compaction::wal_replay_from(view.meta.wal_snapshot_seq, to)
-                        .unwrap_or(view.meta.index_cursor.saturating_add(1))
-                } else {
-                    view.meta.index_cursor.saturating_add(1)
-                };
-                if from > to {
-                    Vec::new()
-                } else {
-                    replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
-                }
+                Vec::new()
             };
             wal_touched_doc_ids(&entries)
         } else {

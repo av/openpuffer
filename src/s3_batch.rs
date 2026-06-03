@@ -8,7 +8,7 @@
 //! Sub-batches inside a round still count as one `storage_roundtrip`.
 
 use crate::index::filter::FilterSegment;
-use crate::index::fts::{index_fields_from_schema, FtsSegment};
+use crate::index::fts::FtsSegment;
 use crate::index::vector::{
     probe_fine_centroids_parts, CentroidIndexL0, CentroidIndexL1, CentroidIndexL2,
     CentroidRouting, ClusterSegment, VectorIndex,
@@ -169,19 +169,23 @@ pub fn wal_round_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
     if meta.wal_snapshot_seq > 0 {
         keys.push(crate::wal::WalSnapshot::key(namespace));
     }
-    let replay_from = if meta.wal_snapshot_seq > 0 {
-        crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
-    } else if meta.wal_commit_seq > 0 {
-        Some(1)
-    } else {
-        None
-    };
-    if let Some(from) = replay_from {
+    if let Some(from) = wal_commit_replay_from(meta) {
         for seq in from..=meta.wal_commit_seq {
             keys.push(crate::wal::wal_key(namespace, seq));
         }
     }
     keys
+}
+
+/// WAL segment replay start for namespace open (snapshot-aware; no fallback to seq 1 after compaction).
+pub fn wal_commit_replay_from(meta: &NamespaceMeta) -> Option<u64> {
+    if meta.wal_snapshot_seq > 0 {
+        crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
+    } else if meta.wal_commit_seq > 0 {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 /// WAL segment keys for round 4 (unindexed tail), if any.
@@ -323,7 +327,7 @@ pub fn cluster_keys_for_query(
 ) -> Vec<String> {
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let mut keys = Vec::new();
-    for fine_id in fine_ids_for_probed_query(l0, l1_loaded, query, routing, l2_loaded) {
+    for fine_id in probe_fine_centroids_parts(l0, l1_loaded, routing, l2_loaded, query) {
         if use_legacy {
             keys.push(ClusterSegment::legacy_key(namespace, fine_id));
         } else {
@@ -331,17 +335,6 @@ pub fn cluster_keys_for_query(
         }
     }
     keys
-}
-
-/// Global fine ids to fetch after probed L1 and optional v3 routing/L2 are decoded.
-pub fn fine_ids_for_probed_query(
-    l0: &CentroidIndexL0,
-    l1_loaded: &HashMap<u32, CentroidIndexL1>,
-    query: &[f64],
-    routing: Option<&CentroidRouting>,
-    l2_loaded: &HashMap<(u32, u32), CentroidIndexL2>,
-) -> Vec<u32> {
-    probe_fine_centroids_parts(l0, l1_loaded, routing, l2_loaded, query)
 }
 
 /// `centroids-routing.bin` key when L0 marks v3 routing.
@@ -369,44 +362,6 @@ pub fn l2_keys_for_query_probe(
         }
         for l2_id in 0..l2_count {
             keys.push(CentroidIndexL2::key(namespace, field, coarse_id, l2_id));
-        }
-    }
-    keys
-}
-
-/// Keys for round 2 query path: filter + probed L1 + probed clusters only.
-pub fn round2_keys_for_query(
-    namespace: &str,
-    meta: &NamespaceMeta,
-    field: &str,
-    l0: &CentroidIndexL0,
-    l1_loaded: &HashMap<u32, CentroidIndexL1>,
-    query: &[f64],
-) -> Vec<String> {
-    let mut keys = Vec::new();
-    if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
-        keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
-    }
-
-    let use_legacy = vector_index_uses_legacy_paths(meta, field);
-    let coarse_m = l0.probe_coarse_count();
-    let coarse_ids = l0.nearest_coarse(query, coarse_m);
-    for coarse_id in coarse_ids {
-        if !l1_loaded.contains_key(&coarse_id) {
-            if use_legacy {
-                keys.push(CentroidIndexL1::legacy_key(namespace, coarse_id));
-            } else {
-                keys.push(CentroidIndexL1::key(namespace, field, coarse_id));
-            }
-        }
-    }
-
-    let fine_ids = fine_ids_for_probed_query(l0, l1_loaded, query, None, &HashMap::new());
-    for fine_id in fine_ids {
-        if use_legacy {
-            keys.push(ClusterSegment::legacy_key(namespace, fine_id));
-        } else {
-            keys.push(ClusterSegment::key(namespace, field, fine_id));
         }
     }
     keys
@@ -546,27 +501,7 @@ pub async fn fetch_cold_index_bootstrap(
         fetch_round(client, bucket, &r2_keys).await?
     };
 
-    let mut l0_by_field = HashMap::new();
-    for cfg in effective_vector_fields(meta) {
-        if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
-            continue;
-        }
-        let key = CentroidIndexL0::key(namespace, &cfg.name);
-        let bytes = fetched.get(&key).or_else(|| {
-            if vector_index_uses_legacy_paths(meta, &cfg.name) {
-                fetched.get(&CentroidIndexL0::legacy_key(namespace))
-            } else {
-                None
-            }
-        });
-        if let Some(b) = bytes {
-            if let Ok(l0) = CentroidIndexL0::decode(b) {
-                if l0.num_fine_total > 0 {
-                    l0_by_field.insert(cfg.name.clone(), l0);
-                }
-            }
-        }
-    }
+    let l0_by_field = decode_l0_by_field_from_fetched(namespace, meta, &fetched);
 
     let fts = decode_fts_from_round(namespace, meta, &fetched)?;
     let filter = decode_filter_from_round(namespace, meta, &fetched)?;
@@ -627,11 +562,8 @@ pub async fn fetch_cold_vector_probed(
         fetched.extend(l2_map);
     }
 
-    let l1 = decode_l1_probed(namespace, meta, field, &l0, &fetched)?;
-    let l2 = decode_l2_probed(namespace, field, &fetched, &l2_keys)?;
-    let cluster_keys = cluster_keys_for_query(
-        namespace, meta, field, &l0, &l1, query, routing.as_ref(), &l2,
-    );
+    let cluster_keys =
+        cluster_keys_for_query_after_l1(namespace, meta, field, &l0, &fetched, query)?;
     if !cluster_keys.is_empty() {
         if storage_roundtrips == 0 {
             storage_roundtrips = 1;
@@ -666,7 +598,7 @@ pub fn assemble_vector_index_probed(
         })
         .unwrap_or_default();
     let l2 = decode_l2_probed(namespace, field, fetched, &l2_key_list)?;
-    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query, routing.as_ref(), &l2);
+    let fine_ids = probe_fine_centroids_parts(&l0, &l1, routing.as_ref(), &l2, query);
     let probed_clusters = fine_ids.len().min(u32::MAX as usize) as u32;
     if probed_clusters > 0 {
         crate::metrics::add_ann_probed_clusters(probed_clusters as u64);
@@ -749,13 +681,12 @@ pub(crate) fn decode_l1_probed(
     let mut l1 = HashMap::new();
     for coarse_id in 0..l0.num_coarse {
         let key = CentroidIndexL1::key(namespace, field, coarse_id);
-        let bytes = fetched.get(&key).or_else(|| {
-            if use_legacy {
-                fetched.get(&CentroidIndexL1::legacy_key(namespace, coarse_id))
-            } else {
-                None
-            }
-        });
+        let bytes = fetched_segment(
+            fetched,
+            &key,
+            use_legacy,
+            || CentroidIndexL1::legacy_key(namespace, coarse_id),
+        );
         let Some(bytes) = bytes else {
             continue;
         };
@@ -775,13 +706,12 @@ pub(crate) fn decode_clusters_probed(
     let mut clusters = HashMap::new();
     for &fine_id in fine_ids {
         let key = ClusterSegment::key(namespace, field, fine_id);
-        let bytes = fetched.get(&key).or_else(|| {
-            if use_legacy {
-                fetched.get(&ClusterSegment::legacy_key(namespace, fine_id))
-            } else {
-                None
-            }
-        });
+        let bytes = fetched_segment(
+            fetched,
+            &key,
+            use_legacy,
+            || ClusterSegment::legacy_key(namespace, fine_id),
+        );
         let Some(bytes) = bytes else {
             continue;
         };
@@ -807,27 +737,8 @@ pub async fn fetch_cold_index_artifacts(
         fetch_round(client, bucket, &r1_keys).await?
     };
 
-    let mut l0_by_field: Vec<(String, CentroidIndexL0)> = Vec::new();
-    for cfg in effective_vector_fields(meta) {
-        if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
-            continue;
-        }
-        let key = CentroidIndexL0::key(namespace, &cfg.name);
-        let bytes = r1.get(&key).or_else(|| {
-            if vector_index_uses_legacy_paths(meta, &cfg.name) {
-                r1.get(&CentroidIndexL0::legacy_key(namespace))
-            } else {
-                None
-            }
-        });
-        if let Some(b) = bytes {
-            if let Ok(l0) = CentroidIndexL0::decode(b) {
-                if l0.num_fine_total > 0 {
-                    l0_by_field.push((cfg.name.clone(), l0));
-                }
-            }
-        }
-    }
+    let l0_map = decode_l0_by_field_from_fetched(namespace, meta, &r1);
+    let l0_by_field: Vec<_> = l0_map.into_iter().collect();
 
     let mut r2_keys = round2_keys(namespace, meta, &l0_by_field);
     if r2_keys.is_empty() && meta.filter_segment_id > 0 && meta.index_cursor > 0 {
@@ -922,16 +833,7 @@ pub async fn cold_load_meta_and_wal(
         fetch_keys.push(crate::wal::WalSnapshot::key(namespace));
     }
 
-    // After WAL compaction, `wal_replay_from` may be `None` (snapshot covers commit point).
-    // Do not fall back to seq 1 — those segments may have been deleted.
-    let replay_from = if meta.wal_snapshot_seq > 0 {
-        crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
-    } else if meta.wal_commit_seq > 0 {
-        Some(1)
-    } else {
-        None
-    };
-
+    let replay_from = wal_commit_replay_from(&meta);
     if let Some(from) = replay_from {
         for seq in from..=meta.wal_commit_seq {
             fetch_keys.push(crate::wal::wal_key(namespace, seq));
@@ -963,11 +865,48 @@ pub async fn cold_load_meta_and_wal(
     Ok((meta, etag, wal_by_seq, storage_roundtrips, s3_keys_fetched))
 }
 
-fn primary_fts_field(meta: &NamespaceMeta) -> String {
-    index_fields_from_schema(&meta.schema)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
+fn fetched_segment<'a>(
+    fetched: &'a HashMap<String, Vec<u8>>,
+    key: &str,
+    use_legacy: bool,
+    legacy_key: impl FnOnce() -> String,
+) -> Option<&'a Vec<u8>> {
+    fetched.get(key).or_else(|| {
+        if use_legacy {
+            fetched.get(&legacy_key())
+        } else {
+            None
+        }
+    })
+}
+
+fn decode_l0_by_field_from_fetched(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    fetched: &HashMap<String, Vec<u8>>,
+) -> HashMap<String, CentroidIndexL0> {
+    let mut l0_by_field = HashMap::new();
+    for cfg in effective_vector_fields(meta) {
+        if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
+            continue;
+        }
+        let key = CentroidIndexL0::key(namespace, &cfg.name);
+        let use_legacy = vector_index_uses_legacy_paths(meta, &cfg.name);
+        let Some(bytes) = fetched_segment(
+            fetched,
+            &key,
+            use_legacy,
+            || CentroidIndexL0::legacy_key(namespace),
+        ) else {
+            continue;
+        };
+        if let Ok(l0) = CentroidIndexL0::decode(bytes) {
+            if l0.num_fine_total > 0 {
+                l0_by_field.insert(cfg.name.clone(), l0);
+            }
+        }
+    }
+    l0_by_field
 }
 
 fn decode_fts_from_round(
@@ -982,12 +921,7 @@ fn decode_fts_from_round(
     let Some(bytes) = r1.get(&key) else {
         return Ok(None);
     };
-    let seg = FtsSegment::decode(bytes)?;
-    let expected = primary_fts_field(meta);
-    if !expected.is_empty() && seg.field != expected {
-        // Schema field changed; keep segment if non-empty (matches indexer behavior).
-    }
-    Ok(Some(seg))
+    Ok(Some(FtsSegment::decode(bytes)?))
 }
 
 fn decode_filter_from_round(
@@ -1015,42 +949,9 @@ fn decode_vector_from_rounds(
     if l0.num_fine_total == 0 {
         return Ok(None);
     }
-    let use_legacy = vector_index_uses_legacy_paths(meta, field);
-
-    let mut l1 = HashMap::new();
-    for coarse_id in 0..l0.num_coarse {
-        let key = CentroidIndexL1::key(namespace, field, coarse_id);
-        let bytes = r2.get(&key).or_else(|| {
-            if use_legacy {
-                r2.get(&CentroidIndexL1::legacy_key(namespace, coarse_id))
-            } else {
-                None
-            }
-        });
-        let Some(bytes) = bytes else {
-            continue;
-        };
-        let seg = CentroidIndexL1::decode(bytes)?;
-        l1.insert(coarse_id, seg);
-    }
-
-    let mut clusters = HashMap::new();
-    for fine_id in 0..l0.num_fine_total {
-        let key = ClusterSegment::key(namespace, field, fine_id);
-        let bytes = r2.get(&key).or_else(|| {
-            if use_legacy {
-                r2.get(&ClusterSegment::legacy_key(namespace, fine_id))
-            } else {
-                None
-            }
-        });
-        let Some(bytes) = bytes else {
-            continue;
-        };
-        let seg = ClusterSegment::decode(bytes)?;
-        clusters.insert(fine_id, seg);
-    }
-
+    let l1 = decode_l1_probed(namespace, meta, field, &l0, r2)?;
+    let fine_ids: Vec<u32> = (0..l0.num_fine_total).collect();
+    let clusters = decode_clusters_probed(namespace, meta, field, r2, &fine_ids)?;
     Ok(Some(VectorIndex {
         l0,
         l1,
@@ -1198,14 +1099,7 @@ mod tests {
             index_cursor: 15,
             ..Default::default()
         };
-        let replay_from = if meta.wal_snapshot_seq > 0 {
-            crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
-        } else if meta.wal_commit_seq > 0 {
-            Some(1)
-        } else {
-            None
-        };
-        assert!(replay_from.is_none());
+        assert!(wal_commit_replay_from(&meta).is_none());
     }
 
     #[test]
@@ -1234,10 +1128,7 @@ mod tests {
             dimensions: 2,
             ..Default::default()
         };
-        let mut r2_keys = Vec::new();
-        if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
-            r2_keys.push(FilterSegment::key("ns", meta.filter_segment_id));
-        }
+        let r2_keys = round2_bootstrap_keys("ns", &meta);
         assert!(r2_keys.iter().any(|k| k.contains("filter-")));
         assert!(!r2_keys.iter().any(|k| k.contains("clusters-")));
         let full_r2 = round2_keys("ns", &meta, &[("emb".into(), l0)]);
@@ -1381,12 +1272,12 @@ mod tests {
                 }
             }
         }
-        let fine_ids = fine_ids_for_probed_query(
+        let fine_ids = probe_fine_centroids_parts(
             &index.l0,
             &index.l1,
-            &query,
             Some(routing),
             &index.l2,
+            &query,
         );
         for fine_id in &fine_ids {
             if let Some(cluster) = index.clusters.get(fine_id) {
@@ -1408,12 +1299,12 @@ mod tests {
         assert!(probed.routing.is_some(), "probed assemble must decode routing");
         assert!(!probed.l2.is_empty(), "probed assemble must decode L2 segments");
         assert_eq!(
-            fine_ids_for_probed_query(
+            probe_fine_centroids_parts(
                 &probed.l0,
                 &probed.l1,
-                &query,
                 probed.routing.as_ref(),
                 &probed.l2,
+                &query,
             ),
             index.probe_fine_centroids(&query),
             "probed fine ids must match full index probe descent"

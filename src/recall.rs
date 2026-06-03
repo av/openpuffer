@@ -75,29 +75,12 @@ pub fn measure_recall(
         let query = corpus[idx].1.clone();
         let brute = brute_force_top_k(corpus, &query, metric, top_k);
         let ann_results: Vec<String> = if use_rerank {
-            let metric = index.l0.distance_metric;
-            let mut scored: Vec<(String, f64)> = index
-                .ann_pool_doc_ids(&query)
+            index
+                .rerank_top_k(&query, top_k, &view_vector)
                 .into_iter()
-                .filter(|id| in_allowed(id))
-                .filter_map(|id| {
-                    let v = view_vector(&id)?;
-                    if v.len() != query.len() {
-                        return None;
-                    }
-                    Some((
-                        id,
-                        crate::index::vector::score_vector(&query, &v, metric),
-                    ))
-                })
-                .collect();
-            scored.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.0.cmp(&b.0))
-            });
-            scored.truncate(top_k);
-            scored.into_iter().map(|(id, _)| id).collect()
+                .filter(|(id, _)| in_allowed(id))
+                .map(|(id, _)| id)
+                .collect()
         } else {
             let oversample = top_k.saturating_mul(8).max(top_k);
             index
