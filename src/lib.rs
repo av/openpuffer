@@ -20,6 +20,7 @@
 //!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY,
 //!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
 //!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
+//!      OPENPUFFER_FTS_STEM (optional Porter stemming for FTS; default off)
 
 pub mod api;
 pub mod billing;

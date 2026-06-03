@@ -4,4 +4,5 @@
 
 pub mod filter;
 pub mod fts;
+pub mod fts_tokenizer;
 pub mod vector;

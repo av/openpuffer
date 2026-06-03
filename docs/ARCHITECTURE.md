@@ -23,6 +23,17 @@ openpuffer/{ns}/
 
 All durable state uses **WAL + index segments only**. There is no per-document `docs/{id}.json` or `manifest.json` layout. Namespaces without `meta.json` are treated as empty.
 
+## FTS tokenization (BM25)
+
+Indexing and queries share [`fts_tokenizer.rs`](../src/index/fts_tokenizer.rs):
+
+1. **Unicode NFKC** normalization, then runs of Unicode letters and decimal digits (not naive ASCII `split`).
+2. **Case folding** per token (`to_lowercase`).
+3. **English stopwords** — a minimal function-word list (e.g. `the`, `and`, `is`) dropped at index and query time.
+4. **Optional stemming** — Porter English stemmer when `OPENPUFFER_FTS_STEM=1` (or `true`/`yes`/`on`); **off by default**.
+
+**Reindex:** a tokenizer change does **not** require a full namespace rebuild. Posting lists in existing `fts-{seg}.bin` files keep their prior term keys until those documents are upserted/deleted and merged into a **new** segment generation (the indexer always writes a fresh `fts-{wal_seq}.bin` per pass). Queries always use the current tokenizer; mixed old/new segments are safe and converge as WAL batches are re-indexed.
+
 ## Namespace metadata (`meta.json`)
 
 | Field | Role |

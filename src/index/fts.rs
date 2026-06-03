@@ -76,7 +76,7 @@ impl FtsSegment {
 
     fn add_document(&mut self, doc_id: &str, doc: &Document) {
         let text = extract_index_text(doc, &self.field);
-        let tokens = tokenize(&text);
+        let tokens = crate::index::fts_tokenizer::tokenize(&text);
         if tokens.is_empty() {
             return;
         }
@@ -116,7 +116,7 @@ impl FtsSegment {
 
     /// Doc ids that appear in posting lists for any query term (candidate generation).
     pub fn candidate_doc_ids(&self, query: &str) -> HashSet<String> {
-        let terms = tokenize(query);
+        let terms = crate::index::fts_tokenizer::tokenize(query);
         let mut ids = HashSet::new();
         for term in terms {
             if let Some(list) = self.postings.get(&term) {
@@ -130,7 +130,7 @@ impl FtsSegment {
 
     /// BM25 scores for candidate doc ids from posting lists only.
     pub fn query_bm25(&self, query: &str, top_k: usize) -> Vec<(String, f64)> {
-        let terms: Vec<String> = tokenize(query);
+        let terms: Vec<String> = crate::index::fts_tokenizer::tokenize(query);
         if terms.is_empty() || self.num_docs == 0 {
             return Vec::new();
         }
@@ -175,22 +175,8 @@ impl FtsSegment {
     }
 }
 
-/// Tokenize: lowercase alphanumeric tokens.
-pub fn tokenize(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut cur = String::new();
-    for ch in text.to_lowercase().chars() {
-        if ch.is_alphanumeric() {
-            cur.push(ch);
-        } else if !cur.is_empty() {
-            tokens.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        tokens.push(cur);
-    }
-    tokens
-}
+/// Re-export tokenizer for callers/tests.
+pub use crate::index::fts_tokenizer::tokenize;
 
 /// Extract searchable text for a document and field selector.
 pub fn extract_index_text(doc: &Document, field: &str) -> String {
@@ -253,11 +239,11 @@ pub fn build_segments_for_docs(
 
 /// BM25 over a single in-memory document (unindexed WAL tail).
 pub fn bm25_doc_score(document: &str, query: &str, avgdl: f64, num_docs: u32) -> f64 {
-    let terms: Vec<String> = tokenize(query);
+    let terms: Vec<String> = crate::index::fts_tokenizer::tokenize(query);
     if terms.is_empty() {
         return 0.0;
     }
-    let doc_tokens = tokenize(document);
+    let doc_tokens = crate::index::fts_tokenizer::tokenize(document);
     if doc_tokens.is_empty() {
         return 0.0;
     }
@@ -355,5 +341,15 @@ mod tests {
             tokenize("Hello, Rust-world!"),
             vec!["hello", "rust", "world"]
         );
+    }
+
+    #[test]
+    fn rust_programming_title_case_matches_query_rust() {
+        let docs = vec![doc("a", "Rust Programming")];
+        let seg = FtsSegment::build(1, "text", &docs);
+        let hits = seg.query_bm25("rust", 5);
+        assert!(!hits.is_empty(), "expected BM25 hit for query 'rust'");
+        assert_eq!(hits[0].0, "a");
+        assert!(hits[0].1 > 0.0);
     }
 }
