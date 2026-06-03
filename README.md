@@ -49,7 +49,7 @@ Design detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
        └─ score unindexed WAL tail (strong) → top_k
 ```
 
-WAL replay verifies CRC on v1 segments; corrupt segments abort by default (`OPENPUFFER_WAL_CORRUPT_POLICY=fail`, or `skip` to continue after prior segments). Legacy segments without the `0x01` prefix remain readable.
+WAL replay verifies CRC on v1 segments; corrupt segments use [`fail` or `skip`](#wal-corrupt-policy) (default `fail`). Legacy segments without the `0x01` prefix remain readable.
 
 **Consistency:** writes are visible after `wal_commit_seq` advances; queries under `consistency: "strong"` also scan WAL entries with `seq > index_cursor` until the indexer catches up.
 
@@ -111,8 +111,31 @@ openpuffer serve \
 | `OPENPUFFER_WRITE_MAX_DELAY_MS` | Group-commit delay (default 1000) |
 | `OPENPUFFER_WRITE_MAX_BATCH_OPS` | Max ops per WAL batch (default 512) |
 | `OPENPUFFER_MAX_PINNED_NAMESPACES` | In-process warm view LRU (default 32) |
-| `OPENPUFFER_WAL_CORRUPT_POLICY` | WAL replay on corrupt segment: `fail` (default) or `skip` |
+| `--wal-corrupt-policy`, `OPENPUFFER_WAL_CORRUPT_POLICY` | WAL replay on CRC mismatch: `fail` (default) or `skip` — see [WAL corrupt policy](#wal-corrupt-policy) |
 | `OPENPUFFER_ANN_COARSE_PROBE` / `OPENPUFFER_ANN_FINE_PROBE` | ANN L0/L1 cluster probe counts (defaults 4 / 2) |
+
+### WAL corrupt policy
+
+v1 WAL segments on S3 use `[0x01][bincode WalEntry][crc32 LE]`. On replay, openpuffer verifies the CRC over the payload. If a segment is truncated, tampered, or has a bad checksum:
+
+| Policy | Flag / env | Behavior |
+|--------|------------|----------|
+| **`fail`** (default) | `--wal-corrupt-policy fail` or `OPENPUFFER_WAL_CORRUPT_POLICY=fail` | Namespace load aborts; queries return **500** with a turbopuffer-style `{"error":"…","status":"error"}` mentioning corrupt WAL |
+| **`skip`** | `--wal-corrupt-policy skip` or `OPENPUFFER_WAL_CORRUPT_POLICY=skip` | Log the corrupt segment and **continue** replay; earlier segments stay applied; the corrupt segment’s writes are invisible |
+
+Set the policy at **process start** (`openpuffer serve`). Legacy WAL blobs without the `0x01` version byte still replay (no CRC on those segments).
+
+**Example (recovery after partial upload):**
+
+```bash
+openpuffer serve \
+  --wal-corrupt-policy skip \
+  --s3-endpoint http://127.0.0.1:9000 \
+  --s3-bucket openpuffer-dev \
+  ...
+```
+
+Integration coverage: `corrupt_wal_segment_on_minio_fail_and_skip_policies` in `tests/integration_s3.rs` (flips one CRC byte on S3, asserts fail → 500 and skip → doc from seq 1 only).
 
 ### Operations guide
 
@@ -141,14 +164,36 @@ Query responses include `performance` (`candidates`, `candidates_ratio`, `exhaus
 
 ## Test
 
+### Test matrix
+
+| Suite | Command | Count | Docker | Notes |
+|-------|---------|-------|--------|-------|
+| **Unit** | `cargo test` | ~158 | No | Library + WAL/index logic |
+| **Integration (MinIO)** | `cargo test -F integration` | **51** | Yes | `tests/integration_s3.rs` — testcontainers MinIO; S3 Head/List/Get + WAL decode |
+| **Perf** | `cargo test -F perf` | 1 | Yes | 5k-doc ANN `candidates_ratio` regression |
+| **External S3** | `cargo test -F integration --test integration_external_s3 -- --ignored` | 1 | Optional | Compose MinIO or `OPENPUFFER_TEST_S3_*` |
+| **Large stress** | `cargo test --release -F large_stress --test stress_50k -- --ignored` | 1 | Yes | 50k-doc namespace; not in default CI |
+
+Typical dev run (unit + integration + perf):
+
 ```bash
-cargo test                              # unit tests (no Docker)
-cargo build --features integration      # build binary for integration tests
-cargo test -F integration               # MinIO testcontainers (WAL, index, restart, warm, export, …)
-cargo test -F perf                      # 5k-doc ANN candidate_ratio regression
+cargo test                              # unit (~158), no Docker
+cargo build --features integration      # build server binary for integration harness
+cargo test -F integration               # 51 MinIO scenarios (~60–70s)
+cargo test -F perf                      # ANN candidate_ratio on 5k docs
 ```
 
-**Optional 50k namespace stress** (Docker, not in default CI — `#[ignore]`):
+**S3 integration (requires Docker) — recommended:**
+
+```bash
+./scripts/run-integration-s3.sh
+```
+
+Builds with `--features integration` and runs all **51** `integration_s3` tests against **real MinIO** (testcontainers). Tests assert **Head/List/Get** on `meta.json`, `wal/`, and `index/` (decode WAL, segment growth, copy key parity) — not HTTP-only mocks.
+
+### Optional 50k namespace stress (`large_stress`)
+
+Not part of the default matrix — `#[ignore]` so `cargo test -F integration` stays fast:
 
 ```bash
 cargo build --release --features large_stress
@@ -156,14 +201,6 @@ cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
 ```
 
 Upserts **50k** docs in **5×10k** `upsert_columns` batches with **~1.1s** spacing (WAL rate limit), waits for `index_cursor == wal_commit_seq` (300s wall timeout), warms the namespace, and asserts indexed ANN `candidates_ratio < 0.2`. **Use `--release`** — debug builds may not index 50k within 300s. On a typical dev machine (release): **~40–45s** total (writes ~11s, index+query ~39s, 5 WAL commits); debug can take **6+ minutes**.
-
-**S3 integration (requires Docker):**
-
-```bash
-./scripts/run-integration-s3.sh
-```
-
-This builds the server binary and runs `cargo test -F integration` against **real MinIO** via testcontainers. Integration tests assert **Head/List/Get** on `meta.json`, `wal/`, and `index/` (decode WAL, segment growth, copy key parity) — not HTTP-only mocks.
 
 ### Testing against real S3
 
