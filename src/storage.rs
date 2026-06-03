@@ -184,13 +184,21 @@ impl Storage {
         &self.bucket
     }
 
-    pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
+    /// Load namespace for query. `consistency` controls WAL tail work on the hot path.
+    pub async fn load_namespace_for_query(
+        &self,
+        name: &str,
+        consistency: QueryConsistency,
+    ) -> Result<LoadedNamespace> {
         let cold_batch = !self.cache.enabled();
+        let skip_wal_tail = consistency == QueryConsistency::Eventual;
         let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(name) {
-            view.catch_up(&self.client, &self.bucket, name).await?;
+            if consistency == QueryConsistency::Strong {
+                view.catch_up(&self.client, &self.bucket, name).await?;
+            }
             return self
-                .loaded_from_view(name, view, cold_batch, 0)
+                .loaded_from_view(name, view, cold_batch, 0, skip_wal_tail)
                 .await;
         }
 
@@ -199,12 +207,20 @@ impl Storage {
         } else {
             (NamespaceView::load(&self.client, &self.bucket, name).await?, 0)
         };
-        view.catch_up(&self.client, &self.bucket, name).await?;
+        if consistency == QueryConsistency::Strong {
+            view.catch_up(&self.client, &self.bucket, name).await?;
+        }
         let loaded = self
-            .loaded_from_view(name, &view, cold_batch, wal_roundtrips)
+            .loaded_from_view(name, &view, cold_batch, wal_roundtrips, skip_wal_tail)
             .await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
+    }
+
+    /// Strong-consistency load (filter writes, export helpers). Equivalent to `load_namespace_for_query(..., Strong)`.
+    pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
+        self.load_namespace_for_query(name, QueryConsistency::Strong)
+            .await
     }
 
     /// Load namespace view only (WAL replay / pin) for export — no index segments.
@@ -266,6 +282,7 @@ impl Storage {
         view: &NamespaceView,
         cold_batch: bool,
         wal_roundtrips: u32,
+        skip_wal_tail: bool,
     ) -> Result<LoadedNamespace> {
         let (fts, vector, filter_index, index_roundtrips) = if cold_batch {
             let art = crate::s3_batch::fetch_cold_index_artifacts(
@@ -310,7 +327,9 @@ impl Storage {
             0
         };
 
-        let tail_doc_ids = if view.meta.index_cursor < view.meta.wal_commit_seq {
+        let tail_doc_ids = if skip_wal_tail {
+            HashSet::new()
+        } else if view.meta.index_cursor < view.meta.wal_commit_seq {
             let from = view.meta.index_cursor.saturating_add(1);
             let to = view.meta.wal_commit_seq;
             let entries = if cold_batch {

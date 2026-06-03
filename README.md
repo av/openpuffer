@@ -9,7 +9,7 @@ Stateless vector and full-text search server backed by **S3-compatible object st
 | **Durable layout** | WAL + index segments on object storage | Same: `meta.json`, `wal/{seq}.bin`, `index/*` under `openpuffer/{ns}/` |
 | **Write ACK** | After durable WAL commit | Group-commit buffer → one WAL PUT + `meta.json` CAS per batch |
 | **Indexing** | Async SPFresh-style ANN + FTS | Async background indexer: BM25 FTS, k-means centroids/clusters, attribute filter index |
-| **Query** | Indexed candidates + unindexed WAL tail | Same (`strong` default); optional `eventual` skips tail |
+| **Query** | Indexed candidates + unindexed WAL tail | `strong` (default); `eventual` skips WAL tail + catch-up on pinned views (sub-10ms warm path) |
 | **Cache** | NVMe + in-process warm | Optional `--cache-dir` disk mirror + `POST …/warm` view pin |
 | **Scale / polish** | Production multi-tenant | Single binary, MinIO integration tests; simplified ANN (one-level k-means, no SPFresh hierarchy) |
 | **API surface** | Full product API | Core write/query/metadata/export/warm; no billing portal, CMEK, or all v2 edge cases |

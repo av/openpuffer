@@ -94,7 +94,7 @@ Turbopuffer [`hint_cache_warm`](https://turbopuffer.com/docs/warm-cache) analogu
 2. **Pin** a fully caught-up [`NamespaceView`](../src/view.rs) in the in-process LRU map ([`view_cache.rs`](../src/view_cache.rs), default max 32 namespaces via `OPENPUFFER_MAX_PINNED_NAMESPACES`).
 3. Return `200` JSON with `duration_ms`, segment counts, and `s3_get_count` for the warm pass.
 
-After warm, queries against the same process reuse the pinned view (no WAL replay) and index loads hit disk cache (HEAD only, no `GetObject` when etags match).
+After warm, queries against the same process reuse the pinned view. With `consistency: "strong"`, each query still `catch_up`s new WAL from S3 when `wal_commit_seq` advanced. With `consistency: "eventual"`, the pinned view and indexes are reused without WAL or meta refresh — index loads hit disk cache (HEAD only, no `GetObject` when etags match).
 
 ## Read path / query planner
 
@@ -113,8 +113,10 @@ After warm, queries against the same process reuse the pinned view (no WAL repla
 
 | Mode | Behavior |
 |------|----------|
-| `strong` (default) | Indexed segments + exhaustive scoring for doc ids touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`. Queries never block on the background indexer. |
-| `eventual` | Indexed segments only; skip WAL tail scan (faster; very recent writes may be invisible until indexed). |
+| `strong` (default) | Indexed segments + exhaustive scoring for doc ids touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`. Queries never block on the background indexer. Pinned views run `catch_up` (meta HEAD + new WAL segments) before each query. |
+| `eventual` | Indexed segments only; **no** unindexed WAL tail fetch or planner tail scan. Pinned views are reused as-is (no `catch_up`). Very recent writes may be invisible until the background indexer advances `index_cursor`. |
+
+**Eventual fast path (turbopuffer sub-10ms warm goal):** after `POST …/warm`, a query with `consistency: "eventual"` and a disk-cache hit loads index segments via HEAD+local file only and skips all S3 WAL I/O. Staleness is bounded by **indexing lag**: results reflect the last merged `index_cursor`, not `wal_commit_seq`. Use `strong` when you need read-your-writes before the indexer catches up; use `eventual` for lowest-latency ANN/FTS over the indexed snapshot.
 
 **Performance observability** (turbopuffer [`performance`](https://turbopuffer.com/docs/query#responsefield-performance) subset):
 

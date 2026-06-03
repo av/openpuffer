@@ -681,7 +681,21 @@ async fn query_namespace(
     Path(name): Path<String>,
     Json(body): Json<QueryRequest>,
 ) -> impl IntoResponse {
-    match state.storage.load_namespace(&name).await {
+    let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match state
+        .storage
+        .load_namespace_for_query(&name, consistency)
+        .await
+    {
         Ok(loaded) => {
             let ctx = search::QueryContext {
                 docs: &loaded.docs,
@@ -690,7 +704,7 @@ async fn query_namespace(
                 vector: loaded.vector.as_ref(),
                 filter_index: loaded.filter_index.as_ref(),
                 tail_doc_ids: &loaded.tail_doc_ids,
-                consistency: search::QueryConsistency::default(),
+                consistency,
                 storage_roundtrips: loaded.storage_roundtrips,
             };
             match search::execute_query(&ctx, &body) {

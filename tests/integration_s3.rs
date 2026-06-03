@@ -394,6 +394,103 @@ async fn warm_cache_then_query_zero_s3_gets() {
     );
 }
 
+/// Warm + eventual consistency: no S3 GetObject on query even with unindexed WAL tail after warm.
+#[tokio::test]
+async fn warm_eventual_query_zero_s3_gets_with_unindexed_tail() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_WARM,
+        json!([{
+            "id": "warm-doc",
+            "attributes": {
+                "embedding": [1.0, 0.0, 0.0],
+                "text": "warm cache integration test",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_WARM, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let warm_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{NAMESPACE_WARM}/warm",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK, "warm failed");
+
+    // Create unindexed WAL tail (strong would scan these segments from S3).
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_WARM,
+        json!([{
+            "id": "post-warm-unindexed",
+            "attributes": {
+                "embedding": [0.0, 1.0, 0.0],
+                "text": "written after warm not yet indexed",
+                "tier": "free"
+            }
+        }]),
+    )
+    .await;
+
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let body = json!({
+        "rank_by": ["BM25", "text", "warm"],
+        "top_k": 3,
+        "consistency": "eventual"
+    });
+    let resp = query_response_ns(&serve.base_url, NAMESPACE_WARM, body).await;
+    let ids: Vec<String> = resp["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains(&"warm-doc".to_string()),
+        "eventual query should hit indexed warm-doc, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"post-warm-unindexed".to_string()),
+        "eventual query must not see unindexed tail doc"
+    );
+
+    let stats = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats");
+    let stats_body: Value = stats.json().await.expect("stats json");
+    assert_eq!(
+        stats_body["s3_get_count"].as_u64(),
+        Some(0),
+        "warm + eventual query should not S3 GetObject (disk cache + no WAL tail)"
+    );
+}
+
 /// Schema on write persists in meta; delete_by_filter removes matching docs from queries.
 #[tokio::test]
 async fn schema_on_write_and_delete_by_filter() {
