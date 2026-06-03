@@ -194,7 +194,7 @@ Builds with `--features integration` and runs all **51** `integration_s3` tests 
 
 ### Optional 50k namespace stress (`large_stress`)
 
-Not part of the default matrix — `#[ignore]` so `cargo test -F integration` stays fast:
+Not part of the default matrix — `#[ignore]` so `cargo test -F integration` stays fast. **Nightly CI:** [`.github/workflows/nightly-stress.yml`](.github/workflows/nightly-stress.yml) (03:00 UTC + manual `workflow_dispatch`).
 
 ```bash
 cargo build --release --features large_stress
