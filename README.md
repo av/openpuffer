@@ -157,6 +157,24 @@ Also exported: `openpuffer_wal_commits_total`, `openpuffer_index_lag_segments`, 
 
 Per-query JSON (`POST …/query`) reports the same cold signals as `performance.cold_s3_keys_fetched` and `performance.ann_probed_clusters` without the metrics feature.
 
+### Debug endpoints (integration builds)
+
+Built with `--features integration` (default for `./scripts/run-integration-s3.sh`). Not for production exposure.
+
+| Method | Path | Body | Purpose |
+|--------|------|------|---------|
+| GET | `/v1/debug/cache-stats` | — | `s3_get_count` from segment cache |
+| POST | `/v1/debug/cache-stats/reset` | — | Reset `s3_get_count` |
+| POST | `/v1/debug/namespaces/{name}/cold-plan` | Same JSON as query (`rank_by`, optional `consistency`) | Preview [`plan_cold_query`](src/s3_batch.rs): per-round key counts, `storage_roundtrips` estimate, per-field probe plan — **does not run the query** (fetches `meta.json` and L0 only when vector probes are present) |
+
+Example (cold cache, indexed namespace):
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/v1/debug/namespaces/my-ns/cold-plan" \
+  -H 'Content-Type: application/json' \
+  -d '{"rank_by":["vector","ANN","embedding",[1,0,0]],"consistency":"eventual"}' | jq .
+```
+
 ### WAL corrupt policy
 
 v1 WAL segments on S3 use `[0x01][bincode WalEntry][crc32 LE]`. On replay, openpuffer verifies the CRC over the payload. If a segment is truncated, tampered, or has a bad checksum:

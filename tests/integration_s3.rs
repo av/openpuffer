@@ -74,6 +74,7 @@ const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 const NAMESPACE_COLD_HYBRID_FILTER: &str = "itest-cold-hybrid-filter";
+const NAMESPACE_COLD_PLAN_DEBUG: &str = "itest-cold-plan-debug";
 const NAMESPACE_COLD_FTS_BM25: &str = "itest-cold-fts-bm25-filter";
 const NAMESPACE_COLD_HYBRID_PRODUCT: &str = "itest-cold-hybrid-product";
 const NAMESPACE_COLD_HYBRID_10K: &str = "itest-cold-hybrid-10k";
@@ -4358,6 +4359,111 @@ async fn cold_hybrid_sum_vector_filter_on_minio() {
         .as_u64()
         .expect("ann_probed_clusters");
     assert!(probed >= 1, "hybrid cold query must probe ANN clusters, got {probed}");
+}
+
+/// Debug cold-plan endpoint matches [`plan_cold_query`] (no query execution).
+#[tokio::test]
+async fn cold_plan_debug_endpoint_on_minio() {
+    use openpuffer::index::vector::cluster_get_upper_bound;
+    use openpuffer::s3_batch::{build_cold_plan_debug, fetch_cold_vector_l0, ColdPlanOpts};
+
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_PLAN_DEBUG;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "plan-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold plan debug alpha",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(meta.index_cursor, meta.wal_commit_seq);
+
+    let query_vec = vec![1.0_f64, 0.0, 0.0];
+    let (l0_by_field, _, _) = fetch_cold_vector_l0(&fixture.client, &fixture.bucket, ns, &meta)
+        .await
+        .expect("L0 for planner");
+    let expected = build_cold_plan_debug(
+        ns,
+        &meta,
+        &[("embedding".into(), query_vec.clone())],
+        &l0_by_field,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+        "eventual",
+        false,
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/v1/debug/namespaces/{}/cold-plan",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", query_vec],
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("cold-plan debug POST");
+    assert_eq!(resp.status(), 200, "cold-plan debug: {}", resp.text().await.unwrap_or_default());
+    let body: Value = resp.json().await.expect("cold-plan json");
+
+    assert_eq!(body["consistency"].as_str(), Some("eventual"));
+    assert_eq!(
+        body["storage_roundtrips"].as_u64(),
+        Some(expected.storage_roundtrips as u64)
+    );
+    assert_eq!(
+        body["round_key_counts"]["round2"].as_u64(),
+        Some(expected.round_key_counts.round2 as u64)
+    );
+    assert_eq!(
+        body["round_key_counts"]["round3"].as_u64(),
+        Some(expected.round_key_counts.round3 as u64)
+    );
+    let probe = &body["probe_plan"][0];
+    assert_eq!(probe["vector_field"].as_str(), Some("embedding"));
+    assert_eq!(
+        probe["round3_key_count"].as_u64(),
+        Some(expected.probe_plan[0].round3_key_count as u64)
+    );
+    let l0 = l0_by_field
+        .get("embedding")
+        .expect("embedding L0")
+        .clone()
+        .clamp_probe_plan_for_query();
+    assert_eq!(
+        probe["cluster_get_upper_bound"].as_u64(),
+        Some(cluster_get_upper_bound(&l0) as u64)
+    );
+    assert!(
+        body["round_key_counts"]["round1"].as_u64() == Some(0),
+        "eventual cold-plan must omit WAL round1"
+    );
 }
 
 /// Cold path: hybrid `Product` (vector ∩ BM25) returns only docs matching both signals.

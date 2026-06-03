@@ -7,7 +7,8 @@ use crate::indexer::{
     approx_unindexed_bytes, wait_until_indexed_with_indexer, BackgroundIndexer,
     BLOCK_UNTIL_INDEXED_TIMEOUT,
 };
-use crate::models::IndexStatus;
+use crate::models::{ColdPlanDebugResponse, IndexStatus};
+use crate::s3_batch::{build_cold_plan_debug, ColdPlanOpts};
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
 use crate::index::vector::{CentroidIndexL0, VectorIndex};
@@ -247,6 +248,45 @@ impl Storage {
         } else {
             Err(anyhow!("namespace not found"))
         }
+    }
+
+    /// Preview [`plan_cold_query`] for a namespace + query body (meta fetch; L0 only when vector probes).
+    pub async fn debug_cold_plan(
+        &self,
+        name: &str,
+        rank_by: &serde_json::Value,
+        consistency: QueryConsistency,
+    ) -> Result<ColdPlanDebugResponse> {
+        let (meta, _) = crate::namespace::fetch_meta(&self.client, &self.bucket, name)
+            .await?
+            .ok_or_else(|| anyhow!("namespace not found"))?;
+        let view_pinned = self.views.lock().await.contains(name);
+        let opts = ColdPlanOpts {
+            include_wal_round: consistency == QueryConsistency::Strong && !view_pinned,
+            include_wal_tail: consistency == QueryConsistency::Strong
+                && meta.index_cursor < meta.wal_commit_seq,
+        };
+        let probes = crate::search::vector_probe_specs(rank_by).unwrap_or_default();
+        let l0_by_field = if probes.is_empty() {
+            HashMap::new()
+        } else {
+            crate::s3_batch::fetch_cold_vector_l0(&self.client, &self.bucket, name, &meta)
+                .await?
+                .0
+        };
+        let consistency_label = match consistency {
+            QueryConsistency::Strong => "strong",
+            QueryConsistency::Eventual => "eventual",
+        };
+        Ok(build_cold_plan_debug(
+            name,
+            &meta,
+            &probes,
+            &l0_by_field,
+            opts,
+            consistency_label,
+            view_pinned,
+        ))
     }
 
     /// Load namespace for query. `consistency` controls WAL tail work on the hot path.

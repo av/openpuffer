@@ -2,9 +2,9 @@ use crate::config::AppConfig;
 use crate::export::MAX_EXPORT_LIMIT;
 use crate::limits::{self, validate_namespace_name};
 use crate::models::{
-    validate_doc_id, ApiErrorResponse, Document, ExportRequest, ExportResponse, HealthResponse,
-    NamespaceSummary, NamespacesResponse, QueryRequest, RecallRequest, RecallResponse,
-    WriteRequest,
+    validate_doc_id, ApiErrorResponse, ColdPlanDebugResponse, Document, ExportRequest,
+    ExportResponse, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest,
+    RecallRequest, RecallResponse, WriteRequest,
 };
 use crate::schema::{
     merge_schema, validate_and_normalize_document_attributes, validate_patch_attributes,
@@ -75,7 +75,11 @@ pub fn router(state: AppState) -> Router {
     #[cfg(feature = "integration")]
     let r = r
         .route("/v1/debug/cache-stats", get(cache_stats_debug))
-        .route("/v1/debug/cache-stats/reset", post(cache_stats_reset_debug));
+        .route("/v1/debug/cache-stats/reset", post(cache_stats_reset_debug))
+        .route(
+            "/v1/debug/namespaces/{name}/cold-plan",
+            post(cold_plan_debug),
+        );
 
     r.layer(middleware::from_fn(reject_oversized_write_body))
         .layer(DefaultBodyLimit::max(limits::MAX_WRITE_BODY_BYTES))
@@ -427,6 +431,35 @@ async fn cache_stats_reset_debug(State(state): State<AppState>) -> impl IntoResp
         StatusCode::OK,
         Json(serde_json::json!({"s3_get_count": 0})),
     )
+}
+
+#[cfg(feature = "integration")]
+async fn cold_plan_debug(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Result<Json<QueryRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return json_rejection_response(e),
+    };
+    if let Some(resp) = namespace_name_error_response(&name) {
+        return resp;
+    }
+    let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    match state.storage.debug_cold_plan(&name, &body.rank_by, consistency).await {
+        Ok(plan) => (StatusCode::OK, Json(plan)).into_response(),
+        Err(e) => {
+            error!("cold-plan debug {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
+            }
+            storage_error_response(e)
+        }
+    }
 }
 
 async fn get_namespace_metadata(

@@ -195,6 +195,41 @@ pub struct QueryRequest {
     pub vector_encoding: Option<String>,
 }
 
+/// `POST /v1/debug/namespaces/{name}/cold-plan` — cold S3 planner preview (integration builds).
+#[derive(Debug, Serialize)]
+pub struct ColdPlanDebugResponse {
+    pub consistency: String,
+    pub plan_opts: ColdPlanDebugOpts,
+    pub round_key_counts: ColdPlanRoundKeyCounts,
+    pub storage_roundtrips: u32,
+    pub total_keys: u32,
+    pub probe_plan: Vec<ColdPlanVectorProbe>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ColdPlanDebugOpts {
+    pub include_wal_round: bool,
+    pub include_wal_tail: bool,
+    pub view_pinned: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ColdPlanRoundKeyCounts {
+    pub round1: usize,
+    pub round2: usize,
+    pub round3: usize,
+    pub round4: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ColdPlanVectorProbe {
+    pub vector_field: String,
+    pub probe_coarse: u32,
+    pub probe_fine: u32,
+    pub cluster_get_upper_bound: usize,
+    pub round3_key_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,

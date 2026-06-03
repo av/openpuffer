@@ -18,6 +18,9 @@ use crate::index::vector::{
     probe_fine_centroids_parts, CentroidIndexL0, CentroidIndexL1, CentroidIndexL2,
     CentroidRouting, ClusterSegment, VectorIndex,
 };
+use crate::models::{
+    ColdPlanDebugOpts, ColdPlanDebugResponse, ColdPlanRoundKeyCounts, ColdPlanVectorProbe,
+};
 use crate::limits::{validate_namespace_name, validate_s3_object_key, validate_s3_path_segment};
 use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_paths, NamespaceMeta};
 use crate::namespace::fetch_meta;
@@ -185,6 +188,81 @@ pub fn cold_plan_storage_roundtrips(plan: &ColdQueryPlan) -> u32 {
         n += 1;
     }
     n
+}
+
+fn cold_plan_total_keys(plan: &ColdQueryPlan) -> u32 {
+    (plan.round1_keys.len()
+        + plan.round2_keys.len()
+        + plan.round3_keys.len()
+        + plan.round4_keys.len()) as u32
+}
+
+/// Per-vector probe summary for debug / ops (uses [`plan_cold_query`] round-3 key lists).
+pub fn cold_plan_vector_probes(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    vector_probes: &[(String, Vec<f64>)],
+    l0_by_field: &HashMap<String, CentroidIndexL0>,
+) -> Vec<ColdPlanVectorProbe> {
+    let empty_l1 = HashMap::new();
+    let empty_l2 = HashMap::new();
+    let mut out = Vec::new();
+    for (field, query) in vector_probes {
+        let Some(l0) = l0_by_field.get(field) else {
+            continue;
+        };
+        let l0 = l0.clone().clamp_probe_plan_for_query();
+        let round3_key_count = round3_keys_for_query(
+            namespace,
+            meta,
+            field,
+            &l0,
+            &empty_l1,
+            query,
+            None,
+            &empty_l2,
+        )
+        .map(|k| k.len())
+        .unwrap_or(0);
+        out.push(ColdPlanVectorProbe {
+            vector_field: field.clone(),
+            probe_coarse: l0.probe_coarse,
+            probe_fine: l0.probe_fine,
+            cluster_get_upper_bound: cluster_get_upper_bound(&l0),
+            round3_key_count,
+        });
+    }
+    out
+}
+
+/// Build cold-plan debug JSON from meta + optional decoded L0 (no query execution).
+pub fn build_cold_plan_debug(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    vector_probes: &[(String, Vec<f64>)],
+    l0_by_field: &HashMap<String, CentroidIndexL0>,
+    opts: ColdPlanOpts,
+    consistency: &str,
+    view_pinned: bool,
+) -> ColdPlanDebugResponse {
+    let plan = plan_cold_query(namespace, meta, vector_probes, l0_by_field, None, opts.clone());
+    ColdPlanDebugResponse {
+        consistency: consistency.to_string(),
+        plan_opts: ColdPlanDebugOpts {
+            include_wal_round: opts.include_wal_round,
+            include_wal_tail: opts.include_wal_tail,
+            view_pinned,
+        },
+        round_key_counts: ColdPlanRoundKeyCounts {
+            round1: plan.round1_keys.len(),
+            round2: plan.round2_keys.len(),
+            round3: plan.round3_keys.len(),
+            round4: plan.round4_keys.len(),
+        },
+        storage_roundtrips: cold_plan_storage_roundtrips(&plan),
+        total_keys: cold_plan_total_keys(&plan),
+        probe_plan: cold_plan_vector_probes(namespace, meta, vector_probes, l0_by_field),
+    }
 }
 
 /// L0 centroid keys only (round 2 extension for vector / hybrid cold queries).
