@@ -66,8 +66,8 @@
 - label: WAL compaction writes wal/snapshot.bin CAS wal_snapshot_seq and prunes superseded wal segments
   command: test -f src/wal_compaction.rs && grep -q 'maybe_compact_wal' src/indexer.rs
   tags: [implemented]
-- label: cold namespace load uses s3_batch two-round parallel fetch with storage_roundtrips in query performance
-  command: test -f src/s3_batch.rs && grep -q 'fetch_cold_index_artifacts' src/s3_batch.rs && cargo test --lib query_performance_includes_storage_roundtrips -q
+- label: cold namespace load uses plan_cold_query probed L1 and clusters with storage_roundtrips in query performance
+  command: test -f src/s3_batch.rs && grep -q 'plan_cold_query' src/s3_batch.rs && grep -q 'fetch_cold_vector_probed' src/s3_batch.rs && cargo test --lib query_performance_includes_storage_roundtrips -q
   tags: [implemented]
 - label: vector index build uses k-means++ centroid initialization and namespace distance_metric in Lloyd iterations
   command: grep -q 'kmeans_plus_plus_init' src/index/vector.rs && cargo test --lib kmeans_plus_plus_differs_from_first_k_seeds -q
@@ -425,7 +425,7 @@
   tags: [spec, cold, implemented]
 - label: nightly bench_cold_100k recall@10 at least 0.88 and candidates_ratio below 0.20
   command: grep -q 'async fn bench_cold_100k_nightly' tests/bench_cold.rs && grep -A2 'bench_cold_100k_nightly' tests/bench_cold.rs | grep -q '#\[ignore'
-  tags: [spec, cold, bench]
+  tags: [spec, cold, bench, implemented]
 - label: strong caught-up cold query on 10k namespace reports storage_roundtrips at most 4
   command: cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four -q --test bench_cold
   tags: [spec, cold, implemented]

@@ -69,7 +69,7 @@ Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests
 ## Facts
 
 ```bash
-facts check --tags ann        # Phase B @spec gates (7 facts, includes ignored 100k recall)
-facts check --tags cold,ann   # cold + ann program gates
+facts check --tags ann                 # Phase B @spec gates (7 facts, includes ignored 100k recall)
+facts check --tags "ann or cold"       # Phase A+B program gates (10 spec facts)
 facts ll --tags spec          # list program spec facts
 ```

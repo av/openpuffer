@@ -15,8 +15,10 @@ openpuffer/{ns}/
 │   └── ...
 └── index/
     ├── fts-{segment_id:08}.bin   # BM25 inverted postings (bincode)
-    ├── centroids-l0.bin            # coarse ANN centroid table (bincode)
+    ├── centroids-l0.bin            # coarse ANN centroid table (bincode; ann_version, probes)
+    ├── centroids-routing.bin       # v3 only: L2 split counts per coarse cell
     ├── centroids-l1-{coarse_id:08}.bin  # fine centroids per coarse cell
+    ├── centroids-l2-{coarse:08}-{l2:08}.bin  # v3 only: routing within a coarse cell
     ├── clusters-{fine_id:08}.bin   # doc id + vector per fine cluster
     └── ...
 ```
@@ -177,7 +179,10 @@ Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.
 
 | Path | What happens |
 |------|----------------|
-| **Cold** | No disk cache (`--cache-dir=""`): three-roundtrip planner ([`s3_batch.rs`](../src/s3_batch.rs)) — round 1 meta+WAL, round 2 L0+FTS+filter, round 3 probed L1+clusters; optional round 4 unindexed WAL tail; `performance.storage_roundtrips` on query JSON |
+| **Cold** | No disk cache (`--cache-dir=""`): [`plan_cold_query`](../src/s3_batch.rs) — bootstrap L0+FTS+filter, then **probed** L1/clusters only (not all index objects); optional unindexed WAL tail; `performance.storage_roundtrips` on query JSON |
+| **Cold (cached)** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
+| **Warm** | Local file + HEAD etag match: serve from disk (no `GetObject`) |
+| **Prefetch** | After `centroids-l0.bin` loads, background task may fetch L1/cluster segments into cache for follow-up ANN on the **same** process (warm path; cold queries still use the probe plan) |
 
 ### Cold query (`s3_batch` roundtrips)
 
@@ -226,9 +231,6 @@ sequenceDiagram
     P-->>Q: rows + performance.storage_roundtrips
     Q-->>C: 200 JSON (+ X-Openpuffer-Storage-Roundtrips)
 ```
-| **Cold (cached)** | No local file (or etag stale after HEAD): `GetObject` from S3, write bytes + etag sidecar |
-| **Warm** | Local file + HEAD etag match: serve from disk (no `GetObject`) |
-| **Prefetch** | After `centroids-l0.bin` loads, background task fetches all `centroids-l1-*` + `clusters-*.bin` into cache for follow-up ANN queries |
 
 **Indexer:** each `PutObject` for FTS / filter / vector segments writes S3 first, then populates the cache from the response etag.
 
@@ -327,16 +329,19 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 
 **Health:** `GET /health` returns `{status:"ok"}`. With `?deep=1`, probes S3 (`HeadBucket`, list `openpuffer/`, HEAD canary `meta.json` when a namespace exists); returns `{status:"degraded",s3:"unavailable"}` with HTTP 503 if S3 is unreachable.
 
-### Vector ANN (SPFresh-inspired, two-level)
+### Vector ANN (SPFresh-inspired)
 
-[turbopuffer SPFresh](https://turbopuffer.com/docs/architecture) uses hierarchical centroid clustering, re-ranking, and object-storage–friendly segments. openpuffer implements a **two-level** hierarchy:
+[turbopuffer SPFresh](https://turbopuffer.com/docs/architecture) uses hierarchical centroid clustering, re-ranking, and object-storage–friendly segments. openpuffer ships **v2** (two-level k-means) by default and optional **v3** (`OPENPUFFER_ANN_VERSION=3` / `--ann-version 3`) with routing + L2 splits for scale.
 
-| SPFresh / turbopuffer | openpuffer v1 |
-|----------------------|---------------|
-| Multi-level centroid hierarchy | **L0** coarse k-means (≤16 cells) + **L1** fine k-means per coarse (`k_fine ≈ √n_cell`, cap 256) |
-| Incremental cluster maintenance | Incremental two-level assign; full rebuild when `doc_count > num_fine_total × 4` |
-| Re-rank with fresh vectors from WAL | Optional `OPENPUFFER_ANN_RERANK` / `--ann-rerank`: full probed-cluster pool exact-scored from view; default probe-only uses cluster-vector `query_ann` pool |
-| Many small segments + merges | `centroids-l0.bin` + `centroids-l1-{coarse:08}.bin` + `clusters-{fine:08}.bin` |
+| SPFresh / turbopuffer | openpuffer v2 (default) | openpuffer v3 |
+|----------------------|-------------------------|---------------|
+| Multi-level centroid hierarchy | **L0** coarse (≤16) + **L1** fine per coarse (`k_fine ≈ √n_cell`, cap 256) | L0 up to **256** coarse; **L2** routing when fine count > 8; `centroids-routing.bin` |
+| Incremental cluster maintenance | Incremental assign; full rebuild when `doc_count > 4 × fine_centroids` | Split / merge / reassign + scheduled rebuild (`maintenance_passes` on L0) |
+| Re-rank with fresh vectors from WAL | Optional `OPENPUFFER_ANN_RERANK` / `--ann-rerank` (exact vectors from view) | Same |
+| Many small segments + merges | `centroids-l0` + `centroids-l1-*` + `clusters-*` | + `centroids-routing.bin`, optional `centroids-l2-*`; object cap **< 500** @ 100k (lib gate) |
+| Recall measurement | `POST /v1/namespaces/{name}/recall` + `measure_recall()` | Same |
+
+**On-disk `ann_version`:** `CentroidIndexL0.ann_version` is **2** by default; **3** when built with v3. Legacy L0 blobs without trailing fields load as v2. v2 and v3 segments dual-read on query/indexer paths.
 
 **Build:** coarse k-means partitions the namespace; each coarse cell runs fine k-means (10 Lloyd iterations). Centroid seeds use **k-means++** initialization (weighted by squared distance to nearest existing center) instead of the first *k* doc vectors. Global fine ids are `fine_counts` offsets in L0. Cluster files list `(doc_id, vector)` for cosine (or negated L2²) scoring.
 
@@ -348,10 +353,12 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 
 1. Load `centroids-l0.bin`, pick top-*C* coarse centroids (*C* = `probe_coarse`, default 4; all coarse if `num_fine_total ≤ 32`).
 2. Fetch probed `centroids-l1-{coarse}.bin` files, then top-*F* fine centroids per coarse (*F* = `probe_fine`, default 2).
-3. Fetch only matching `clusters-*.bin` objects from S3 (cold query round 2 uses this subset; full cold load fetches all L1 + clusters).
+3. Fetch only **probed** `centroids-l1-*`, optional v3 `centroids-l2-*`, and matching `clusters-*.bin` via [`fetch_cold_vector_probed`](../src/s3_batch.rs) (cluster GET count bounded by probe plan, not `num_fine_total`).
 4. Score members in probed clusters; merge with **exhaustive** cosine on docs touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`.
 
 Distance uses `distance_metric` from `meta.json` (`cosine_distance` default).
+
+**Recall API:** `POST /v1/namespaces/{name}/recall` with optional `num`, `top_k`, `vector_field` runs ANN vs exhaustive `measure_recall()` on the namespace view (MinIO integration: `avg_recall ≥ 0.85` on 10k synthetic).
 
 ## Query phases (turbopuffer model)
 

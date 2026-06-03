@@ -31,8 +31,17 @@ Major release: **turbopuffer-aligned storage architecture** (WAL + async indexes
 
 - Hybrid `rank_by` (`Sum` / `Product`), BM25, ANN, attribute filters (`Eq`, `In`, `And`, …).
 - `consistency: "strong"` (default) vs `"eventual"` (skips WAL tail on pinned views for lower latency).
-- `order_by` tie-break after ranking; `performance` block (candidates, ratio, billing estimates).
-- Optional `--cache-dir` disk mirror + `POST /v1/namespaces/{name}/warm` view pin; batched S3 reads (`s3_batch`) on cold path.
+- `order_by` tie-break after ranking; `performance` block (candidates, ratio, **`storage_roundtrips`**, billing estimates).
+- **Cold query planner** — `plan_cold_query` / `fetch_cold_vector_probed`: probed L1 + cluster GETs only (not full index on cold load); caught-up strong queries report **`storage_roundtrips ≤ 4`** (often 2 on 10k MinIO).
+- Optional `--cache-dir` disk mirror + `POST /v1/namespaces/{name}/warm` view pin.
+- **`POST /v1/namespaces/{name}/recall`** — ANN vs exhaustive recall@k (`num`, `top_k`, `vector_field`); for benches and ops.
+
+### ANN index (SPFresh program)
+
+- **Index v3** (opt-in: `OPENPUFFER_ANN_VERSION=3` / `--ann-version 3`): `ann_version` on L0, `centroids-routing.bin`, optional `centroids-l2-*`, incremental split/merge/reassign + scheduled rebuild; **dual-read v2** segments.
+- **Re-rank** — `OPENPUFFER_ANN_RERANK` / `--ann-rerank` (exact vectors from namespace view over probed clusters).
+- Lib / bench gates: v3 recall ≥ v2 + 0.05 @ 10k; object count < 500 @ 100k; recall@10 ≥ 0.90 @ 100k (`#[ignore]`); re-rank recall@10 ≥ 0.92 @ 10k.
+- **`bench` feature** — `tests/bench_cold.rs`, `scripts/bench-1m.sh`, `docs/BENCHMARKS.md`, committed `benchmarks/results/baseline-10k.json`.
 
 ### Write / namespace API (subset)
 
@@ -51,7 +60,8 @@ Major release: **turbopuffer-aligned storage architecture** (WAL + async indexes
 ### Honest limitations (unchanged vs turbopuffer prod)
 
 - Single binary, no managed cloud, no cross-region replication.
-- ANN is **simplified k-means probing**, not SPFresh or turbopuffer’s production ANN stack.
+- ANN v3 + incremental maintenance are **SPFresh-inspired**, not turbopuffer’s production ANN stack; default on-disk layout remains **v2** unless `OPENPUFFER_ANN_VERSION=3`.
+- **1M cold @ AWS** not validated in CI — use `scripts/bench-1m.sh` and record `benchmarks/results/1m-aws.json`.
 - Throughput and merge semantics are v1 simplifications; not validated at turbopuffer scale.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/COMPARISON.md](docs/COMPARISON.md) for design detail and gap list.
