@@ -196,9 +196,8 @@ async fn bench_cold_10k_baseline() {
     assert!(index_object_count > 0, "expected ANN index objects on S3");
 }
 
-/// Phase A gate: strong caught-up cold query must use ≤4 storage roundtrips (not met pre–Phase A).
+/// Phase A gate: strong caught-up cold query must use ≤4 storage roundtrips.
 #[tokio::test]
-#[ignore = "Phase A: storage_roundtrips ≤ 4 on 10k cold query"]
 async fn bench_cold_10k_storage_roundtrips_at_most_four() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());

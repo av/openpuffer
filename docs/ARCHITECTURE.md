@@ -177,11 +177,11 @@ Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.
 
 | Path | What happens |
 |------|----------------|
-| **Cold** | No disk cache (`--cache-dir=""`): batched parallel S3 plan ([`s3_batch.rs`](../src/s3_batch.rs)) — round 1 `centroids-l0`+FTS, round 2 filter+L1+clusters (query path fetches only probed L1/clusters), WAL tail in extra rounds; `performance.storage_roundtrips` on query JSON |
+| **Cold** | No disk cache (`--cache-dir=""`): three-roundtrip planner ([`s3_batch.rs`](../src/s3_batch.rs)) — round 1 meta+WAL, round 2 L0+FTS+filter, round 3 probed L1+clusters; optional round 4 unindexed WAL tail; `performance.storage_roundtrips` on query JSON |
 
 ### Cold query (`s3_batch` roundtrips)
 
-With `--cache-dir=""`, a **strong** query issues parallel `GetObject` batches; each batch is one logical `storage_roundtrip` (~100ms RTT to object storage). Typical cold path: **2** WAL rounds (meta + snapshot/tail) + **2** index rounds (L0/FTS, then filter + probed L1/clusters) + **1** unindexed WAL tail when `index_cursor < wal_commit_seq` → `performance.storage_roundtrips` ≈ **5** (reported on JSON and `X-Openpuffer-Storage-Roundtrips`).
+With `--cache-dir=""`, a **strong** query uses [`plan_cold_query`](../src/s3_batch.rs): parallel `GetObject` **sub-batches** within a round still count as one logical `storage_roundtrip` (~100ms RTT). Typical path on a **caught-up** namespace (`index_cursor == wal_commit_seq`): round 1 meta+WAL (on first open), round 2 L0+FTS+filter, round 3 probed L1+clusters → **`storage_roundtrips` ≤ 4** (often **2** when the view is already pinned). With `index_cursor < wal_commit_seq`, add round 4 for the unindexed WAL tail.
 
 ```mermaid
 sequenceDiagram
@@ -205,13 +205,14 @@ sequenceDiagram
     end
 
     rect rgb(255, 248, 240)
-        Note over Q,S3: Roundtrip 3 — index round 1
-        Q->>S3: parallel GET centroids-l0.bin + fts-{seg}.bin
+        Note over Q,S3: Roundtrip 3 — index bootstrap
+        Q->>S3: parallel GET centroids-l0.bin + fts-{seg}.bin + filter-{seg}.bin
     end
 
     rect rgb(255, 248, 240)
-        Note over Q,S3: Roundtrip 4 — index round 2
-        Q->>S3: parallel GET filter-{seg}.bin +<br/>probed centroids-l1-* + clusters-*
+        Note over Q,S3: Roundtrip 4 — probed ANN (sub-batches, one roundtrip)
+        Q->>S3: parallel GET probed centroids-l1-*
+        Q->>S3: parallel GET probed clusters-* (after L1 decode)
     end
 
     opt index_cursor < wal_commit_seq
