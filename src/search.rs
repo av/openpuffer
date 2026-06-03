@@ -177,6 +177,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
             by_score.then_with(|| a.0.cmp(&b.0))
         }
     });
+    let scored_count = ranked.len() as u64;
     ranked.truncate(top_k);
 
     let (include_attrs, include_attr_names) = parse_include_attributes(&req.include_attributes)?;
@@ -205,11 +206,6 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
 
     let namespace_size = effective_ctx.docs.len() as u64;
     let candidate_count = candidates.len() as u64;
-    let scored_count = if candidates.is_empty() {
-        0
-    } else {
-        candidates.len() as u64
-    };
     let candidates_ratio = if namespace_size == 0 {
         0.0
     } else {

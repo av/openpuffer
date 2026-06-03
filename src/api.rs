@@ -13,7 +13,7 @@ use crate::search;
 use crate::storage::Storage;
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -33,6 +33,20 @@ pub struct AppState {
 /// turbopuffer-style `{"error": "...", "status": "error"}` with the given HTTP status.
 fn api_error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
     (status, Json(ApiErrorResponse::new(message))).into_response()
+}
+
+/// Map Axum JSON body rejections to the same error shape as handler validation errors.
+fn json_rejection_response(err: JsonRejection) -> axum::response::Response {
+    let msg = match err {
+        JsonRejection::MissingJsonContentType(_) => {
+            "Expected request Content-Type: application/json".to_string()
+        }
+        JsonRejection::JsonSyntaxError(_) => "Invalid JSON in request body".to_string(),
+        JsonRejection::JsonDataError(e) => format!("Invalid JSON field: {e}"),
+        JsonRejection::BytesRejection(_) => "Failed to read request body".to_string(),
+        _ => "Invalid JSON request".to_string(),
+    };
+    api_error(StatusCode::BAD_REQUEST, msg)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -207,9 +221,13 @@ async fn export_namespace_get(
 async fn export_namespace_post(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    body: Option<Json<ExportRequest>>,
+    body: Result<Option<Json<ExportRequest>>, JsonRejection>,
 ) -> impl IntoResponse {
-    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let req = match body {
+        Ok(Some(Json(b))) => b,
+        Ok(None) => ExportRequest::default(),
+        Err(e) => return json_rejection_response(e),
+    };
     export_namespace_impl(
         &state,
         &name,
@@ -371,8 +389,12 @@ fn write_has_row_ops(body: &WriteRequest) -> bool {
 async fn write_namespace(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(body): Json<WriteRequest>,
+    body: Result<Json<WriteRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return json_rejection_response(e),
+    };
     if let Some(resp) = namespace_name_error_response(&name) {
         return resp;
     }
@@ -699,10 +721,21 @@ fn apply_column_batch(
 async fn query_namespace(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(body): Json<QueryRequest>,
+    body: Result<Json<QueryRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return json_rejection_response(e),
+    };
     if let Some(resp) = namespace_name_error_response(&name) {
         return resp;
+    }
+    if let Err(e) = state.storage.require_namespace(&name).await {
+        if e.to_string().contains("namespace not found") {
+            return api_error(StatusCode::NOT_FOUND, "namespace not found");
+        }
+        error!("query namespace existence {name}: {e:#}");
+        return storage_error_response(e);
     }
     let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
         Ok(c) => c,
@@ -734,6 +767,9 @@ async fn query_namespace(
         }
         Err(e) => {
             error!("query load {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return api_error(StatusCode::NOT_FOUND, "namespace not found");
+            }
             storage_error_response(e)
         }
     }

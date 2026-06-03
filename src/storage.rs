@@ -194,6 +194,15 @@ impl Storage {
         &self.bucket
     }
 
+    /// Returns `namespace not found` when the namespace has no `meta.json` or S3 prefix objects.
+    pub async fn require_namespace(&self, name: &str) -> Result<()> {
+        if namespace_exists(&self.client, &self.bucket, name).await? {
+            Ok(())
+        } else {
+            Err(anyhow!("namespace not found"))
+        }
+    }
+
     /// Load namespace for query. `consistency` controls WAL tail work on the hot path.
     pub async fn load_namespace_for_query(
         &self,

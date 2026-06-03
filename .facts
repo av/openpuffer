@@ -207,6 +207,15 @@
 - label: POST /v2/namespaces/{name}/query runs vector FTS hybrid and filtered rank_by queries
   command: grep -q '/query' src/api.rs && grep -q 'execute_query' src/search.rs
   tags: [implemented]
+- label: API validation and JSON errors return turbopuffer shape with error string and status error
+  command: grep -q 'ApiErrorResponse' src/models.rs && grep -q 'json_rejection_response' src/api.rs && cargo test -F integration --test integration_s3 api_error_shape_on_query_and_json_failures -q
+  tags: [implemented]
+- label: query on missing namespace returns 404 not found with ApiErrorResponse body
+  command: grep -q 'require_namespace' src/storage.rs && cargo test -F integration --test integration_s3 api_error_shape_on_query_and_json_failures -q
+  tags: [implemented]
+- label: optional metrics feature exposes GET /metrics with openpuffer_wal_commits_total and openpuffer_s3_get_total
+  command: grep -q 'openpuffer_s3_get_total' src/metrics.rs && cargo build --features metrics -q && test -f target/debug/openpuffer
+  tags: [implemented]
 - label: POST /v1/namespaces/{name}/warm prefetches index segments and pins NamespaceView
   command: test -f src/warm.rs && grep -q '/warm' src/api.rs
   tags: [implemented]

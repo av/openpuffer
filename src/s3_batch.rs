@@ -204,6 +204,7 @@ async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Ve
                 .context("read object body")?
                 .into_bytes()
                 .to_vec();
+            crate::metrics::inc_s3_get();
             Ok(bytes)
         }
         Err(e) => {

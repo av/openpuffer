@@ -3584,6 +3584,87 @@ async fn s3_two_vector_fields_separate_index_paths() {
     );
 }
 
+/// POST query and return HTTP status + JSON body.
+async fn query_expect(base_url: &str, namespace: &str, body: &str) -> (StatusCode, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{base_url}/v2/namespaces/{}/query",
+            namespace_path_segment(namespace)
+        ))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("query request");
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let parsed = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+    (status, parsed)
+}
+
+/// API errors use turbopuffer JSON shape on write, query, and validation failures.
+#[tokio::test]
+async fn api_error_shape_on_query_and_json_failures() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    let (status, body) = query_expect(
+        &serve.base_url,
+        "itest-query-errors-missing-ns",
+        r#"{"rank_by": ["BM25", "text", "x"], "top_k": 1}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "query on missing namespace: {body:?}"
+    );
+    assert_api_error_shape(&body);
+
+    write_batch(
+        &serve.base_url,
+        "itest-query-errors-json",
+        json!({ "upsert_rows": [{ "id": "e1", "attributes": { "text": "warm" } }] }),
+    )
+    .await;
+
+    let (status, body) = query_expect(
+        &serve.base_url,
+        "itest-query-errors-json",
+        r#"{"rank_by": ["BM25", "text", "warm"], "top_k": 1"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "malformed JSON: {body:?}"
+    );
+    assert_api_error_shape(&body);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("json"),
+        "expected JSON error message, got {body:?}"
+    );
+
+    let (status, body) = query_expect(
+        &serve.base_url,
+        "itest-query-errors-json",
+        r#"{"rank_by": "not-an-array", "top_k": 1}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid rank_by: {body:?}"
+    );
+    assert_api_error_shape(&body);
+}
+
 /// Assert turbopuffer-style API error body: `{"error": "...", "status": "error"}`.
 fn assert_api_error_shape(body: &Value) {
     assert_eq!(
