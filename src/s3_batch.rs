@@ -6,6 +6,9 @@
 //! **Round 4 (optional):** unindexed WAL tail when `index_cursor < wal_commit_seq`.
 //!
 //! Sub-batches inside a round still count as one `storage_roundtrip`.
+//!
+//! Large key lists are split by [`cold_max_keys_per_round`] (env
+//! `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND`, default [`DEFAULT_COLD_MAX_KEYS_PER_ROUND`]).
 
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
@@ -18,6 +21,27 @@ use crate::namespace::fetch_meta;
 use anyhow::{Context, Result};
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
+
+/// Default max parallel `GetObject` keys per cold-query round (sub-batches share one roundtrip).
+pub const DEFAULT_COLD_MAX_KEYS_PER_ROUND: usize = 128;
+
+/// Max parallel keys per cold round; override with `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND` (≥ 1).
+pub fn cold_max_keys_per_round() -> usize {
+    std::env::var("OPENPUFFER_COLD_MAX_KEYS_PER_ROUND")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_COLD_MAX_KEYS_PER_ROUND)
+}
+
+/// How many parallel sub-batches [`fetch_round`] uses for `key_count` keys at `max_per_batch`.
+pub fn cold_fetch_sub_batch_count(key_count: usize, max_per_batch: usize) -> usize {
+    if key_count == 0 {
+        0
+    } else {
+        key_count.div_ceil(max_per_batch.max(1))
+    }
+}
 
 /// Index artifacts loaded via the cold batch plan (full index — warm prefetch / export).
 #[derive(Debug, Default)]
@@ -392,6 +416,9 @@ pub fn record_cold_s3_keys_fetched(keys: usize) -> u32 {
 }
 
 /// One parallel batch of S3 `GetObject` calls (counts as one storage roundtrip).
+///
+/// Keys beyond [`cold_max_keys_per_round`] are fetched in sequential sub-batches; callers
+/// still increment `storage_roundtrips` once per [`fetch_round`] invocation.
 pub async fn fetch_round(
     client: &Client,
     bucket: &str,
@@ -400,6 +427,38 @@ pub async fn fetch_round(
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
+    let max = cold_max_keys_per_round();
+    let mut out = HashMap::with_capacity(keys.len());
+    for chunk in keys.chunks(max) {
+        let batch = fetch_round_batch(client, bucket, chunk).await?;
+        out.extend(batch);
+    }
+    Ok(out)
+}
+
+/// Like [`fetch_round`], but omits keys that are not present (probed cluster segments may be absent).
+pub async fn fetch_round_optional(
+    client: &Client,
+    bucket: &str,
+    keys: &[String],
+) -> Result<HashMap<String, Vec<u8>>> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let max = cold_max_keys_per_round();
+    let mut out = HashMap::with_capacity(keys.len());
+    for chunk in keys.chunks(max) {
+        let batch = fetch_round_optional_batch(client, bucket, chunk).await?;
+        out.extend(batch);
+    }
+    Ok(out)
+}
+
+async fn fetch_round_batch(
+    client: &Client,
+    bucket: &str,
+    keys: &[String],
+) -> Result<HashMap<String, Vec<u8>>> {
     let mut handles = Vec::with_capacity(keys.len());
     for key in keys {
         let client = client.clone();
@@ -418,15 +477,11 @@ pub async fn fetch_round(
     Ok(out)
 }
 
-/// Like [`fetch_round`], but omits keys that are not present (probed cluster segments may be absent).
-pub async fn fetch_round_optional(
+async fn fetch_round_optional_batch(
     client: &Client,
     bucket: &str,
     keys: &[String],
 ) -> Result<HashMap<String, Vec<u8>>> {
-    if keys.is_empty() {
-        return Ok(HashMap::new());
-    }
     let mut handles = Vec::with_capacity(keys.len());
     for key in keys {
         let client = client.clone();
@@ -1485,6 +1540,38 @@ mod tests {
             },
         );
         assert!(cold_plan_storage_roundtrips(&full) <= 4);
+    }
+
+    #[test]
+    fn cold_fetch_sub_batch_count_caps_parallel_gets() {
+        assert_eq!(cold_fetch_sub_batch_count(0, 128), 0);
+        assert_eq!(cold_fetch_sub_batch_count(1, 128), 1);
+        assert_eq!(cold_fetch_sub_batch_count(128, 128), 1);
+        assert_eq!(cold_fetch_sub_batch_count(129, 128), 2);
+        assert_eq!(
+            cold_fetch_sub_batch_count(500, DEFAULT_COLD_MAX_KEYS_PER_ROUND),
+            4,
+            "500 keys at cap 128 → four sub-batches"
+        );
+    }
+
+    #[test]
+    fn plan_cold_query_500_round3_keys_one_roundtrip_unchanged() {
+        let mut plan = ColdQueryPlan::default();
+        plan.round3_keys = (0..500)
+            .map(|i| format!("ns/index/clusters-{i:08}.bin"))
+            .collect();
+        assert_eq!(plan.round3_keys.len(), 500);
+        assert_eq!(
+            cold_plan_storage_roundtrips(&plan),
+            1,
+            "round-3 key count does not add logical roundtrips"
+        );
+        assert_eq!(
+            cold_fetch_sub_batch_count(plan.round3_keys.len(), DEFAULT_COLD_MAX_KEYS_PER_ROUND),
+            4,
+            "fetch_round would issue four capped sub-batches inside one roundtrip"
+        );
     }
 
     #[test]

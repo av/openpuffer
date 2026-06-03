@@ -26,6 +26,7 @@
 //!      OPENPUFFER_ANN_RERANK (`1`/`true` enables exact re-rank on probed ANN pool; default off)
 //!      OPENPUFFER_FTS_STEM (optional Porter stemming for FTS; default off)
 //!      OPENPUFFER_WAL_CORRUPT_POLICY (`fail` | `skip` on corrupt WAL replay)
+//!      OPENPUFFER_COLD_MAX_KEYS_PER_ROUND (max parallel GETs per cold round; default 128)
 
 pub mod api;
 pub mod billing;
