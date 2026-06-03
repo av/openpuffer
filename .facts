@@ -441,6 +441,12 @@
 - label: strong caught-up cold query on 10k namespace reports storage_roundtrips at most 4
   command: cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four -q --test bench_cold
   tags: [spec, cold, implemented]
+- label: bench_cold_10k_warm_vs_cold compares probed cold S3 keys vs warm cache zero segment GETs
+  command: grep -q 'async fn bench_cold_10k_warm_vs_cold' tests/bench_cold.rs && cargo test -F bench bench_cold_10k_warm_vs_cold -q --test bench_cold
+  tags: [spec, cold, bench, implemented]
+- label: eventual cold query on caught-up 10k reports cold_s3_keys_fetched and skips WAL tail exhaustive scan
+  command: grep -q 'consistency.*eventual' tests/bench_cold.rs && grep -q 'bench_cold_10k_warm_vs_cold' tests/bench_cold.rs && cargo test -F bench bench_cold_10k_warm_vs_cold -q --test bench_cold
+  tags: [spec, cold, implemented]
 - label: plan_cold_query round3 keys are 8 to 64 not num_fine_total when num_fine_total is 4000
   command: cargo test --lib plan_cold_query_round3_bounded_at_4k_fine_total -q
   tags: [spec, cold, implemented]

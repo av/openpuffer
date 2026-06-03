@@ -271,6 +271,183 @@ async fn bench_cold_10k_baseline() {
     assert!(index_object_count > 0, "expected ANN index objects on S3");
 }
 
+/// Same 10k ANN query: cold (`--cache-dir=""`) reports probed S3 metrics; warm (`POST …/warm`) hits disk cache.
+#[tokio::test]
+async fn bench_cold_10k_warm_vs_cold() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen_cold = format!("127.0.0.1:{}", free_port());
+    let serve_cold = ServeHandle::spawn_with_options(
+        &fixture,
+        &listen_cold,
+        Some(PathBuf::from("")),
+        Some(10_000),
+        None,
+    );
+    serve_cold.wait_ready().await;
+    index_10k_namespace(&fixture, &serve_cold).await;
+
+    let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.02).cos()).collect();
+    let client = reqwest::Client::new();
+
+    // Cold eventual first (before view is pinned) — probed index keys, no WAL tail work.
+    client
+        .post(format!(
+            "{}/v1/debug/cache-stats/reset",
+            serve_cold.base_url
+        ))
+        .send()
+        .await
+        .expect("cache reset");
+    let eventual_resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve_cold.base_url,
+            namespace_path_segment(NAMESPACE)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", query_vec.clone()],
+            "top_k": 10,
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("cold eventual query");
+    assert_eq!(eventual_resp.status(), StatusCode::OK);
+    let eventual_body: Value = eventual_resp.json().await.expect("eventual json");
+    let ev_perf = eventual_body["performance"].as_object().expect("performance");
+    let ev_roundtrips = ev_perf["storage_roundtrips"]
+        .as_u64()
+        .expect("eventual storage_roundtrips");
+    let ev_cold_keys = ev_perf["cold_s3_keys_fetched"]
+        .as_u64()
+        .expect("eventual cold_s3_keys_fetched");
+    let ev_exhaustive = ev_perf["exhaustive_search_count"].as_u64().unwrap_or(0);
+    assert_eq!(
+        ev_exhaustive, 0,
+        "eventual cold on caught-up namespace must not score unindexed WAL tail"
+    );
+    assert!(
+        ev_cold_keys >= 1,
+        "eventual cold must still report probed cold_s3_keys_fetched, got {ev_cold_keys}"
+    );
+    assert!(
+        ev_roundtrips >= 2,
+        "eventual cold: meta + bootstrap + probe, got {ev_roundtrips}"
+    );
+
+    // Cold strong on pinned view — same probed metrics, roundtrips >= eventual.
+    client
+        .post(format!(
+            "{}/v1/debug/cache-stats/reset",
+            serve_cold.base_url
+        ))
+        .send()
+        .await
+        .expect("cache reset");
+    let (_, strong_body) = cold_vector_query_ms(&serve_cold, NAMESPACE).await;
+    let st_perf = strong_body["performance"].as_object().expect("performance");
+    let st_roundtrips = st_perf["storage_roundtrips"]
+        .as_u64()
+        .expect("strong storage_roundtrips");
+    let st_cold_keys = st_perf["cold_s3_keys_fetched"]
+        .as_u64()
+        .expect("strong cold_s3_keys_fetched");
+    assert!(
+        st_cold_keys >= 1,
+        "strong cold must report cold_s3_keys_fetched, got {st_cold_keys}"
+    );
+    assert!(
+        st_roundtrips >= ev_roundtrips,
+        "strong cold roundtrips {st_roundtrips} must be >= eventual {ev_roundtrips}"
+    );
+    assert!(
+        st_cold_keys >= ev_cold_keys,
+        "strong cold keys {st_cold_keys} should be >= eventual {ev_cold_keys} on first strong pass"
+    );
+
+    // Warm path: disk cache + warm pin — no cold S3 batch metrics, zero segment GETs.
+    let cache_dir = tempfile::tempdir().expect("warm cache tempdir");
+    let listen_warm = format!("127.0.0.1:{}", free_port());
+    let serve_warm = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen_warm,
+        Some(cache_dir.path().to_path_buf()),
+    );
+    serve_warm.wait_ready().await;
+
+    let warm_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{}/warm",
+            serve_warm.base_url,
+            namespace_path_segment(NAMESPACE)
+        ))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK);
+    let warm_body: Value = warm_resp.json().await.expect("warm json");
+    assert_eq!(warm_body["status"], "ok");
+    assert!(warm_body["pinned"].as_bool().unwrap_or(false));
+
+    client
+        .post(format!(
+            "{}/v1/debug/cache-stats/reset",
+            serve_warm.base_url
+        ))
+        .send()
+        .await
+        .expect("cache reset");
+    let warm_query = client
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            serve_warm.base_url,
+            namespace_path_segment(NAMESPACE)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", query_vec],
+            "top_k": 10,
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("warm query");
+    assert_eq!(warm_query.status(), StatusCode::OK);
+    let warm_body: Value = warm_query.json().await.expect("warm query json");
+    let warm_perf = warm_body["performance"].as_object().expect("performance");
+    assert!(
+        warm_perf.get("storage_roundtrips").is_none()
+            || warm_perf["storage_roundtrips"].is_null(),
+        "warm query must not report cold storage_roundtrips: {warm_perf:?}"
+    );
+    let warm_cold_keys = warm_perf
+        .get("cold_s3_keys_fetched")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert_eq!(
+        warm_cold_keys, 0,
+        "warm path must not increment cold_s3_keys_fetched"
+    );
+
+    let stats: Value = client
+        .get(format!("{}/v1/debug/cache-stats", serve_warm.base_url))
+        .send()
+        .await
+        .expect("cache stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert_eq!(
+        stats["s3_get_count"].as_u64(),
+        Some(0),
+        "warm + eventual query should not S3 GetObject index segments (disk cache hit)"
+    );
+
+    assert!(
+        st_cold_keys > warm_cold_keys,
+        "cold strong cold_s3_keys_fetched ({st_cold_keys}) must exceed warm ({warm_cold_keys})"
+    );
+}
+
 /// Phase A gate: strong caught-up cold query must use ≤4 storage roundtrips.
 #[tokio::test]
 async fn bench_cold_10k_storage_roundtrips_at_most_four() {

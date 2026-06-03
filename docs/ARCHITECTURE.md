@@ -275,6 +275,30 @@ After warm, queries against the same process reuse the pinned view. With `consis
 
 **Eventual fast path (turbopuffer sub-10ms warm goal):** after `POST …/warm`, a query with `consistency: "eventual"` and a disk-cache hit loads index segments via HEAD+local file only and skips all S3 WAL I/O. Staleness is bounded by **indexing lag**: results reflect the last merged `index_cursor`, not `wal_commit_seq`. Use `strong` when you need read-your-writes before the indexer catches up; use `eventual` for lowest-latency ANN/FTS over the indexed snapshot.
 
+### Strong vs eventual: cold and warm roundtrips
+
+Query body `consistency` drives [`ColdPlanOpts`](../src/s3_batch.rs) (`include_wal_round`, `include_wal_tail`) and whether [`NamespaceView::load_cold_batched`](../src/view.rs) replays WAL on first open. [`plan_cold_query`](../src/s3_batch.rs) is the logical plan; [`fetch_round`](../src/s3_batch.rs) executes it with `performance.storage_roundtrips` and `performance.cold_s3_keys_fetched` on the **cold** path only (`--cache-dir=""` → `cold_batch` in [`storage.rs`](../src/storage.rs)).
+
+| Path | `consistency` | First open (cold, empty cache) | Caught-up (`index_cursor == wal_commit_seq`) | Index lag (`index_cursor < wal_commit_seq`) | `performance.storage_roundtrips` | `performance.cold_s3_keys_fetched` |
+|------|---------------|--------------------------------|---------------------------------------------|---------------------------------------------|----------------------------------|-----------------------------------|
+| **Cold** | `strong` | Round 1: `meta.json` + WAL snapshot/tail replay → in-memory `docs` | Round 1 often skipped when view already pinned; round 2 L0+FTS+filter; round 3 probed L1/clusters | + round 4: parallel GET unindexed `wal/{seq}.bin` + exhaustive tail scoring | Set (typically **2–4** on 10k probed ANN) | Set (bootstrap + probed cluster keys; baseline ~15 @ 10k) |
+| **Cold** | `eventual` | Round 1: **`meta.json` only** ([`cold_load_meta_only`](../src/s3_batch.rs)); `docs` empty — vectors from probed `clusters-*.bin` | Same bootstrap + probe rounds as strong; **no** WAL rounds | **No** round 1 WAL, **no** round 4 tail; `exhaustive_search_count == 0`; tail docs invisible | Set; **≤ strong** when index lags (fewer logical rounds) | Set (probed index keys still fetched from S3) |
+| **Warm** | `strong` | N/A — use `POST …/warm` first | Pinned view + `catch_up` for new WAL; index via disk cache ([`load_*_for_query`](../src/indexer.rs)) | Tail replay from S3 WAL segments (not `s3_batch` round 4) when cache enabled | **Omitted** (`None`) | **0** (not reported) |
+| **Warm** | `eventual` | N/A | Pinned view; meta HEAD refresh only; **no** `catch_up`, **no** WAL tail | Tail docs invisible (same as cold eventual) | **Omitted** | **0** |
+
+**Planner rounds (cold, logical):**
+
+| Round | Keys | `strong` | `eventual` |
+|-------|------|----------|------------|
+| 1 | `meta.json` + optional WAL snapshot/tail | Yes (first cold open) | **No** |
+| 2 | `centroids-l0` + FTS + filter | Yes (when indexed) | Yes |
+| 3 | Probed `centroids-l1-*`, v3 routing/L2, `clusters-*` | Yes | Yes |
+| 4 | Unindexed `wal/*.bin` after `index_cursor` | Yes when index lags | **No** |
+
+**Warm vs cold on the same namespace:** cold ANN queries always populate `storage_roundtrips` / `cold_s3_keys_fetched` when the process runs with `--cache-dir=""`. After `POST …/warm` with a non-empty cache dir, vector queries load L0 + probed segments from disk (HEAD etag check); segment-cache `s3_get_count` stays **0** on repeat queries and cold metrics are absent. Bench gate: `cargo test -F bench bench_cold_10k_warm_vs_cold`.
+
+**Choosing a mode:** default **`strong`** for read-your-writes and filter/ANN over unindexed WAL. **`eventual`** after warm (or on cold when you accept index lag) for lowest latency and fewest S3 keys when the WAL tail is irrelevant.
+
 **Performance observability** (turbopuffer [`performance`](https://turbopuffer.com/docs/query#responsefield-performance) subset):
 
 | Field | Meaning |
@@ -383,11 +407,6 @@ Distance uses `distance_metric` from `meta.json` (`cosine_distance` default).
 1. Parse turbopuffer-style DSL: `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `And`, `Or` (unsupported ops → 400).
 2. Load inverted filter segment from S3: `(field, value_key) → doc_id` sets.
 3. Intersect filter matches with ANN/FTS **candidates before scoring**; WAL tail docs re-evaluated with `eval_filter` under strong consistency.
-
-## Consistency
-
-- **Strong (default):** query after write reads up to `wal_commit_seq`.
-- **Eventual:** optional later; may skip latest WAL for lower latency.
 
 ## References
 
