@@ -1,4 +1,8 @@
 //! S3 integration harness: MinIO testcontainers or external endpoint via env.
+//!
+//! WAL helpers (`decode_wal_entry_from_s3`, `list_wal_keys`, `wal_segment_seqs`) back
+//! integration tests that assert bincode `WalEntry` bytes on S3 (conditional upserts,
+//! `patch_by_filter`, branch/copy key parity).
 
 use aws_config::Region;
 use aws_credential_types::Credentials;
