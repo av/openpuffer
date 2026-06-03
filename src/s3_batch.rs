@@ -99,11 +99,7 @@ pub fn plan_cold_query(
     plan.round3_keys.dedup();
 
     if opts.include_wal_tail {
-        if let Some((from, to)) = unindexed_wal_tail_range(meta) {
-            plan.round4_keys = (from..=to)
-                .map(|seq| crate::wal::wal_key(namespace, seq))
-                .collect();
-        }
+        plan.round4_keys = unindexed_wal_tail_keys(namespace, meta);
     }
 
     plan
@@ -175,6 +171,17 @@ pub fn wal_round_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
         }
     }
     keys
+}
+
+/// WAL segment keys for round 4 (unindexed tail), if any.
+pub fn unindexed_wal_tail_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
+    unindexed_wal_tail_range(meta)
+        .map(|(from, to)| {
+            (from..=to)
+                .map(|seq| crate::wal::wal_key(namespace, seq))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// WAL segment range for unindexed tail (round 4), if any.
@@ -715,7 +722,7 @@ pub async fn fetch_cold_index_artifacts(
     })
 }
 
-/// Replay WAL segment range using one parallel fetch round.
+/// Replay WAL segment range using one parallel fetch round (no metrics; see [`fetch_cold_unindexed_wal_tail`]).
 pub async fn replay_wal_entries_batched(
     client: &Client,
     bucket: &str,
@@ -729,7 +736,6 @@ pub async fn replay_wal_entries_batched(
     let keys: Vec<String> = (from_seq..=to_seq)
         .map(|seq| crate::wal::wal_key(namespace, seq))
         .collect();
-    record_cold_s3_keys_fetched(keys.len());
     let raw = fetch_round(client, bucket, &keys).await?;
     let mut entries = Vec::with_capacity(keys.len());
     for seq in from_seq..=to_seq {
@@ -744,6 +750,23 @@ pub async fn replay_wal_entries_batched(
         }
     }
     Ok(entries)
+}
+
+/// Cold round 4: parallel fetch of unindexed WAL tail `(index_cursor, wal_commit_seq]`.
+///
+/// Returns `(entries, storage_roundtrips, s3_keys_fetched)`; all zero when caught up.
+pub async fn fetch_cold_unindexed_wal_tail(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> Result<(Vec<crate::wal::WalEntry>, u32, u32)> {
+    let Some((from, to)) = unindexed_wal_tail_range(meta) else {
+        return Ok((Vec::new(), 0, 0));
+    };
+    let keys_fetched = record_cold_s3_keys_fetched(unindexed_wal_tail_keys(namespace, meta).len());
+    let entries = replay_wal_entries_batched(client, bucket, namespace, from, to).await?;
+    Ok((entries, 1, keys_fetched))
 }
 
 /// Cold namespace bootstrap: meta fetch + parallel WAL segments (2 roundtrips when WAL present).
@@ -1320,5 +1343,30 @@ mod tests {
             },
         );
         assert!(cold_plan_storage_roundtrips(&full) <= 4);
+    }
+
+    #[test]
+    fn unindexed_wal_tail_keys_match_plan_round4() {
+        let meta = NamespaceMeta {
+            index_cursor: 5,
+            wal_commit_seq: 8,
+            ..Default::default()
+        };
+        let keys = unindexed_wal_tail_keys("ns", &meta);
+        assert_eq!(keys.len(), 3);
+        assert!(keys[0].ends_with("00000006.bin"));
+        let plan = plan_cold_query(
+            "ns",
+            &meta,
+            &[],
+            &HashMap::new(),
+            None,
+            ColdPlanOpts {
+                include_wal_round: false,
+                include_wal_tail: true,
+            },
+        );
+        assert_eq!(plan.round4_keys, keys);
+        assert_eq!(cold_plan_storage_roundtrips(&plan), 1);
     }
 }

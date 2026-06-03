@@ -207,6 +207,9 @@ async fn bench_cold_10k_baseline() {
     let storage_roundtrips = perf["storage_roundtrips"]
         .as_u64()
         .expect("storage_roundtrips") as u32;
+    let cold_s3_keys_fetched = perf["cold_s3_keys_fetched"]
+        .as_u64()
+        .expect("cold_s3_keys_fetched") as u32;
     let candidates_ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
 
     let client = reqwest::Client::new();
@@ -229,7 +232,9 @@ async fn bench_cold_10k_baseline() {
         "consistency": "strong",
         "index_cursor_eq_wal_commit_seq": true,
         "storage_roundtrips": storage_roundtrips,
+        "cold_s3_keys_fetched": cold_s3_keys_fetched,
         "s3_get_count": s3_get_count,
+        "s3_get_count_note": "segment cache counter; cold path uses s3_batch (see cold_s3_keys_fetched)",
         "p50_query_latency_ms": p50_query_latency_ms,
         "candidates_ratio": candidates_ratio,
         "index_object_count": index_object_count,
@@ -259,6 +264,10 @@ async fn bench_cold_10k_baseline() {
         "candidates_ratio {candidates_ratio} should stay sub-linear on 10k"
     );
     assert!(storage_roundtrips >= 2, "cold path should report batched roundtrips");
+    assert!(
+        cold_s3_keys_fetched >= 1,
+        "cold path should report cold_s3_keys_fetched in performance JSON"
+    );
     assert!(index_object_count > 0, "expected ANN index objects on S3");
 }
 

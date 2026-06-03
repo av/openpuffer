@@ -52,6 +52,7 @@ const FAIR_HOT_BATCHES: usize = 5;
 const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
 const NAMESPACE_MULTI_INST: &str = "itest-multi-inst-stateless";
 const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
+const NAMESPACE_COLD_WAL_TAIL: &str = "itest-cold-wal-tail-r4";
 const NAMESPACE_COLD_PROBE_BOUND: &str = "itest-cold-probe-bound";
 const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
@@ -3671,6 +3672,125 @@ async fn s3_cold_query_reports_roundtrips_on_minio() {
 
     assert_key_exists(&fixture.client, &fixture.bucket, &l0_key).await;
     assert_two_level_centroids_on_backend(&fixture.client, &fixture.bucket, ns).await;
+}
+
+/// Strong cold query with unindexed WAL tail: round-4 batched fetch, tail doc visible, metrics set.
+#[tokio::test]
+async fn cold_strong_unindexed_wal_tail_round4_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_WAL_TAIL;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "indexed-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "indexed baseline alpha"
+                }
+            },
+            {
+                "id": "indexed-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "indexed baseline bravo"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "tail-unindexed",
+            "attributes": {
+                "embedding": [0.99, 0.01, 0.0],
+                "text": "written after index cursor"
+            }
+        }]),
+    )
+    .await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(
+        meta.index_cursor < meta.wal_commit_seq,
+        "expected index lag before background indexer catches up: cursor={} commit={}",
+        meta.index_cursor,
+        meta.wal_commit_seq
+    );
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+
+    let resp = client
+        .post(format!("{}/v2/namespaces/{ns}/query", serve.base_url))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 3,
+            "consistency": "strong"
+        }))
+        .send()
+        .await
+        .expect("cold strong query with wal tail");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("query json");
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains(&"tail-unindexed".to_string()),
+        "strong cold query must see unindexed tail doc via exhaustive WAL scoring, got {ids:?}"
+    );
+
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips >= 3 && roundtrips <= 5,
+        "cold strong query with index lag should use bootstrap + probe + optional WAL tail round, got {roundtrips}"
+    );
+    let cold_keys = perf["cold_s3_keys_fetched"]
+        .as_u64()
+        .expect("cold_s3_keys_fetched");
+    assert!(
+        cold_keys >= 2,
+        "cold query with WAL tail should report multiple S3 keys fetched, got {cold_keys}"
+    );
+    let exhaustive = perf["exhaustive_search_count"]
+        .as_u64()
+        .expect("exhaustive_search_count");
+    assert!(
+        exhaustive >= 1,
+        "unindexed tail doc should be scored exhaustively, got {exhaustive}"
+    );
+
+    let plan_keys =
+        openpuffer::s3_batch::unindexed_wal_tail_keys(ns, &meta);
+    assert!(
+        !plan_keys.is_empty(),
+        "planner round-4 keys should be non-empty while index lags commit"
+    );
 }
 
 /// WAL compaction on MinIO: old segment deleted, snapshot.bin present, decode + query still correct.

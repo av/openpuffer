@@ -14,7 +14,7 @@ use crate::index::vector::{CentroidIndexL0, VectorIndex};
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
-use crate::s3_batch::replay_wal_entries_batched;
+use crate::s3_batch::fetch_cold_unindexed_wal_tail;
 use crate::search::{matching_doc_ids_for_filter, QueryConsistency, QueryContext};
 use crate::export::{export_page, ExportPage, DEFAULT_EXPORT_LIMIT};
 use crate::view::NamespaceView;
@@ -420,26 +420,32 @@ impl Storage {
         let tail_doc_ids = if skip_wal_tail {
             HashSet::new()
         } else if view.meta.index_cursor < view.meta.wal_commit_seq {
-            let to = view.meta.wal_commit_seq;
-            let from = if view.meta.wal_snapshot_seq > 0 {
-                crate::wal_compaction::wal_replay_from(view.meta.wal_snapshot_seq, to)
-                    .unwrap_or(view.meta.index_cursor.saturating_add(1))
+            let entries = if cold_batch {
+                let (entries, tail_roundtrips, tail_keys) = fetch_cold_unindexed_wal_tail(
+                    &self.client,
+                    &self.bucket,
+                    name,
+                    &view.meta,
+                )
+                .await?;
+                storage_roundtrips = storage_roundtrips.saturating_add(tail_roundtrips);
+                cold_s3_keys_fetched = cold_s3_keys_fetched.saturating_add(tail_keys);
+                entries
             } else {
-                view.meta.index_cursor.saturating_add(1)
-            };
-            if from > to {
-                HashSet::new()
-            } else {
-                let entries = if cold_batch {
-                    storage_roundtrips += 1;
-                    let wal_keys = (from..=to).count().min(u32::MAX as usize) as u32;
-                    cold_s3_keys_fetched = cold_s3_keys_fetched.saturating_add(wal_keys);
-                    replay_wal_entries_batched(&self.client, &self.bucket, name, from, to).await?
+                let to = view.meta.wal_commit_seq;
+                let from = if view.meta.wal_snapshot_seq > 0 {
+                    crate::wal_compaction::wal_replay_from(view.meta.wal_snapshot_seq, to)
+                        .unwrap_or(view.meta.index_cursor.saturating_add(1))
+                } else {
+                    view.meta.index_cursor.saturating_add(1)
+                };
+                if from > to {
+                    Vec::new()
                 } else {
                     replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
-                };
-                wal_touched_doc_ids(&entries)
-            }
+                }
+            };
+            wal_touched_doc_ids(&entries)
         } else {
             HashSet::new()
         };
