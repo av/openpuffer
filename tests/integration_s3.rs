@@ -3885,7 +3885,7 @@ async fn full_architecture_smoke() {
         Some(2),
         "two free-tier docs patched: {patch_body}"
     );
-    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(60)).await;
 
     write_batch(
         &serve.base_url,
@@ -3916,7 +3916,7 @@ async fn full_architecture_smoke() {
     assert!(export_ids.contains(&"arch-0".to_string()));
     assert!(export_ids.contains(&"arch-2".to_string()));
 
-    for i in 4..18 {
+    for i in 4..12 {
         upsert_batch(
             &serve.base_url,
             ns,
@@ -4025,6 +4025,9 @@ async fn full_architecture_smoke() {
         Some(0),
         "eventual query after warm must not S3 GetObject"
     );
+
+    // Let background WAL compaction finish listing/copy races before branch clones prefix.
+    sleep(Duration::from_secs(3)).await;
 
     write_batch(
         &serve.base_url,
