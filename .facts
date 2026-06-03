@@ -51,6 +51,9 @@
 - label: serve accepts OPENPUFFER_WAL_CORRUPT_POLICY fail or skip on corrupt WAL segment replay
   command: grep -q 'OPENPUFFER_WAL_CORRUPT_POLICY' src/config.rs && cargo test --lib wal_corrupt_policy_skip_returns_none -q
   tags: [implemented]
+- label: integration test corrupt_wal_segment_on_minio_fail_and_skip_policies corrupts wal bytes on S3 and asserts fail vs skip replay
+  command: cargo test -F integration --test integration_s3 corrupt_wal_segment_on_minio_fail_and_skip_policies -q
+  tags: [implemented]
 - label: background indexer merges WAL into FTS vector and filter segments under openpuffer/{ns}/index/
   command: test -f src/indexer.rs && test -f src/index/fts.rs && test -f src/index/vector.rs && test -f src/index/filter.rs
   tags: [implemented]
@@ -375,6 +378,6 @@
 - label: integration test multi_instance_stateless_integration proves two serve processes share one MinIO bucket with cross-read write export and S3 asserts
   command: cargo test -F integration --test integration_s3 multi_instance_stateless_integration -q
   tags: [implemented]
-- label: integration_s3.rs defines fifty MinIO integration tests with hardened S3 harness ListObjects retries and index segment polling
-  command: test $(grep -c "#\[tokio::test\]" tests/integration_s3.rs) -eq 50 && grep -q LIST_OBJECTS_RETRY_ATTEMPTS tests/common/s3_harness.rs
+- label: integration_s3.rs defines fifty-one MinIO integration tests with hardened S3 harness ListObjects retries and index segment polling
+  command: test $(grep -c "#\[tokio::test\]" tests/integration_s3.rs) -eq 51 && grep -q LIST_OBJECTS_RETRY_ATTEMPTS tests/common/s3_harness.rs
   tags: [implemented]

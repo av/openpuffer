@@ -6,6 +6,7 @@
 
 use aws_config::Region;
 use aws_credential_types::Credentials;
+use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use openpuffer::index::vector::CentroidIndexL0;
 use openpuffer::meta::{effective_vector_fields, meta_key, NamespaceMeta};
@@ -180,6 +181,33 @@ pub async fn decode_wal_entry_from_s3(
     let key = wal_key(namespace, seq);
     let bytes = get_object_bytes(client, bucket, &key).await;
     decode(&bytes).expect("decode WalEntry from S3 bytes")
+}
+
+/// Flip the CRC32 trailer byte of `wal/{seq:08}.bin` on S3 (v1 wire format must decode before call).
+pub async fn corrupt_wal_crc_byte_on_s3(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    seq: u64,
+) {
+    let key = wal_key(namespace, seq);
+    let mut bytes = get_object_bytes(client, bucket, &key).await;
+    assert!(
+        !bytes.is_empty(),
+        "wal segment {seq:08} empty before corruption"
+    );
+    decode(&bytes).expect("wal must be valid before corruption");
+    let tail = bytes.len() - 1;
+    bytes[tail] ^= 0xFF;
+    openpuffer::wal::decode(&bytes).expect_err("corrupted wal must fail CRC decode");
+    client
+        .put_object()
+        .bucket(bucket)
+        .key(&key)
+        .body(ByteStream::from(bytes))
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("put corrupted wal {key}: {e}"));
 }
 
 pub async fn fetch_meta_from_s3(
@@ -569,6 +597,7 @@ impl ServeHandle {
             write_max_delay_ms,
             None,
             None,
+            None,
         )
     }
 
@@ -580,6 +609,7 @@ impl ServeHandle {
         write_max_delay_ms: Option<u64>,
         max_upsert_rows: Option<usize>,
         max_filter_batch_rows: Option<usize>,
+        wal_corrupt_policy: Option<&str>,
     ) -> Self {
         let bin = openpuffer_bin();
         assert!(
@@ -621,6 +651,10 @@ impl ServeHandle {
         if let Some(batch) = max_filter_batch_rows {
             args.push("--max-filter-batch-rows".to_string());
             args.push(batch.to_string());
+        }
+        if let Some(policy) = wal_corrupt_policy {
+            args.push("--wal-corrupt-policy".to_string());
+            args.push(policy.to_string());
         }
         let child = Command::new(&bin)
             .args(&args)

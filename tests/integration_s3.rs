@@ -68,6 +68,8 @@ const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 const NAMESPACE_FULL_ARCH: &str = "itest-full-arch";
 const NAMESPACE_FULL_ARCH_BRANCH: &str = "itest-full-arch-branch";
+const NAMESPACE_WAL_CORRUPT_FAIL: &str = "itest-wal-corrupt-fail";
+const NAMESPACE_WAL_CORRUPT_SKIP: &str = "itest-wal-corrupt-skip";
 /// turbopuffer base64 for `[1.0, 0.0, 0.0]` f32 LE.
 const EMB_B64_THREE: &str = "AACAPwAAAAAAAAAA";
 const STRESS_DOCS: usize = 10_000;
@@ -4443,6 +4445,182 @@ async fn query_expect(base_url: &str, namespace: &str, body: &str) -> (StatusCod
     (status, parsed)
 }
 
+/// Valid WAL on S3, then corrupt `wal/{seq:08}.bin` via PutObject; fail policy errors query, skip omits segment.
+#[tokio::test]
+async fn corrupt_wal_segment_on_minio_fail_and_skip_policies() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    async fn seed_two_wal_segments(base_url: &str, namespace: &str) {
+        write_batch(
+            base_url,
+            namespace,
+            json!({
+                "schema": { "text": { "type": "string", "full_text_search": true } },
+                "upsert_rows": [{
+                    "id": "wal-good",
+                    "attributes": { "text": "corruptwal goodterm walseq1" }
+                }]
+            }),
+        )
+        .await;
+        sleep(Duration::from_millis(1500)).await;
+        write_batch(
+            base_url,
+            namespace,
+            json!({
+                "upsert_rows": [{
+                    "id": "wal-bad",
+                    "attributes": { "text": "corruptwal badterm walseq2" }
+                }]
+            }),
+        )
+        .await;
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    // Default OPENPUFFER_WAL_CORRUPT_POLICY=fail aborts namespace load on corrupt tail segment.
+    {
+        let listen = format!("127.0.0.1:{}", free_port());
+        let mut serve = ServeHandle::spawn_with_options(
+            &fixture,
+            &listen,
+            Some(PathBuf::from("")),
+            Some(1),
+            None,
+        );
+        serve.wait_ready().await;
+        seed_two_wal_segments(&serve.base_url, NAMESPACE_WAL_CORRUPT_FAIL).await;
+
+        let meta =
+            fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_WAL_CORRUPT_FAIL).await;
+        assert!(
+            meta.wal_commit_seq >= 2,
+            "expected two WAL commits, meta={meta:?}"
+        );
+        decode_wal_entry_from_s3(
+            &fixture.client,
+            &fixture.bucket,
+            NAMESPACE_WAL_CORRUPT_FAIL,
+            1,
+        )
+        .await;
+        decode_wal_entry_from_s3(
+            &fixture.client,
+            &fixture.bucket,
+            NAMESPACE_WAL_CORRUPT_FAIL,
+            2,
+        )
+        .await;
+
+        corrupt_wal_crc_byte_on_s3(
+            &fixture.client,
+            &fixture.bucket,
+            NAMESPACE_WAL_CORRUPT_FAIL,
+            2,
+        )
+        .await;
+
+        serve.stop();
+        drop(serve);
+        sleep(Duration::from_millis(300)).await;
+
+        let serve_fail = ServeHandle::spawn_with_limits(
+            &fixture,
+            &listen,
+            Some(PathBuf::from("")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        serve_fail.wait_ready().await;
+
+        let (status, body) = query_expect(
+            &serve_fail.base_url,
+            NAMESPACE_WAL_CORRUPT_FAIL,
+            r#"{"rank_by": ["BM25", "text", "goodterm"], "top_k": 5}"#,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "fail policy should abort WAL replay: {body:?}"
+        );
+        assert_api_error_shape(&body);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains("corrupt"),
+            "expected corrupt WAL error, got {body:?}"
+        );
+    }
+
+    // skip policy logs and continues without applying the corrupt segment.
+    {
+        let listen = format!("127.0.0.1:{}", free_port());
+        let mut serve = ServeHandle::spawn_with_options(
+            &fixture,
+            &listen,
+            Some(PathBuf::from("")),
+            Some(1),
+            None,
+        );
+        serve.wait_ready().await;
+        seed_two_wal_segments(&serve.base_url, NAMESPACE_WAL_CORRUPT_SKIP).await;
+
+        corrupt_wal_crc_byte_on_s3(
+            &fixture.client,
+            &fixture.bucket,
+            NAMESPACE_WAL_CORRUPT_SKIP,
+            2,
+        )
+        .await;
+
+        serve.stop();
+        drop(serve);
+        sleep(Duration::from_millis(300)).await;
+
+        let serve_skip = ServeHandle::spawn_with_limits(
+            &fixture,
+            &listen,
+            Some(PathBuf::from("")),
+            None,
+            None,
+            None,
+            None,
+            Some("skip"),
+        );
+        serve_skip.wait_ready().await;
+
+        let good_ids = query_ids_ns(
+            &serve_skip.base_url,
+            NAMESPACE_WAL_CORRUPT_SKIP,
+            json!(["BM25", "text", "goodterm"]),
+            None,
+        )
+        .await;
+        assert!(
+            good_ids.contains(&"wal-good".to_string()),
+            "seq 1 doc should be visible under skip policy, ids={good_ids:?}"
+        );
+
+        let bad_ids = query_ids_ns(
+            &serve_skip.base_url,
+            NAMESPACE_WAL_CORRUPT_SKIP,
+            json!(["BM25", "text", "badterm"]),
+            None,
+        )
+        .await;
+        assert!(
+            !bad_ids.contains(&"wal-bad".to_string()),
+            "corrupt seq 2 must be skipped, ids={bad_ids:?}"
+        );
+    }
+}
+
 /// API errors use turbopuffer JSON shape on write, query, and validation failures.
 #[tokio::test]
 async fn api_error_shape_on_query_and_json_failures() {
@@ -4554,6 +4732,7 @@ async fn server_limits_reject_invalid_namespace_and_batch_sizes() {
         Some(50),
         Some(2),
         Some(2),
+        None,
     );
     serve.wait_ready().await;
 
@@ -4678,6 +4857,7 @@ async fn filter_batch_partial_delete_and_patch_on_minio() {
         Some(50),
         None,
         Some(2),
+        None,
     );
     serve.wait_ready().await;
 
