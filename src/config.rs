@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::buffer::WriteBufferConfig;
+use crate::index::vector::{DEFAULT_PROBE_COARSE, DEFAULT_PROBE_FINE};
 use crate::limits::{DEFAULT_MAX_FILTER_BATCH_ROWS, DEFAULT_MAX_UPSERT_ROWS};
 
 #[derive(Parser, Debug)]
@@ -64,6 +65,30 @@ pub struct ServeArgs {
     /// Max documents per `delete_by_filter` / `patch_by_filter` batch.
     #[arg(long, env = "OPENPUFFER_MAX_FILTER_BATCH_ROWS", default_value = "5000")]
     pub max_filter_batch_rows: usize,
+
+    /// ANN query: coarse centroids to probe (stored in `centroids-l0.bin` on index build).
+    #[arg(long, env = "OPENPUFFER_ANN_COARSE_PROBE", default_value_t = DEFAULT_PROBE_COARSE)]
+    pub ann_coarse_probe: u32,
+
+    /// ANN query: fine centroids to probe per coarse cell.
+    #[arg(long, env = "OPENPUFFER_ANN_FINE_PROBE", default_value_t = DEFAULT_PROBE_FINE)]
+    pub ann_fine_probe: u32,
+}
+
+/// ANN probe widths written into vector index metadata at build time.
+#[derive(Debug, Clone, Copy)]
+pub struct AnnProbeConfig {
+    pub coarse: u32,
+    pub fine: u32,
+}
+
+impl Default for AnnProbeConfig {
+    fn default() -> Self {
+        Self {
+            coarse: DEFAULT_PROBE_COARSE,
+            fine: DEFAULT_PROBE_FINE,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -89,6 +114,7 @@ pub struct AppConfig {
     pub max_pinned_namespaces: usize,
     pub write_buffer: WriteBufferConfig,
     pub limits: LimitsConfig,
+    pub ann_probes: AnnProbeConfig,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -133,6 +159,10 @@ impl ServeArgs {
             limits: LimitsConfig {
                 max_upsert_rows: self.max_upsert_rows,
                 max_filter_batch_rows: self.max_filter_batch_rows,
+            },
+            ann_probes: AnnProbeConfig {
+                coarse: self.ann_coarse_probe.max(1),
+                fine: self.ann_fine_probe.max(1),
             },
         }
     }

@@ -44,6 +44,7 @@ fn build_namespace() -> (HashMap<String, Document>, VectorIndex, NamespaceMeta) 
         DistanceMetric::CosineDistance,
         &pairs,
         &serde_json::json!({ "embedding": "[128]f32" }),
+        openpuffer::config::AnnProbeConfig::default(),
     )
         .expect("build vector index")
         .expect("vector index present");

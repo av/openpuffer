@@ -32,6 +32,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         config.max_pinned_namespaces,
         config.write_buffer.clone(),
         config.limits.clone(),
+        config.ann_probes,
     );
 
     let state = AppState {

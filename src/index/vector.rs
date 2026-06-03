@@ -7,6 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
+use crate::config::AnnProbeConfig;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
 use crate::schema::{vector_element_for_field, VectorElement};
@@ -330,6 +331,7 @@ impl VectorIndex {
         metric: DistanceMetric,
         docs: &[(String, Document)],
         schema: &Value,
+        probes: AnnProbeConfig,
     ) -> Result<Option<Self>> {
         let vector_element = vector_element_for_field(schema, field);
         let mut pairs: Vec<(String, Vec<f64>)> = Vec::new();
@@ -355,7 +357,7 @@ impl VectorIndex {
         }
 
         let k_coarse = num_coarse(pairs.len());
-        let coarse_vecs = kmeans_centroids(&pairs, k_coarse, dimensions as usize);
+        let coarse_vecs = kmeans_centroids(&pairs, k_coarse, dimensions as usize, metric);
         let coarse_assign = assign_to_centroids(&pairs, &coarse_vecs, metric);
 
         let mut by_coarse: HashMap<u32, Vec<(String, Vec<f64>)>> = HashMap::new();
@@ -377,7 +379,7 @@ impl VectorIndex {
             let fine_vecs = if cell_docs.is_empty() {
                 Vec::new()
             } else {
-                kmeans_centroids(&cell_docs, k_fine, dimensions as usize)
+                kmeans_centroids(&cell_docs, k_fine, dimensions as usize, metric)
             };
 
             let fine_assign = assign_to_centroids(&cell_docs, &fine_vecs, metric);
@@ -417,8 +419,8 @@ impl VectorIndex {
             dimensions,
             num_coarse: k_coarse as u32,
             num_fine_total,
-            probe_coarse: DEFAULT_PROBE_COARSE.min(k_coarse as u32).max(1),
-            probe_fine: DEFAULT_PROBE_FINE,
+            probe_coarse: probes.coarse.min(k_coarse as u32).max(1),
+            probe_fine: probes.fine.max(1),
             distance_metric: metric,
             vector_element,
             fine_counts,
@@ -644,7 +646,107 @@ fn num_fine(n: usize) -> usize {
     sqrt_k.clamp(1, n).min(MAX_FINE_PER_COARSE)
 }
 
-fn kmeans_centroids(pairs: &[(String, Vec<f64>)], k: usize, dim: usize) -> Vec<Vec<f64>> {
+/// Squared distance from a point to a centroid (for k-means++ weighting).
+fn point_dist_sq(vec: &[f64], center: &[f64], metric: DistanceMetric) -> f64 {
+    match metric {
+        DistanceMetric::CosineDistance => {
+            let sim = cosine_similarity(vec, center);
+            let d = (1.0 - sim).max(0.0);
+            d * d
+        }
+        DistanceMetric::EuclideanSquared => euclidean_squared(vec, center),
+    }
+}
+
+/// Deterministic xorshift64 PRNG for reproducible k-means++ center picks.
+struct XorShift64(u64);
+
+impl XorShift64 {
+    fn seed(n: usize, k: usize, pairs: &[(String, Vec<f64>)]) -> Self {
+        let mut s = (n as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(k as u64);
+        if let Some((_, v)) = pairs.first() {
+            for (i, &x) in v.iter().take(8).enumerate() {
+                s = s.wrapping_add((x.to_bits() as u64).wrapping_mul(i as u64 + 1));
+            }
+        }
+        if s == 0 {
+            s = 0xA076_1D64_78BD_642F;
+        }
+        Self(s)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn unit_interval(&mut self) -> f64 {
+        const SCALE: f64 = 1.0 / (u64::MAX as f64);
+        (self.next_u64() as f64) * SCALE
+    }
+
+    fn index(&mut self, upper: usize) -> usize {
+        if upper <= 1 {
+            return 0;
+        }
+        (self.next_u64() as usize) % upper
+    }
+}
+
+/// k-means++ initialization (Arthur & Vassilvitskii, 2007) then Lloyd refinement.
+fn kmeans_plus_plus_init(
+    pairs: &[(String, Vec<f64>)],
+    k: usize,
+    metric: DistanceMetric,
+) -> Vec<Vec<f64>> {
+    let n = pairs.len();
+    let mut rng = XorShift64::seed(n, k, pairs);
+    let mut centroids: Vec<Vec<f64>> = Vec::with_capacity(k);
+    centroids.push(pairs[rng.index(n)].1.clone());
+
+    for _ in 1..k {
+        let mut dist_sq = vec![0.0f64; n];
+        let mut total = 0.0f64;
+        for (i, (_, v)) in pairs.iter().enumerate() {
+            let mut min_d = f64::INFINITY;
+            for c in &centroids {
+                min_d = min_d.min(point_dist_sq(v, c, metric));
+            }
+            dist_sq[i] = min_d;
+            total += min_d;
+        }
+        let pick = if total <= f64::EPSILON {
+            (centroids.len() % n).max(0)
+        } else {
+            let r = rng.unit_interval() * total;
+            let mut acc = 0.0f64;
+            let mut idx = n.saturating_sub(1);
+            for (i, &d) in dist_sq.iter().enumerate() {
+                acc += d;
+                if acc >= r {
+                    idx = i;
+                    break;
+                }
+            }
+            idx
+        };
+        centroids.push(pairs[pick].1.clone());
+    }
+    centroids
+}
+
+fn kmeans_centroids(
+    pairs: &[(String, Vec<f64>)],
+    k: usize,
+    dim: usize,
+    metric: DistanceMetric,
+) -> Vec<Vec<f64>> {
     let n = pairs.len();
     if n == 0 {
         return Vec::new();
@@ -653,18 +755,14 @@ fn kmeans_centroids(pairs: &[(String, Vec<f64>)], k: usize, dim: usize) -> Vec<V
         return pairs.iter().map(|(_, v)| v.clone()).collect();
     }
 
-    let mut centroids: Vec<Vec<f64>> = pairs
-        .iter()
-        .take(k)
-        .map(|(_, v)| v.clone())
-        .collect();
+    let mut centroids = kmeans_plus_plus_init(pairs, k, metric);
 
     for _ in 0..KMEANS_ITERS {
         let mut sums: Vec<Vec<f64>> = vec![vec![0.0; dim]; k];
         let mut counts = vec![0usize; k];
 
         for (_, v) in pairs {
-            let best = nearest_centroid_id(v, &centroids, DistanceMetric::CosineDistance);
+            let best = nearest_centroid_id(v, &centroids, metric);
             for d in 0..dim {
                 sums[best][d] += v[d];
             }
@@ -899,6 +997,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({}),
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index built");
@@ -942,6 +1041,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": format!("[{DIM}]f32") }),
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index built");
@@ -961,8 +1061,8 @@ mod tests {
         }
         let recall = recall_sum / QUERIES as f64;
         assert!(
-            recall > 0.7,
-            "recall@10 {recall} should exceed 0.7 vs brute force"
+            recall > 0.75,
+            "recall@10 {recall} should exceed 0.75 vs brute force (k-means++)"
         );
     }
 
@@ -999,6 +1099,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": "[2]f32" }),
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1024,6 +1125,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &json!({ "embedding": "[4]f32" }),
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1073,6 +1175,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &schema,
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1110,6 +1213,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &docs,
             &schema,
+            AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("index");
@@ -1120,5 +1224,23 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, "target");
         assert!(hits[0].1 > 0.99);
+    }
+
+    #[test]
+    fn kmeans_plus_plus_differs_from_first_k_seeds() {
+        let pairs: Vec<(String, Vec<f64>)> = (0..40)
+            .map(|i| {
+                let angle = (i as f64) * 0.4;
+                (
+                    format!("d{i}"),
+                    vec![angle.cos(), angle.sin()],
+                )
+            })
+            .collect();
+        let k = 4;
+        let metric = DistanceMetric::CosineDistance;
+        let plus = super::kmeans_plus_plus_init(&pairs, k, metric);
+        let first_k: Vec<Vec<f64>> = pairs.iter().take(k).map(|(_, v)| v.clone()).collect();
+        assert_ne!(plus, first_k, "k-means++ should not equal first-k seeding");
     }
 }

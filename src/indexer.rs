@@ -5,6 +5,7 @@
 //! strong consistency via indexed segments + unindexed WAL tail scan.
 
 use crate::cache::SegmentCache;
+use crate::config::AnnProbeConfig;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{
@@ -36,6 +37,7 @@ pub async fn index_wal_range(
     bucket: &str,
     namespace: &str,
     cache: &Arc<SegmentCache>,
+    ann_probes: AnnProbeConfig,
     max_segments: Option<u64>,
 ) -> Result<()> {
     for attempt in 0..META_RETRIES {
@@ -152,6 +154,7 @@ pub async fn index_wal_range(
                     meta.distance_metric,
                     &pairs,
                     &meta.schema,
+                    ann_probes,
                 )? {
                     vindex = built;
                 }
@@ -167,6 +170,7 @@ pub async fn index_wal_range(
                         meta.distance_metric,
                         &pairs,
                         &meta.schema,
+                        ann_probes,
                     )? {
                         vindex = built;
                     }
@@ -440,6 +444,7 @@ pub struct BackgroundIndexer {
     client: Client,
     bucket: String,
     cache: Arc<SegmentCache>,
+    ann_probes: AnnProbeConfig,
     /// Round-robin queue; reprioritized by lag at the start of each tick.
     queue: Mutex<VecDeque<String>>,
     /// Names currently in `queue` (dedupe for `wake`).
@@ -448,11 +453,17 @@ pub struct BackgroundIndexer {
 }
 
 impl BackgroundIndexer {
-    pub fn spawn(client: Client, bucket: String, cache: Arc<SegmentCache>) -> Arc<Self> {
+    pub fn spawn(
+        client: Client,
+        bucket: String,
+        cache: Arc<SegmentCache>,
+        ann_probes: AnnProbeConfig,
+    ) -> Arc<Self> {
         let this = Arc::new(Self {
             client,
             bucket,
             cache,
+            ann_probes,
             queue: Mutex::new(VecDeque::new()),
             queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),
@@ -601,6 +612,7 @@ impl BackgroundIndexer {
             &self.bucket,
             namespace,
             &self.cache,
+            self.ann_probes,
             Some(max_segments.max(1)),
         );
         let index_result = match time_limit {
@@ -1173,6 +1185,7 @@ mod tests {
             ),
             bucket: "test".into(),
             cache: SegmentCache::disabled(),
+            ann_probes: AnnProbeConfig::default(),
             queue: Mutex::new(VecDeque::new()),
             queued: Mutex::new(HashSet::new()),
             notify: Notify::new(),

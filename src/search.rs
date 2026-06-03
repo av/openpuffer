@@ -911,6 +911,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &pairs,
             &json!({}),
+            crate::config::AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("vector index");
@@ -1173,6 +1174,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &pairs,
             &json!({}),
+            crate::config::AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("vector index");
@@ -1267,6 +1269,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &pairs,
             &json!({}),
+            crate::config::AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("vector index");
@@ -1434,6 +1437,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &pairs,
             &json!({}),
+            crate::config::AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("vector index");
@@ -1493,6 +1497,7 @@ mod tests {
             DistanceMetric::CosineDistance,
             &pairs,
             &json!({}),
+            crate::config::AnnProbeConfig::default(),
         )
         .unwrap()
         .expect("vector index");

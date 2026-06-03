@@ -19,6 +19,7 @@
 //! Env: OPENPUFFER_S3_ENDPOINT, OPENPUFFER_S3_BUCKET, OPENPUFFER_S3_REGION,
 //!      OPENPUFFER_S3_ACCESS_KEY, OPENPUFFER_S3_SECRET_KEY,
 //!      OPENPUFFER_CACHE_DIR (index segment disk cache; empty = disabled)
+//!      OPENPUFFER_ANN_COARSE_PROBE, OPENPUFFER_ANN_FINE_PROBE (ANN probe widths at index build)
 
 pub mod api;
 pub mod buffer;
@@ -46,4 +47,4 @@ pub mod wal;
 pub mod wal_compaction;
 
 pub use api::{router, AppState};
-pub use config::AppConfig;
+pub use config::{AnnProbeConfig, AppConfig};

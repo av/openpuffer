@@ -131,6 +131,8 @@ After warm, queries against the same process reuse the pinned view. With `consis
 | `candidates_ratio` | `candidates / approx_namespace_size` — indexed ANN/FTS should stay ≪ 1 |
 | `exhaustive_search_count` | Docs scanned via full-namespace fallback or unindexed WAL tail |
 | `query_execution_us` | Planner + score time on the server |
+| `billing.billable_logical_bytes_queried` | v1 estimate: `candidates × avg_doc_logical_bytes` over the namespace view |
+| `billing.billable_logical_bytes_returned` | Sum of returned row payloads (id + projected attributes) |
 
 HTTP headers: `X-Openpuffer-Candidates`, `X-Openpuffer-Candidates-Fraction` (`candidates/total`).
 
@@ -170,12 +172,14 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 | Re-rank with fresh vectors from WAL | Cluster files store doc vectors; tail WAL scored exhaustively |
 | Many small segments + merges | `centroids-l0.bin` + `centroids-l1-{coarse:08}.bin` + `clusters-{fine:08}.bin` |
 
-**Build:** coarse k-means partitions the namespace; each coarse cell runs fine k-means (10 iterations, seed = first *k* doc vectors). Global fine ids are `fine_counts` offsets in L0. Cluster files list `(doc_id, vector)` for cosine (or negated L2²) scoring.
+**Build:** coarse k-means partitions the namespace; each coarse cell runs fine k-means (10 Lloyd iterations). Centroid seeds use **k-means++** initialization (weighted by squared distance to nearest existing center) instead of the first *k* doc vectors. Global fine ids are `fine_counts` offsets in L0. Cluster files list `(doc_id, vector)` for cosine (or negated L2²) scoring.
+
+**Probe tuning (serve / indexer):** `openpuffer serve` accepts `--ann-coarse-probe` / `--ann-fine-probe` (env `OPENPUFFER_ANN_COARSE_PROBE`, `OPENPUFFER_ANN_FINE_PROBE`; defaults **4** and **2**). Values are written into `centroids-l0.bin` (`probe_coarse`, `probe_fine`) on each full vector index build. Higher probes improve recall at the cost of more S3 objects fetched per query (`performance.candidates`, `storage_roundtrips`). Re-index or rebuild after changing probes so L0 metadata matches.
 
 **Query (`rank_by: ["vector", "ANN", field, query]`):**
 
-1. Load `centroids-l0.bin`, pick top-*C* coarse centroids (*C* = 4 by default; all coarse if `num_fine_total ≤ 32`).
-2. Fetch probed `centroids-l1-{coarse}.bin` files, then top-*F* fine centroids per coarse (*F* = 2 by default).
+1. Load `centroids-l0.bin`, pick top-*C* coarse centroids (*C* = `probe_coarse`, default 4; all coarse if `num_fine_total ≤ 32`).
+2. Fetch probed `centroids-l1-{coarse}.bin` files, then top-*F* fine centroids per coarse (*F* = `probe_fine`, default 2).
 3. Fetch only matching `clusters-*.bin` objects from S3 (cold query round 2 uses this subset; full cold load fetches all L1 + clusters).
 4. Score members in probed clusters; merge with **exhaustive** cosine on docs touched in unindexed WAL tail `(index_cursor, wal_commit_seq]`.
 
