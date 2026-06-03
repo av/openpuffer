@@ -5,7 +5,7 @@
 //!
 //! HTTP routes (turbopuffer-compatible):
 //!   GET  /health                    — `?deep=1` probes S3 (HeadBucket + openpuffer/ read)
-//!   GET  /metrics                   — Prometheus text (requires `--features metrics`)
+//!   GET  /metrics                   — Prometheus text (`--features metrics`; cold/ANN counters)
 //!   GET  /v1/namespaces
 //!   GET  /v1/namespaces/{name}      — metadata (row count, index_status, unindexed_bytes, …)
 //!   GET  /v1/namespaces/{name}/export — WAL snapshot export (paginated by `last_id`)

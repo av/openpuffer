@@ -909,6 +909,14 @@ async fn query_namespace(
                 tail_doc_ids: &loaded.tail_doc_ids,
                 consistency,
                 storage_roundtrips: loaded.storage_roundtrips,
+                cold_s3_keys_fetched: loaded
+                    .storage_roundtrips
+                    .map(|_| loaded.cold_s3_keys_fetched),
+                ann_probed_clusters: if loaded.ann_probed_clusters > 0 {
+                    Some(loaded.ann_probed_clusters)
+                } else {
+                    None
+                },
                 ann_rerank: Some(state.config.ann_rerank),
             };
             match search::execute_query(&ctx, &body) {

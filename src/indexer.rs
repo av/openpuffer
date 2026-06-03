@@ -957,7 +957,7 @@ pub async fn load_vector_index_probed_for_query(
     l0: CentroidIndexL0,
     query: &[f64],
     cache: &Arc<SegmentCache>,
-) -> Result<VectorIndex> {
+) -> Result<(VectorIndex, u32)> {
     let l1_keys = crate::s3_batch::l1_keys_for_query_probe(namespace, meta, field, &l0, query);
     let mut fetched = fetch_index_objects_from_cache(client, bucket, cache, &l1_keys).await?;
     let cluster_keys = crate::s3_batch::cluster_keys_for_query_after_l1(

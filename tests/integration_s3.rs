@@ -3492,7 +3492,7 @@ async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
         .collect();
     let max_cluster_gets = cluster_get_upper_bound(&l0);
 
-    let (vindex, probe_roundtrips) = fetch_cold_vector_probed(
+    let (vindex, probe_roundtrips, _probe_keys, _probed_clusters) = fetch_cold_vector_probed(
         &fixture.client,
         &fixture.bucket,
         ns,
@@ -3629,12 +3629,27 @@ async fn s3_cold_query_reports_roundtrips_on_minio() {
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u32>().ok());
     let body: Value = resp.json().await.expect("query json");
-    let roundtrips_json = body["performance"]["storage_roundtrips"]
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips_json = perf["storage_roundtrips"]
         .as_u64()
         .expect("performance.storage_roundtrips");
     assert!(
         roundtrips_json >= 2,
         "cold batched load should report >=2 storage roundtrips, got {roundtrips_json}"
+    );
+    let cold_keys = perf["cold_s3_keys_fetched"]
+        .as_u64()
+        .expect("performance.cold_s3_keys_fetched");
+    assert!(
+        cold_keys >= 1,
+        "cold vector query should report S3 keys fetched, got {cold_keys}"
+    );
+    let probed = perf["ann_probed_clusters"]
+        .as_u64()
+        .expect("performance.ann_probed_clusters");
+    assert!(
+        probed >= 1,
+        "vector ANN cold query should report probed clusters, got {probed}"
     );
     if let Some(hdr) = roundtrips_hdr {
         assert!(

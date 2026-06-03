@@ -63,6 +63,10 @@ pub struct LoadedNamespace {
     pub tail_doc_ids: HashSet<String>,
     /// Logical S3 roundtrips for cold load (index batch plan + optional WAL batch).
     pub storage_roundtrips: Option<u32>,
+    /// Cold-query S3 keys fetched (bootstrap + WAL tail + probed index); set when `storage_roundtrips` is `Some`.
+    pub cold_s3_keys_fetched: u32,
+    /// Cluster segments selected by ANN probe for this query.
+    pub ann_probed_clusters: u32,
 }
 
 impl Storage {
@@ -268,20 +272,27 @@ impl Storage {
                 }
             }
             return self
-                .loaded_from_view(name, view, cold_batch, 0, skip_wal_tail)
+                .loaded_from_view(name, view, cold_batch, 0, 0, skip_wal_tail)
                 .await;
         }
 
-        let (mut view, wal_roundtrips) = if cold_batch {
+        let (mut view, wal_roundtrips, wal_s3_keys) = if cold_batch {
             NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
         } else {
-            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0)
+            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0, 0)
         };
         if consistency == QueryConsistency::Strong {
             view.catch_up(&self.client, &self.bucket, name).await?;
         }
         let loaded = self
-            .loaded_from_view(name, &view, cold_batch, wal_roundtrips, skip_wal_tail)
+            .loaded_from_view(
+                name,
+                &view,
+                cold_batch,
+                wal_roundtrips,
+                wal_s3_keys,
+                skip_wal_tail,
+            )
             .await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
@@ -306,10 +317,10 @@ impl Storage {
             return Ok(view.clone());
         }
 
-        let (mut view, _) = if cold_batch {
+        let (mut view, _, _) = if cold_batch {
             NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
         } else {
-            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0)
+            (NamespaceView::load(&self.client, &self.bucket, name).await?, 0, 0)
         };
         view.catch_up(&self.client, &self.bucket, name).await?;
         views.insert(name.to_string(), view.clone());
@@ -352,9 +363,11 @@ impl Storage {
         view: &NamespaceView,
         cold_batch: bool,
         wal_roundtrips: u32,
+        wal_s3_keys_fetched: u32,
         skip_wal_tail: bool,
     ) -> Result<LoadedNamespace> {
-        let (fts, vectors, cold_vector_l0, filter_index, index_roundtrips) = if cold_batch {
+        let (fts, vectors, cold_vector_l0, filter_index, index_roundtrips, mut cold_s3_keys_fetched) =
+            if cold_batch {
             let art = crate::s3_batch::fetch_cold_index_bootstrap(
                 &self.client,
                 &self.bucket,
@@ -368,6 +381,7 @@ impl Storage {
                 art.l0_by_field,
                 art.filter,
                 art.storage_roundtrips,
+                wal_s3_keys_fetched.saturating_add(art.s3_keys_fetched),
             )
         } else {
             let fts = crate::indexer::load_fts_segment_for_query(
@@ -394,7 +408,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            (fts, HashMap::new(), cold_vector_l0, filter_index, 0)
+            (fts, HashMap::new(), cold_vector_l0, filter_index, 0, 0)
         };
 
         let mut storage_roundtrips = if cold_batch {
@@ -418,6 +432,8 @@ impl Storage {
             } else {
                 let entries = if cold_batch {
                     storage_roundtrips += 1;
+                    let wal_keys = (from..=to).count().min(u32::MAX as usize) as u32;
+                    cold_s3_keys_fetched = cold_s3_keys_fetched.saturating_add(wal_keys);
                     replay_wal_entries_batched(&self.client, &self.bucket, name, from, to).await?
                 } else {
                     replay_wal_entries(&self.client, &self.bucket, name, from, to).await?
@@ -443,6 +459,12 @@ impl Storage {
             filter_index,
             tail_doc_ids,
             storage_roundtrips,
+            cold_s3_keys_fetched: if cold_batch {
+                cold_s3_keys_fetched
+            } else {
+                0
+            },
+            ann_probed_clusters: 0,
         })
     }
 
@@ -468,21 +490,24 @@ impl Storage {
             let Some(l0) = loaded.cold_vector_l0.remove(&field) else {
                 continue;
             };
-            let vindex = if cold_batch {
-                let (vindex, probe_roundtrips) = crate::s3_batch::fetch_cold_vector_probed(
-                    &self.client,
-                    &self.bucket,
-                    name,
-                    &loaded.meta,
-                    &field,
-                    l0,
-                    &query,
-                )
-                .await?;
+            let (vindex, probed_clusters) = if cold_batch {
+                let (vindex, probe_roundtrips, probe_keys, probed_clusters) =
+                    crate::s3_batch::fetch_cold_vector_probed(
+                        &self.client,
+                        &self.bucket,
+                        name,
+                        &loaded.meta,
+                        &field,
+                        l0,
+                        &query,
+                    )
+                    .await?;
                 if let Some(rt) = loaded.storage_roundtrips.as_mut() {
                     *rt = rt.saturating_add(probe_roundtrips);
                 }
-                vindex
+                loaded.cold_s3_keys_fetched =
+                    loaded.cold_s3_keys_fetched.saturating_add(probe_keys);
+                (vindex, probed_clusters)
             } else {
                 crate::indexer::load_vector_index_probed_for_query(
                     &self.client,
@@ -496,6 +521,9 @@ impl Storage {
                 )
                 .await?
             };
+            loaded.ann_probed_clusters = loaded
+                .ann_probed_clusters
+                .saturating_add(probed_clusters);
             loaded.vectors.insert(field, vindex);
         }
         Ok(())
@@ -825,6 +853,8 @@ impl Storage {
             tail_doc_ids: &loaded.tail_doc_ids,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: loaded.storage_roundtrips,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let ids = matching_doc_ids_for_filter(&ctx, &expr)?;

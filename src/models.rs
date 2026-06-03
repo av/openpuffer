@@ -289,6 +289,12 @@ pub struct QueryPerformance {
     /// Logical S3 fetch rounds (parallel batch = 1 roundtrip; turbopuffer cold-query model).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_roundtrips: Option<u32>,
+    /// S3 keys fetched on cold-query batch plans (bootstrap + WAL + probed index).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold_s3_keys_fetched: Option<u32>,
+    /// Cluster segments selected by ANN coarse/fine probe for vector `rank_by`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ann_probed_clusters: Option<u32>,
     /// v1 billing estimates (turbopuffer top-level `billing`; nested here for API stability).
     pub billing: QueryBilling,
 }

@@ -143,6 +143,8 @@ pub fn measure_recall_for_loaded(
     let allowed = if let Some(f) = filters.filter(|v| !v.is_null()) {
         let expr = parse_filter(f)?;
         let ctx = QueryContext {
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             docs: &loaded.docs,
             meta: &loaded.meta,
             fts: loaded.fts.as_ref(),

@@ -76,6 +76,8 @@ fn perf_indexed_vector_query_candidate_ratio_and_latency() {
         tail_doc_ids: &tail,
         consistency: QueryConsistency::Strong,
         storage_roundtrips: None,
+        cold_s3_keys_fetched: None,
+        ann_probed_clusters: None,
         ann_rerank: None,
     };
     let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.02).cos()).collect();

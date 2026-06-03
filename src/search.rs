@@ -56,6 +56,10 @@ pub struct QueryContext<'a> {
     pub consistency: QueryConsistency,
     /// Logical S3 fetch rounds for cold query (batched parallel plan).
     pub storage_roundtrips: Option<u32>,
+    /// Cold-query S3 keys fetched (when `storage_roundtrips` is set).
+    pub cold_s3_keys_fetched: Option<u32>,
+    /// ANN probe cluster count for this query.
+    pub ann_probed_clusters: Option<u32>,
     /// When `Some(true)`, widen ANN candidates to the full probed cluster pool and exact-score view vectors.
     /// When `None`, falls back to `OPENPUFFER_ANN_RERANK` env. Default query path uses probe-only (`query_ann` pool).
     pub ann_rerank: Option<bool>,
@@ -144,6 +148,8 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         tail_doc_ids: ctx.tail_doc_ids,
         consistency,
         storage_roundtrips: ctx.storage_roundtrips,
+        cold_s3_keys_fetched: ctx.cold_s3_keys_fetched,
+        ann_probed_clusters: ctx.ann_probed_clusters,
         ann_rerank: ctx.ann_rerank,
     };
 
@@ -231,7 +237,11 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         billable_logical_bytes_returned: billable_logical_bytes_returned(&rows),
     };
     let elapsed = started.elapsed();
-    crate::metrics::observe_query_duration_seconds(elapsed.as_secs_f64());
+    let elapsed_secs = elapsed.as_secs_f64();
+    crate::metrics::observe_query_duration_seconds(elapsed_secs);
+    if effective_ctx.storage_roundtrips.is_some() {
+        crate::metrics::observe_cold_query_duration_seconds(elapsed_secs);
+    }
 
     let performance = QueryPerformance {
         approx_namespace_size: namespace_size,
@@ -244,6 +254,8 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
             .saturating_add(planner.stats.tail_docs_examined),
         query_execution_us: elapsed.as_micros() as u64,
         storage_roundtrips: effective_ctx.storage_roundtrips,
+        cold_s3_keys_fetched: effective_ctx.cold_s3_keys_fetched,
+        ann_probed_clusters: effective_ctx.ann_probed_clusters.filter(|&n| n > 0),
         billing,
     };
 
@@ -856,6 +868,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -908,6 +922,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1019,6 +1035,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
 
@@ -1067,6 +1085,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1110,6 +1130,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1156,6 +1178,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1251,6 +1275,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1280,6 +1306,8 @@ mod tests {
             tail_doc_ids: &HashSet::new(),
             consistency: QueryConsistency::Strong,
             storage_roundtrips: Some(4),
+            cold_s3_keys_fetched: Some(42),
+            ann_probed_clusters: Some(8),
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1293,7 +1321,10 @@ mod tests {
             vector_encoding: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
-        assert_eq!(resp.performance.as_ref().unwrap().storage_roundtrips, Some(4));
+        let perf = resp.performance.as_ref().unwrap();
+        assert_eq!(perf.storage_roundtrips, Some(4));
+        assert_eq!(perf.cold_s3_keys_fetched, Some(42));
+        assert_eq!(perf.ann_probed_clusters, Some(8));
     }
 
     #[test]
@@ -1335,6 +1366,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1413,6 +1446,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: Some(false),
         };
         let ctx_rerank = QueryContext {
@@ -1484,6 +1519,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
@@ -1524,6 +1561,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1559,6 +1598,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         for top_k in [Some(0), Some((MAX_TOP_K as u32) + 1)] {
@@ -1603,6 +1644,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let cases = [
@@ -1671,6 +1714,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1734,6 +1779,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1779,6 +1826,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let expr = parse_filter(&json!(["tier", "Eq", "free"])).unwrap();
@@ -1825,6 +1874,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {
@@ -1861,6 +1912,8 @@ mod tests {
             tail_doc_ids: &tail,
             consistency: QueryConsistency::Strong,
             storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
             ann_rerank: None,
         };
         let req = QueryRequest {

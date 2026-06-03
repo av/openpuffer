@@ -34,6 +34,8 @@ pub struct ColdBootstrapArtifacts {
     pub filter: Option<FilterSegment>,
     pub l0_by_field: HashMap<String, CentroidIndexL0>,
     pub storage_roundtrips: u32,
+    /// Keys fetched in the bootstrap round (for metrics / `performance` JSON).
+    pub s3_keys_fetched: u32,
 }
 
 /// Cold query planner: logical S3 rounds and key lists (for tests and accounting).
@@ -400,6 +402,15 @@ pub fn round2_keys_for_query_probe(
     keys
 }
 
+/// Record cold-query S3 key volume (Prometheus + per-query accounting).
+pub fn record_cold_s3_keys_fetched(keys: usize) -> u32 {
+    let n = keys.min(u32::MAX as usize) as u32;
+    if n > 0 {
+        crate::metrics::add_cold_s3_keys_fetched(n as u64);
+    }
+    n
+}
+
 /// One parallel batch of S3 `GetObject` calls (counts as one storage roundtrip).
 pub async fn fetch_round(
     client: &Client,
@@ -462,6 +473,7 @@ pub async fn fetch_cold_index_bootstrap(
     let mut storage_roundtrips = 0u32;
 
     let r2_keys = round2_bootstrap_keys(namespace, meta);
+    let s3_keys_fetched = record_cold_s3_keys_fetched(r2_keys.len());
     let fetched = if r2_keys.is_empty() {
         HashMap::new()
     } else {
@@ -499,6 +511,7 @@ pub async fn fetch_cold_index_bootstrap(
         filter,
         l0_by_field,
         storage_roundtrips,
+        s3_keys_fetched,
     })
 }
 
@@ -511,13 +524,15 @@ pub async fn fetch_cold_vector_probed(
     field: &str,
     l0: CentroidIndexL0,
     query: &[f64],
-) -> Result<(VectorIndex, u32)> {
+) -> Result<(VectorIndex, u32, u32, u32)> {
     let mut storage_roundtrips = 0u32;
     let mut fetched = HashMap::new();
+    let mut s3_keys_fetched = 0u32;
 
     let l1_keys = l1_keys_for_query_probe(namespace, meta, field, &l0, query);
     if !l1_keys.is_empty() {
         storage_roundtrips = 1;
+        s3_keys_fetched = s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(l1_keys.len()));
         let l1_map = fetch_round(client, bucket, &l1_keys).await?;
         fetched.extend(l1_map);
     }
@@ -528,14 +543,15 @@ pub async fn fetch_cold_vector_probed(
         if storage_roundtrips == 0 {
             storage_roundtrips = 1;
         }
+        s3_keys_fetched =
+            s3_keys_fetched.saturating_add(record_cold_s3_keys_fetched(cluster_keys.len()));
         let cluster_map = fetch_round(client, bucket, &cluster_keys).await?;
         fetched.extend(cluster_map);
     }
 
-    Ok((
-        assemble_vector_index_probed(namespace, meta, field, l0, &fetched, query)?,
-        storage_roundtrips,
-    ))
+    let (vindex, probed_clusters) =
+        assemble_vector_index_probed(namespace, meta, field, l0, &fetched, query)?;
+    Ok((vindex, storage_roundtrips, s3_keys_fetched, probed_clusters))
 }
 
 /// Build a probed [`VectorIndex`] from bytes already fetched (L1 keys) plus optional cluster keys.
@@ -546,17 +562,24 @@ pub fn assemble_vector_index_probed(
     l0: CentroidIndexL0,
     fetched: &HashMap<String, Vec<u8>>,
     query: &[f64],
-) -> Result<VectorIndex> {
+) -> Result<(VectorIndex, u32)> {
     let l1 = decode_l1_probed(namespace, meta, field, &l0, fetched)?;
     let fine_ids = fine_ids_for_probed_query(&l0, &l1, query);
+    let probed_clusters = fine_ids.len().min(u32::MAX as usize) as u32;
+    if probed_clusters > 0 {
+        crate::metrics::add_ann_probed_clusters(probed_clusters as u64);
+    }
     let clusters = decode_clusters_probed(namespace, meta, field, fetched, &fine_ids)?;
-    Ok(VectorIndex {
-        l0,
-        l1,
-        clusters,
-        routing: None,
-        l2: HashMap::new(),
-    })
+    Ok((
+        VectorIndex {
+            l0,
+            l1,
+            clusters,
+            routing: None,
+            l2: HashMap::new(),
+        },
+        probed_clusters,
+    ))
 }
 
 /// After L1 objects are in `fetched`, return cluster keys still needed for `query`.
@@ -706,6 +729,7 @@ pub async fn replay_wal_entries_batched(
     let keys: Vec<String> = (from_seq..=to_seq)
         .map(|seq| crate::wal::wal_key(namespace, seq))
         .collect();
+    record_cold_s3_keys_fetched(keys.len());
     let raw = fetch_round(client, bucket, &keys).await?;
     let mut entries = Vec::with_capacity(keys.len());
     for seq in from_seq..=to_seq {
@@ -727,11 +751,12 @@ pub async fn cold_load_meta_and_wal(
     client: &Client,
     bucket: &str,
     namespace: &str,
-) -> Result<(NamespaceMeta, Option<String>, HashMap<u64, Vec<u8>>, u32)> {
+) -> Result<(NamespaceMeta, Option<String>, HashMap<u64, Vec<u8>>, u32, u32)> {
     let Some((meta, etag)) = fetch_meta(client, bucket, namespace).await? else {
-        return Ok((NamespaceMeta::default(), None, HashMap::new(), 0));
+        return Ok((NamespaceMeta::default(), None, HashMap::new(), 0, 0));
     };
     let mut storage_roundtrips = 1u32;
+    let mut s3_keys_fetched = 0u32;
 
     let mut fetch_keys = Vec::new();
     if meta.wal_snapshot_seq > 0 {
@@ -755,9 +780,10 @@ pub async fn cold_load_meta_and_wal(
     }
 
     if fetch_keys.is_empty() {
-        return Ok((meta, etag, HashMap::new(), storage_roundtrips));
+        return Ok((meta, etag, HashMap::new(), storage_roundtrips, s3_keys_fetched));
     }
 
+    s3_keys_fetched = record_cold_s3_keys_fetched(fetch_keys.len());
     let wal_map_raw = fetch_round(client, bucket, &fetch_keys).await?;
     storage_roundtrips += 1;
 
@@ -775,7 +801,7 @@ pub async fn cold_load_meta_and_wal(
         }
     }
 
-    Ok((meta, etag, wal_by_seq, storage_roundtrips))
+    Ok((meta, etag, wal_by_seq, storage_roundtrips, s3_keys_fetched))
 }
 
 fn primary_fts_field(meta: &NamespaceMeta) -> String {
@@ -1218,6 +1244,24 @@ mod tests {
         assert!(r3 < 4000, "round-3 must not scale with num_fine_total");
         assert!(plan.round3_keys.iter().any(|k| k.contains("centroids-l1-")));
         assert!(plan.round3_keys.iter().any(|k| k.contains("clusters-")));
+    }
+
+    #[test]
+    fn record_cold_s3_keys_fetched_returns_key_count() {
+        assert_eq!(record_cold_s3_keys_fetched(0), 0);
+        assert_eq!(record_cold_s3_keys_fetched(9), 9);
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn record_cold_s3_keys_fetched_increments_prometheus_counter() {
+        use crate::metrics::COLD_S3_KEYS_FETCHED;
+        let before = COLD_S3_KEYS_FETCHED.get();
+        record_cold_s3_keys_fetched(4);
+        assert!(
+            COLD_S3_KEYS_FETCHED.get() >= before + 4.0,
+            "cold S3 keys counter should increase"
+        );
     }
 
     #[test]

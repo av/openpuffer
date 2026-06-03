@@ -112,11 +112,11 @@ impl NamespaceView {
         client: &Client,
         bucket: &str,
         namespace: &str,
-    ) -> Result<(Self, u32)> {
-        let (meta, etag, wal_bytes, wal_roundtrips) =
+    ) -> Result<(Self, u32, u32)> {
+        let (meta, etag, wal_bytes, wal_roundtrips, wal_s3_keys) =
             s3_batch::cold_load_meta_and_wal(client, bucket, namespace).await?;
         if wal_roundtrips == 0 && etag.is_none() {
-            return Ok((Self::empty(), 0));
+            return Ok((Self::empty(), 0, 0));
         }
         let mut docs = HashMap::new();
         let mut last_applied = 0u64;
@@ -146,6 +146,7 @@ impl NamespaceView {
                 last_applied_wal_seq: last,
             },
             wal_roundtrips,
+            wal_s3_keys,
         ))
     }
 }
