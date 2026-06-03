@@ -13,6 +13,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+export LARGE_PREFLIGHT_ROOT="$ROOT"
+# shellcheck source=scripts/lib/large-benchmark-preflight.sh
+source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
@@ -78,19 +81,19 @@ need_cmd() {
 }
 
 validate_toolchain() {
-  need_cmd curl
-  need_cmd jq
-  need_cmd python3
+  large_preflight_toolchain
   if [[ "$DRY_RUN" == "0" && -z "$SKIP_SERVE" ]]; then
     need_cmd cargo
   fi
 }
 
 validate_aws_env() {
-  : "${OPENPUFFER_S3_ENDPOINT:?set OPENPUFFER_S3_ENDPOINT (e.g. https://s3.us-east-1.amazonaws.com)}"
-  : "${OPENPUFFER_S3_BUCKET:?set OPENPUFFER_S3_BUCKET}"
-  : "${OPENPUFFER_S3_ACCESS_KEY:?set OPENPUFFER_S3_ACCESS_KEY}"
-  : "${OPENPUFFER_S3_SECRET_KEY:?set OPENPUFFER_S3_SECRET_KEY}"
+  large_preflight_validate_s3_env
+  BENCH_ENVIRONMENT="$(large_preflight_detect_environment)"
+  if [[ "$DRY_RUN" == "0" ]]; then
+    large_preflight_s3_head_bucket || true
+    large_preflight_guard_aws_results_path "$BENCH_ENVIRONMENT" "$RESULTS"
+  fi
 }
 
 manifest_path() {
@@ -177,6 +180,8 @@ build_fallback_query_vec() {
 
 run_dry_run() {
   validate_toolchain
+  large_preflight_ann_version
+  large_preflight_validate_tier_workload "$TIER" "$ROOT"
   init_run_context
   local mf qf
   mf="$(manifest_path)"
@@ -337,7 +342,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 validate_aws_env
+large_preflight_validate_tier_workload "$TIER" "$ROOT"
+large_preflight_ann_version
 init_run_context
+BENCH_ENVIRONMENT="${OPENPUFFER_BENCH_ENVIRONMENT:-$(large_preflight_detect_environment)}"
 
 echo "bench-large: tier=${TIER} namespace=${NAMESPACE} docs=${DOCS}"
 echo "  workload=${WORKLOAD_DIR} query=${PRIMARY_QUERY_NAME}"
@@ -432,9 +440,17 @@ BENCHMARK_NAME="cold_large_${TIER}"
 
 mkdir -p "$(dirname "$RESULTS")"
 
+HOST_NOTE=""
+if [[ -n "${OPENPUFFER_BENCH_HOST_LABEL:-}" ]]; then
+  HOST_NOTE=" host=${OPENPUFFER_BENCH_HOST_LABEL}"
+fi
+if [[ -n "${OPENPUFFER_BENCH_CLIENT_MODE:-}" ]]; then
+  HOST_NOTE="${HOST_NOTE} client_mode=${OPENPUFFER_BENCH_CLIENT_MODE}"
+fi
+
 jq -n \
   --arg benchmark "$BENCHMARK_NAME" \
-  --arg environment "aws-s3" \
+  --arg environment "$BENCH_ENVIRONMENT" \
   --arg tier "$TIER" \
   --arg workload_dir "$WORKLOAD_DIR" \
   --arg namespace "$NAMESPACE" \
@@ -456,7 +472,7 @@ jq -n \
   --argjson recall_at_10 "$RECALL_AT_10" \
   --argjson cold_query_runs "$COLD_RUNS" \
   --argjson cold_runs "$COLD_RUNS_JSON" \
-  --arg notes "A3 bench-large.sh tier=${TIER}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets: storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms. Regenerate: ./scripts/bench-large.sh --tier ${TIER}" \
+  --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}" \
   --argjson index_keys_total "${INDEX_KEYS_TOTAL:-null}" \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
   '{
@@ -492,7 +508,7 @@ jq -n \
 echo "Wrote ${RESULTS}"
 jq . "$RESULTS"
 
-if [[ "$ENFORCE_GATES" == "1" ]]; then
+if [[ "$ENFORCE_GATES" == "1" && "$BENCH_ENVIRONMENT" == "aws-s3" ]]; then
   jq -e \
     --argjson recall_gate "$RECALL_GATE" \
     '
@@ -506,4 +522,6 @@ if [[ "$ENFORCE_GATES" == "1" ]]; then
     exit 1
   }
   echo "All large-tier gates passed (tier=${TIER})."
+elif [[ "$ENFORCE_GATES" == "1" && "$BENCH_ENVIRONMENT" != "aws-s3" ]]; then
+  echo "Skipping AWS p50 SLO gates (environment=${BENCH_ENVIRONMENT}); set OPENPUFFER_BENCH_ENFORCE_GATES=0 to silence."
 fi

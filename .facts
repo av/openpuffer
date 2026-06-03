@@ -420,6 +420,12 @@
 - label: scripts/bench-large.sh tiered AWS bench dry-run reads queries.json recall_defaults and targets benchmarks/results/large-aws-{tier}.json
   command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
+- label: G3 run-aws-large-benchmark.sh dry-run and large-benchmark-preflight.sh exist with tier workload validation
+  command: test -x scripts/run-aws-large-benchmark.sh && test -f scripts/lib/large-benchmark-preflight.sh && grep -q 'large_preflight_guard_aws_results_path' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-aws-large-benchmark.sh --dry-run >/dev/null
+  tags: [spec, bench-large, implemented]
+- label: run-minio-large-schema-example.sh targets schema example JSON with environment minio not large-aws-l1.json
+  command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh
+  tags: [spec, bench-large, implemented]
 - label: large-aws bench JSON fixture cold_large_l1 records tier workload_dir recall_at_10 p50 storage_roundtrips preferred_ann_version index_cursor_eq_wal_commit_seq
   command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and all(k in d for k in ('workload_dir','recall_at_10','p50_query_latency_ms','storage_roundtrips','preferred_ann_version','index_cursor_eq_wal_commit_seq','cold_query_runs')) and d['cold_query_runs']==7"
   tags: [spec, bench-large, implemented]

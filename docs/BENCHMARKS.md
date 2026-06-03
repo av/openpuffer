@@ -41,6 +41,7 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 | Step | Phase | Command | Output |
 |------|-------|---------|--------|
 | 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
+| 0b | G3 preflight | [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) `--preflight-only` | G2 subset + AWS `head-bucket` + workload manifest |
 | 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
 | 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
 | 3 | tpuf | [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
@@ -49,9 +50,34 @@ Performance measurement, debugging, and pass/fail assessment for the [large-data
 
 **Fairness:** run the tpuf driver from the **same region** as the openpuffer S3 bucket and tpuf namespace. Record client RTT before interpreting cold p50 deltas ([plan § architecture](PLAN_LARGE_DATASET_BENCHMARK.md#architecture-of-the-evaluation)).
 
+**G3 one-shot (EC2 + AWS credentials):**
+
+```bash
+export OPENPUFFER_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
+export OPENPUFFER_S3_BUCKET=openpuffer-bench-...
+export OPENPUFFER_S3_ACCESS_KEY=... OPENPUFFER_S3_SECRET_KEY=...
+export OPENPUFFER_S3_REGION=us-east-1
+export OPENPUFFER_ANN_VERSION=3
+export OPENPUFFER_COLD_S3_CONCURRENCY=32
+# optional: export OPENPUFFER_BENCH_HOST_LABEL=c6i.large@us-east-1a
+
+./scripts/run-aws-large-benchmark.sh --tier l1
+# preflight only: ./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1
+```
+
+Shared S3/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh). `bench-large.sh` refuses to write `large-aws-*.json` from a MinIO endpoint unless `OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1` or the results path contains `minio` / `example` / `schema`.
+
+**MinIO schema example only** (validates `cold_large_l1` JSON shape; **not** for COMPARISON / tpuf):
+
+```bash
+./scripts/run-minio-large-schema-example.sh
+# → benchmarks/results/large-aws-l1-schema-minio.example.json (environment=minio)
+```
+
 **Dry-run** (no credentials):
 
 ```bash
+./scripts/run-aws-large-benchmark.sh --dry-run
 ./scripts/ingest-large.sh --tier l1 --dry-run
 ./scripts/bench-large.sh --tier l1 --dry-run
 python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run

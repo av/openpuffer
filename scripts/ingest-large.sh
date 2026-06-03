@@ -18,6 +18,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+export LARGE_PREFLIGHT_ROOT="$ROOT"
+# shellcheck source=scripts/lib/large-benchmark-preflight.sh
+source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -83,19 +86,18 @@ need_cmd() {
 }
 
 validate_toolchain() {
-  need_cmd curl
-  need_cmd jq
-  need_cmd python3
+  large_preflight_toolchain
   if [[ "$DRY_RUN" == "0" && -z "$SKIP_SERVE" ]]; then
     need_cmd cargo
   fi
 }
 
 validate_s3_env() {
-  : "${OPENPUFFER_S3_ENDPOINT:?set OPENPUFFER_S3_ENDPOINT}"
-  : "${OPENPUFFER_S3_BUCKET:?set OPENPUFFER_S3_BUCKET}"
-  : "${OPENPUFFER_S3_ACCESS_KEY:?set OPENPUFFER_S3_ACCESS_KEY}"
-  : "${OPENPUFFER_S3_SECRET_KEY:?set OPENPUFFER_S3_SECRET_KEY}"
+  large_preflight_validate_s3_env
+  INGEST_ENVIRONMENT="$(large_preflight_detect_environment)"
+  if [[ "$DRY_RUN" == "0" ]]; then
+    large_preflight_s3_head_bucket || true
+  fi
 }
 
 manifest_path() {
@@ -142,6 +144,8 @@ resolve_num_docs() {
 
 run_dry_run() {
   validate_toolchain
+  large_preflight_ann_version
+  large_preflight_validate_tier_workload "$TIER" "$ROOT"
   init_run_context
   local mf
   mf="$(manifest_path)"
@@ -367,6 +371,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 validate_s3_env
+large_preflight_validate_tier_workload "$TIER" "$ROOT"
 
 init_run_context
 MF="$(manifest_path)"
