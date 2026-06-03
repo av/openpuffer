@@ -72,6 +72,28 @@ Requires [Docker](https://docs.docker.com/get-docker/) for MinIO.
 ./scripts/dev-serve.sh   # build + serve on :8080
 ```
 
+**SPFresh v3 index + cold S3 path** (probed cluster fetch, no disk cache):
+
+```bash
+export OPENPUFFER_ANN_VERSION=3          # v3 index layout at build (default 2)
+export OPENPUFFER_CACHE_DIR=""           # cold query: S3-only index load (same as --cache-dir "")
+export OPENPUFFER_COLD_S3_CONCURRENCY=32 # parallel GETs per cold sub-batch (default 32)
+# optional: OPENPUFFER_ANN_RERANK=1      # exact re-rank over probed clusters (higher recall, larger candidate pool)
+
+./scripts/dev-serve.sh
+```
+
+After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning.
+
+**Recall API** (ANN vs exhaustive on indexed namespace):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/namespaces/my-ns/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"num": 5, "top_k": 10, "vector_field": "embedding"}'
+# → {"avg_recall":0.9,"avg_ann_count":...,"avg_exhaustive_count":...}
+```
+
 Smoke test:
 
 ```bash
@@ -108,12 +130,16 @@ openpuffer serve \
 | `--s3-bucket`, `OPENPUFFER_S3_BUCKET` | Bucket name |
 | `--s3-region`, `OPENPUFFER_S3_REGION` | Region (default `us-east-1`) |
 | `--s3-access-key` / `--s3-secret-key` | Credentials |
-| `--cache-dir`, `OPENPUFFER_CACHE_DIR` | Index segment disk cache (default `/tmp/openpuffer-cache`; `""` = memory-only) |
+| `--cache-dir`, `OPENPUFFER_CACHE_DIR` | Index segment disk cache (default `/tmp/openpuffer-cache`; `""` = memory-only / **cold S3 path**) |
+| `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND` | Max S3 keys per cold round sub-batch (default 128) |
+| `OPENPUFFER_COLD_S3_CONCURRENCY` | In-flight parallel `GetObject` per cold sub-batch (default 32) |
 | `OPENPUFFER_WRITE_MAX_DELAY_MS` | Group-commit delay (default 1000) |
 | `OPENPUFFER_WRITE_MAX_BATCH_OPS` | Max ops per WAL batch (default 512) |
 | `OPENPUFFER_MAX_PINNED_NAMESPACES` | In-process warm view LRU (default 32) |
 | `--wal-corrupt-policy`, `OPENPUFFER_WAL_CORRUPT_POLICY` | WAL replay on CRC mismatch: `fail` (default) or `skip` — see [WAL corrupt policy](#wal-corrupt-policy) |
-| `OPENPUFFER_ANN_COARSE_PROBE` / `OPENPUFFER_ANN_FINE_PROBE` | ANN L0/L1 cluster probe counts (defaults 4 / 2) |
+| `--ann-version`, `OPENPUFFER_ANN_VERSION` | Index format: `2` (default) or `3` (SPFresh routing + L2 splits) |
+| `--ann-coarse-probe` / `--ann-fine-probe`, `OPENPUFFER_ANN_COARSE_PROBE` / `OPENPUFFER_ANN_FINE_PROBE` | ANN L0/L1 probe counts at index build (defaults 4 / 2) |
+| `--ann-rerank`, `OPENPUFFER_ANN_RERANK` | Exact re-rank over probed ANN pool (`1`/`true`; default off) |
 
 ### WAL corrupt policy
 
