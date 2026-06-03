@@ -7,6 +7,8 @@
 
 use crate::meta::DistanceMetric;
 use crate::models::Document;
+use crate::schema::{vector_element_for_field, VectorElement};
+use crate::vector_encoding::{f16_le_bytes_to_f32_vec, f64_slice_to_f16_le};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +36,37 @@ pub const REBUILD_DOC_MULTIPLIER: usize = 4;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterMember {
     pub doc_id: String,
+    /// Full-precision vectors when `CentroidIndexL0.vector_element` is f32 (legacy segments).
+    #[serde(default)]
     pub vector: Vec<f64>,
+    /// Little-endian f16 payload when index uses `[N]f16` schema (half the bytes on S3).
+    #[serde(default)]
+    pub vector_f16: Option<Vec<u8>>,
+}
+
+impl ClusterMember {
+    pub fn from_values(doc_id: String, values: &[f64], element: VectorElement) -> Self {
+        match element {
+            VectorElement::F32 => Self {
+                doc_id,
+                vector: values.to_vec(),
+                vector_f16: None,
+            },
+            VectorElement::F16 => Self {
+                doc_id,
+                vector: Vec::new(),
+                vector_f16: Some(f64_slice_to_f16_le(values)),
+            },
+        }
+    }
+
+    /// f32 slice for ANN scoring (loads f16 from storage when present).
+    pub fn as_f32_slice(&self, dim: usize) -> Vec<f32> {
+        if let Some(ref bytes) = self.vector_f16 {
+            return f16_le_bytes_to_f32_vec(bytes, dim);
+        }
+        self.vector.iter().take(dim).map(|&x| x as f32).collect()
+    }
 }
 
 /// Level-0 coarse centroid table (`centroids-l0.bin`).
@@ -48,6 +80,9 @@ pub struct CentroidIndexL0 {
     pub probe_coarse: u32,
     pub probe_fine: u32,
     pub distance_metric: DistanceMetric,
+    /// Cluster member storage: f32 arrays vs packed f16 (`[N]f16` schema).
+    #[serde(default)]
+    pub vector_element: VectorElement,
     /// Fine centroid count per coarse bucket (defines global fine id offsets).
     pub fine_counts: Vec<u32>,
     pub centroids: Vec<Vec<f64>>,
@@ -64,6 +99,7 @@ impl Default for CentroidIndexL0 {
             probe_coarse: DEFAULT_PROBE_COARSE,
             probe_fine: DEFAULT_PROBE_FINE,
             distance_metric: DistanceMetric::default(),
+            vector_element: VectorElement::default(),
             fine_counts: Vec::new(),
             centroids: Vec::new(),
         }
@@ -222,17 +258,29 @@ impl ClusterSegment {
         query: &[f64],
         metric: DistanceMetric,
         top_k: usize,
+        dim: usize,
+        element: VectorElement,
     ) -> Vec<(String, f64)> {
-        let mut scored: Vec<(String, f64)> = self
-            .members
-            .iter()
-            .map(|m| {
-                (
-                    m.doc_id.clone(),
-                    score_vector(query, &m.vector, metric),
-                )
-            })
-            .collect();
+        let mut scored: Vec<(String, f64)> = match element {
+            VectorElement::F32 => self
+                .members
+                .iter()
+                .map(|m| (m.doc_id.clone(), score_vector(query, &m.vector, metric)))
+                .collect(),
+            VectorElement::F16 => {
+                let query_f32: Vec<f32> = query.iter().take(dim).map(|&x| x as f32).collect();
+                self.members
+                    .iter()
+                    .map(|m| {
+                        let cand = m.as_f32_slice(dim);
+                        (
+                            m.doc_id.clone(),
+                            score_vector_f32(&query_f32, &cand, metric) as f64,
+                        )
+                    })
+                    .collect()
+            }
+        };
         scored.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -257,7 +305,9 @@ impl VectorIndex {
         field: &str,
         metric: DistanceMetric,
         docs: &[(String, Document)],
+        schema: &Value,
     ) -> Result<Option<Self>> {
+        let vector_element = vector_element_for_field(schema, field);
         let mut pairs: Vec<(String, Vec<f64>)> = Vec::new();
         let mut dimensions = 0u32;
 
@@ -330,10 +380,7 @@ impl VectorIndex {
                         members: Vec::new(),
                     })
                     .members
-                    .push(ClusterMember {
-                        doc_id,
-                        vector: vec,
-                    });
+                    .push(ClusterMember::from_values(doc_id, &vec, vector_element));
             }
 
             global_start += k_fine as u32;
@@ -349,6 +396,7 @@ impl VectorIndex {
             probe_coarse: DEFAULT_PROBE_COARSE.min(k_coarse as u32).max(1),
             probe_fine: DEFAULT_PROBE_FINE,
             distance_metric: metric,
+            vector_element,
             fine_counts,
             centroids: coarse_vecs,
         };
@@ -419,10 +467,11 @@ impl VectorIndex {
                     members: Vec::new(),
                 })
                 .members
-                .push(ClusterMember {
-                    doc_id: id.clone(),
-                    vector: vec,
-                });
+                .push(ClusterMember::from_values(
+                    id.clone(),
+                    &vec,
+                    self.l0.vector_element,
+                ));
         }
         Ok(())
     }
@@ -472,12 +521,20 @@ impl VectorIndex {
             return Vec::new();
         }
         let metric = self.l0.distance_metric;
+        let dim = self.l0.dimensions as usize;
+        let element = self.l0.vector_element;
         let mut scores: HashMap<String, f64> = HashMap::new();
         for fine_id in self.probe_fine_centroids(query) {
             let Some(cluster) = self.clusters.get(&fine_id) else {
                 continue;
             };
-            for (id, score) in cluster.score_members(query, metric, top_k.saturating_mul(4)) {
+            for (id, score) in cluster.score_members(
+                query,
+                metric,
+                top_k.saturating_mul(4),
+                dim,
+                element,
+            ) {
                 scores
                     .entry(id)
                     .and_modify(|s| {
@@ -614,6 +671,21 @@ pub fn score_vector(query: &[f64], candidate: &[f64], metric: DistanceMetric) ->
     }
 }
 
+/// f32 ANN scoring (used when cluster vectors are stored as f16).
+pub fn score_vector_f32(query: &[f32], candidate: &[f32], metric: DistanceMetric) -> f32 {
+    match metric {
+        DistanceMetric::CosineDistance => cosine_similarity_f32(query, candidate),
+        DistanceMetric::EuclideanSquared => {
+            let d2 = euclidean_squared_f32(query, candidate);
+            if d2.is_finite() {
+                -d2
+            } else {
+                f32::NEG_INFINITY
+            }
+        }
+    }
+}
+
 pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -635,6 +707,37 @@ pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 fn euclidean_squared(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() {
         return f64::INFINITY;
+    }
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum()
+}
+
+pub fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut na = 0.0f32;
+    let mut nb = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
+fn euclidean_squared_f32(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::INFINITY;
     }
     a.iter()
         .zip(b.iter())
@@ -742,6 +845,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &docs,
+            &json!({}),
         )
         .unwrap()
         .expect("index built");
@@ -784,6 +888,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &docs,
+            &json!({ "embedding": format!("[{DIM}]f32") }),
         )
         .unwrap()
         .expect("index built");
@@ -819,6 +924,7 @@ mod tests {
             probe_coarse: 2,
             probe_fine: 2,
             distance_metric: DistanceMetric::CosineDistance,
+            vector_element: VectorElement::F32,
             fine_counts: vec![2, 2],
             centroids: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
         };
@@ -839,6 +945,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &docs,
+            &json!({ "embedding": "[2]f32" }),
         )
         .unwrap()
         .expect("index");
@@ -863,6 +970,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &docs,
+            &json!({ "embedding": "[4]f32" }),
         )
         .unwrap()
         .expect("index");
@@ -882,10 +990,11 @@ mod tests {
         let seg = ClusterSegment {
             segment_id: 1,
             centroid_id: 0,
-            members: vec![ClusterMember {
-                doc_id: "a".into(),
-                vector: vec![1.0, 0.0],
-            }],
+            members: vec![ClusterMember::from_values(
+                "a".into(),
+                &[1.0, 0.0],
+                VectorElement::F32,
+            )],
         };
         let bytes = seg.encode().unwrap();
         let back = ClusterSegment::decode(&bytes).unwrap();
@@ -895,5 +1004,67 @@ mod tests {
     #[test]
     fn l1_key_format() {
         assert!(CentroidIndexL1::key("ns", 3).contains("centroids-l1-00000003"));
+    }
+
+    #[test]
+    fn f16_cluster_members_store_packed_half() {
+        let docs = vec![
+            vec_doc("a", vec![1.0, 0.0, 0.5, 0.0]),
+            vec_doc("b", vec![0.0, 1.0, 0.5, 0.0]),
+        ];
+        let schema = json!({ "embedding": "[4]f16" });
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &schema,
+        )
+        .unwrap()
+        .expect("index");
+        assert_eq!(index.l0.vector_element, VectorElement::F16);
+        let member = index
+            .clusters
+            .values()
+            .flat_map(|c| &c.members)
+            .find(|m| m.doc_id == "a")
+            .expect("doc a");
+        assert!(member.vector.is_empty());
+        let packed = member.vector_f16.as_ref().expect("f16 bytes");
+        assert_eq!(packed.len(), 8);
+        let bytes = index.clusters.values().next().unwrap().encode().unwrap();
+        let back = ClusterSegment::decode(&bytes).unwrap();
+        assert!(back.members[0].vector_f16.is_some());
+    }
+
+    #[test]
+    fn f16_ann_finds_nearest_neighbor() {
+        let mut docs = Vec::new();
+        for i in 0..100 {
+            let x = (i as f64) * 0.01;
+            docs.push(vec_doc(
+                &format!("doc-{i}"),
+                vec![x, 1.0 - x, 0.5, 0.0],
+            ));
+        }
+        docs.push(vec_doc("target", vec![1.0, 0.0, 0.5, 0.0]));
+        let schema = json!({ "embedding": "[4]f16" });
+
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &schema,
+        )
+        .unwrap()
+        .expect("index");
+        assert_eq!(index.l0.vector_element, VectorElement::F16);
+
+        let query = vec![1.0, 0.0, 0.5, 0.0];
+        let hits = index.query_ann(&query, 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "target");
+        assert!(hits[0].1 > 0.99);
     }
 }

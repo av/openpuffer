@@ -38,7 +38,13 @@ fn build_namespace() -> (HashMap<String, Document>, VectorIndex, NamespaceMeta) 
         pairs.push((id, doc.clone()));
         map.insert(doc.id.clone(), doc);
     }
-    let vindex = VectorIndex::build(1, "embedding", DistanceMetric::CosineDistance, &pairs)
+    let vindex = VectorIndex::build(
+        1,
+        "embedding",
+        DistanceMetric::CosineDistance,
+        &pairs,
+        &serde_json::json!({ "embedding": "[128]f32" }),
+    )
         .expect("build vector index")
         .expect("vector index present");
     let meta = NamespaceMeta {

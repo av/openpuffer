@@ -137,6 +137,7 @@ pub async fn index_wal_range(
                     &vfield,
                     meta.distance_metric,
                     &pairs,
+                    &meta.schema,
                 )? {
                     vindex = built;
                 }
@@ -151,6 +152,7 @@ pub async fn index_wal_range(
                         &vfield,
                         meta.distance_metric,
                         &pairs,
+                        &meta.schema,
                     )? {
                         vindex = built;
                     }
@@ -307,9 +309,41 @@ pub const INDEX_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Max wall time spent indexing a single namespace per background tick when multiple namespaces compete.
 pub const MAX_INDEX_TIME_PER_NS_PER_TICK: Duration = Duration::from_secs(2);
 
+/// When unindexed WAL lag is at or above this, the indexer may process multiple segments per tick.
+pub const HIGH_INDEX_LAG_SEGMENTS: u64 = 4;
+
+/// Lag at or above this: no per-tick time slice (large namespaces must finish vector builds).
+pub const BURST_INDEX_LAG_SEGMENTS: u64 = 8;
+
+/// Max WAL segments merged per tick for a sole namespace (or burst-lag namespace).
+pub const MAX_SEGMENTS_BURST_PER_TICK: u64 = 8;
+
 /// Priority key for background indexer scheduling: unindexed WAL segment count.
 pub fn index_scheduling_lag(meta: &NamespaceMeta) -> u64 {
     unindexed_wal_segments(meta)
+}
+
+/// WAL segments to index in one background tick (fair when many namespaces compete).
+pub fn segments_per_background_tick(lag: u64, competing_namespaces: usize) -> u64 {
+    if lag == 0 {
+        return 1;
+    }
+    if competing_namespaces <= 1 || lag >= BURST_INDEX_LAG_SEGMENTS {
+        return lag.min(MAX_SEGMENTS_BURST_PER_TICK).max(1);
+    }
+    if lag >= HIGH_INDEX_LAG_SEGMENTS {
+        return 2;
+    }
+    1
+}
+
+/// Whether a per-tick time slice applies (multi-tenant fairness for small backlogs only).
+pub fn background_tick_time_limit(lag: u64, competing_namespaces: usize) -> Option<Duration> {
+    if competing_namespaces <= 1 || lag >= BURST_INDEX_LAG_SEGMENTS {
+        None
+    } else {
+        Some(MAX_INDEX_TIME_PER_NS_PER_TICK)
+    }
 }
 
 /// Sort namespace names by descending index lag (largest backlog first).
@@ -420,17 +454,23 @@ impl BackgroundIndexer {
     async fn tick(&self) -> Result<()> {
         self.refresh_work_queue().await?;
         let round_len = self.queue.lock().await.len();
-        let fair_time_limit = if round_len > 1 {
-            Some(MAX_INDEX_TIME_PER_NS_PER_TICK)
-        } else {
-            None
-        };
+        let mut lag_by_ns = HashMap::new();
+        for name in self.queue.lock().await.iter() {
+            if let Some((meta, _)) =
+                fetch_meta(&self.client, &self.bucket, name).await?
+            {
+                lag_by_ns.insert(name.clone(), index_scheduling_lag(&meta));
+            }
+        }
         for _ in 0..round_len {
             let Some(namespace) = self.queue.lock().await.pop_front() else {
                 break;
             };
+            let lag = lag_by_ns.get(&namespace).copied().unwrap_or(0);
+            let max_segments = segments_per_background_tick(lag, round_len);
+            let time_limit = background_tick_time_limit(lag, round_len);
             let still_work = match self
-                .index_namespace_timeboxed(&namespace, fair_time_limit)
+                .index_namespace_timeboxed(&namespace, max_segments, time_limit)
                 .await
             {
                 Ok(needs_more) => needs_more,
@@ -445,6 +485,30 @@ impl BackgroundIndexer {
                 self.queue.lock().await.push_back(namespace);
             } else {
                 self.queued.lock().await.remove(&namespace);
+            }
+        }
+        self.compaction_pass().await?;
+        Ok(())
+    }
+
+    /// Run WAL compaction for every namespace that is fully indexed but still has stale segments.
+    async fn compaction_pass(&self) -> Result<()> {
+        for name in list_namespace_names(&self.client, &self.bucket).await? {
+            let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, &name).await?
+            else {
+                continue;
+            };
+            if crate::wal_compaction::needs_wal_compaction(&meta) {
+                if let Err(e) = crate::wal_compaction::maybe_compact_wal(
+                    &self.client,
+                    &self.bucket,
+                    &name,
+                    &self.cache,
+                )
+                .await
+                {
+                    tracing::warn!("wal compaction for {name}: {e:#}");
+                }
             }
         }
         Ok(())
@@ -493,10 +557,11 @@ impl BackgroundIndexer {
         Ok(needs_indexing(&meta) || crate::wal_compaction::needs_wal_compaction(&meta))
     }
 
-    /// Index one WAL segment; optional per-tick time limit when multiple namespaces compete.
+    /// Index up to `max_segments` WAL files; optional per-tick time limit when multiple namespaces compete.
     async fn index_namespace_timeboxed(
         &self,
         namespace: &str,
+        max_segments: u64,
         time_limit: Option<Duration>,
     ) -> Result<bool> {
         let work = index_wal_range(
@@ -504,7 +569,7 @@ impl BackgroundIndexer {
             &self.bucket,
             namespace,
             &self.cache,
-            Some(1),
+            Some(max_segments.max(1)),
         );
         let index_result = match time_limit {
             Some(limit) => tokio::time::timeout(limit, work).await,
@@ -964,6 +1029,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(index_scheduling_lag(&meta), 5);
+    }
+
+    #[test]
+    fn segments_per_tick_burst_when_alone_or_large_lag() {
+        assert_eq!(segments_per_background_tick(5, 3), 2);
+        assert_eq!(segments_per_background_tick(3, 3), 1);
+        assert_eq!(segments_per_background_tick(5, 1), 5);
+        assert_eq!(segments_per_background_tick(20, 3), 8);
+        assert_eq!(segments_per_background_tick(20, 1), 8);
+    }
+
+    #[test]
+    fn background_time_limit_skipped_for_burst_lag() {
+        assert!(background_tick_time_limit(8, 5).is_none());
+        assert!(background_tick_time_limit(3, 1).is_none());
+        assert_eq!(
+            background_tick_time_limit(3, 3),
+            Some(MAX_INDEX_TIME_PER_NS_PER_TICK)
+        );
     }
 
     #[tokio::test]

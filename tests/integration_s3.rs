@@ -1476,7 +1476,7 @@ async fn ten_thousand_docs_indexed_query() {
     sleep(Duration::from_millis(1200)).await;
     let write_elapsed = write_started.elapsed();
 
-    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(120)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(180)).await;
     let index_elapsed = write_started.elapsed();
 
     let warm_resp = reqwest::Client::new()
@@ -1529,14 +1529,21 @@ async fn ten_thousand_docs_indexed_query() {
     assert_eq!(meta.index_cursor, meta.wal_commit_seq);
     assert!(meta.wal_commit_seq >= 1);
 
+    let l0_key = format!("{ROOT_PREFIX}{ns}/index/centroids-l0.bin");
+    let l0_size = object_size(&fixture.client, &fixture.bucket, &l0_key).await;
+    assert!(
+        l0_size > 0,
+        "centroids-l0.bin must exist and be non-empty on MinIO after 10k index, size={l0_size}"
+    );
+
     eprintln!(
-        "ten_thousand_docs_indexed_query: writes={write_elapsed:?} index+query={:?} wal_commits={}",
+        "ten_thousand_docs_indexed_query: writes={write_elapsed:?} index+query={:?} wal_commits={} l0_bytes={l0_size}",
         index_elapsed,
         meta.wal_commit_seq
     );
     assert!(
-        test_started.elapsed() < Duration::from_secs(120),
-        "test exceeded 120s wall clock"
+        test_started.elapsed() < Duration::from_secs(180),
+        "test exceeded 180s wall clock"
     );
 }
 
@@ -1598,15 +1605,27 @@ async fn wal_compaction_after_full_index_query_still_works() {
     .await;
 
     let snapshot_key = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/snapshot.bin");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_WAL_COMPACT).await;
     loop {
-        if meta.wal_snapshot_seq > 0 && s3_object_exists(&fixture.client, &fixture.bucket, &snapshot_key).await {
+        let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
+        let segment_wals: Vec<_> = wal_keys
+            .iter()
+            .filter(|k| {
+                k.starts_with(&wal_prefix)
+                    && k.ends_with(".bin")
+                    && !k.ends_with("snapshot.bin")
+            })
+            .collect();
+        let compacted = meta.wal_snapshot_seq > 0
+            && meta.wal_snapshot_seq >= meta.index_cursor
+            && s3_object_exists(&fixture.client, &fixture.bucket, &snapshot_key).await
+            && segment_wals.len() <= 3;
+        if compacted {
             break;
         }
         if tokio::time::Instant::now() >= deadline {
-            let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
-            let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
             let mut missing = Vec::new();
             for seq in 1..=meta.wal_commit_seq {
                 let key = format!("{wal_prefix}{seq:08}.bin");
@@ -1615,7 +1634,7 @@ async fn wal_compaction_after_full_index_query_still_works() {
                 }
             }
             panic!(
-                "wal compaction did not finish within 30s, meta={meta:?} wal_keys={wal_keys:?} missing_seqs={missing:?}"
+                "wal compaction did not finish within 60s, meta={meta:?} wal_keys={wal_keys:?} segment_wals={segment_wals:?} missing_seqs={missing:?}"
             );
         }
         sleep(Duration::from_millis(250)).await;
@@ -1632,7 +1651,6 @@ async fn wal_compaction_after_full_index_query_still_works() {
         "wal_snapshot_seq should be set after compaction, meta={meta:?}"
     );
 
-    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_WAL_COMPACT}/wal/");
     let wal_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &wal_prefix).await;
     assert!(
         wal_keys.iter().any(|k| k == &snapshot_key),

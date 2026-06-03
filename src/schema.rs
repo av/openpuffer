@@ -1,6 +1,57 @@
 //! turbopuffer-style namespace schema: merge on write, drive indexer field selection.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+/// Element type for `[N]f32` vs `[N]f16` vector columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VectorElement {
+    #[default]
+    F32,
+    F16,
+}
+
+/// Parse turbopuffer vector shorthand (`[128]f32`, `[512]f16`, …).
+pub fn parse_vector_type_spec(spec: &Value) -> Option<(u32, VectorElement)> {
+    let type_str = match spec {
+        Value::String(s) => Some(s.as_str()),
+        Value::Object(m) => m.get("type").and_then(|v| v.as_str()),
+        _ => None,
+    }?;
+    parse_vector_type_str(type_str)
+}
+
+fn parse_vector_type_str(s: &str) -> Option<(u32, VectorElement)> {
+    let s = s.trim();
+    let inner = s.strip_prefix('[')?;
+    let (dims_str, elem) = inner.split_once(']')?;
+    let dims: u32 = dims_str.parse().ok()?;
+    let elem = match elem.to_ascii_lowercase().as_str() {
+        "f32" => VectorElement::F32,
+        "f16" => VectorElement::F16,
+        _ => return None,
+    };
+    Some((dims, elem))
+}
+
+/// Element type for a vector field in namespace schema (defaults to f32).
+pub fn vector_element_for_field(schema: &Value, field: &str) -> VectorElement {
+    schema
+        .as_object()
+        .and_then(|o| o.get(field))
+        .and_then(parse_vector_type_spec)
+        .map(|(_, e)| e)
+        .unwrap_or(VectorElement::F32)
+}
+
+/// Expected dimensions from schema for a vector field (if declared).
+pub fn vector_dimensions_for_field(schema: &Value, field: &str) -> Option<u32> {
+    schema
+        .as_object()
+        .and_then(|o| o.get(field))
+        .and_then(parse_vector_type_spec)
+        .map(|(d, _)| d)
+}
 
 /// Merge a write-time `schema` patch into durable namespace metadata.
 ///
@@ -154,6 +205,17 @@ mod tests {
     fn vector_shorthand() {
         assert!(field_is_vector_spec(&json!("[128]f32")));
         assert!(!field_filterable(&json!("[128]f32")));
+    }
+
+    #[test]
+    fn parse_f16_vector_type() {
+        let (d, e) = parse_vector_type_spec(&json!("[512]f16")).unwrap();
+        assert_eq!(d, 512);
+        assert_eq!(e, VectorElement::F16);
+        assert_eq!(
+            vector_element_for_field(&json!({"emb": "[4]f16"}), "emb"),
+            VectorElement::F16
+        );
     }
 
     #[test]

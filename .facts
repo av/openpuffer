@@ -120,6 +120,15 @@
 - label: write accepts base64-encoded f32 little-endian vectors decoded on upsert
   command: grep -q 'normalize_document_vectors' src/vector_encoding.rs && grep -q 'decode_base64_f32_le' src/vector_encoding.rs
   tags: [implemented]
+- label: schema accepts [N]f16 vector type for half-precision index clusters
+  command: grep -q 'VectorElement::F16' src/schema.rs && grep -q 'vector_element' src/index/vector.rs
+  tags: [implemented]
+- label: write accepts base64-encoded f16 little-endian vectors when schema is [N]f16
+  command: grep -q 'decode_base64_f16_le' src/vector_encoding.rs && cargo test --lib base64_f16_roundtrip -q
+  tags: [implemented]
+- label: ANN cluster segments store packed f16 and score with f32 compute at query time
+  command: grep -q 'vector_f16' src/index/vector.rs && cargo test --lib f16_ann_finds_nearest_neighbor -q
+  tags: [implemented]
 - label: perf test on 5k docs asserts candidates_ratio stays below 12 percent
   command: cargo test -F perf --test perf_namespace -q
   tags: [implemented]

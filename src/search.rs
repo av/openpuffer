@@ -896,6 +896,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &pairs,
+            &json!({}),
         )
         .unwrap()
         .expect("vector index");
@@ -1156,6 +1157,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &pairs,
+            &json!({}),
         )
         .unwrap()
         .expect("vector index");
@@ -1249,6 +1251,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &pairs,
+            &json!({}),
         )
         .unwrap()
         .expect("vector index");
@@ -1415,6 +1418,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &pairs,
+            &json!({}),
         )
         .unwrap()
         .expect("vector index");
@@ -1473,6 +1477,7 @@ mod tests {
             "embedding",
             DistanceMetric::CosineDistance,
             &pairs,
+            &json!({}),
         )
         .unwrap()
         .expect("vector index");
