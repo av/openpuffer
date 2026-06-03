@@ -40,6 +40,10 @@ pub struct ServeArgs {
     /// Local disk cache for index segments (empty = memory-only, no disk I/O).
     #[arg(long, env = "OPENPUFFER_CACHE_DIR", default_value = "/tmp/openpuffer-cache")]
     pub cache_dir: String,
+
+    /// Max namespaces with hot in-memory views (LRU eviction).
+    #[arg(long, env = "OPENPUFFER_MAX_PINNED_NAMESPACES", default_value = "32")]
+    pub max_pinned_namespaces: usize,
 }
 
 #[derive(Clone)]
@@ -47,6 +51,7 @@ pub struct AppConfig {
     pub listen: String,
     pub bucket: String,
     pub cache_dir: Option<PathBuf>,
+    pub max_pinned_namespaces: usize,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -86,6 +91,7 @@ impl ServeArgs {
             listen: self.listen.clone(),
             bucket: self.s3_bucket.clone(),
             cache_dir,
+            max_pinned_namespaces: self.max_pinned_namespaces,
         }
     }
 }

@@ -23,14 +23,21 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let r = Router::new()
         .route("/health", get(health))
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces/{name}", get(get_namespace_metadata))
+        .route("/v1/namespaces/{name}/warm", post(warm_namespace_handler))
         .route("/v2/namespaces/{name}", post(write_namespace))
         .route("/v2/namespaces/{name}/query", post(query_namespace))
-        .route("/v2/namespaces/{name}", delete(delete_namespace))
-        .with_state(state)
+        .route("/v2/namespaces/{name}", delete(delete_namespace));
+
+    #[cfg(feature = "integration")]
+    let r = r
+        .route("/v1/debug/cache-stats", get(cache_stats_debug))
+        .route("/v1/debug/cache-stats/reset", post(cache_stats_reset_debug));
+
+    r.with_state(state)
 }
 
 async fn health() -> impl IntoResponse {
@@ -65,6 +72,45 @@ async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
             storage_error_response(e)
         }
     }
+}
+
+async fn warm_namespace_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match state.storage.warm_namespace(&name).await {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        Err(e) => {
+            error!("warm namespace {name}: {e:#}");
+            if e.to_string().contains("namespace not found") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "namespace not found"})),
+                )
+                    .into_response();
+            }
+            storage_error_response(e)
+        }
+    }
+}
+
+#[cfg(feature = "integration")]
+async fn cache_stats_debug(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "s3_get_count": state.storage.segment_cache().s3_get_count(),
+        })),
+    )
+}
+
+#[cfg(feature = "integration")]
+async fn cache_stats_reset_debug(State(state): State<AppState>) -> impl IntoResponse {
+    state.storage.segment_cache().reset_s3_get_count();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"s3_get_count": 0})),
+    )
 }
 
 async fn get_namespace_metadata(

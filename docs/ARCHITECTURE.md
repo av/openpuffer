@@ -68,6 +68,16 @@ Optional NVMe-style cache for **index objects only** ([`cache.rs`](../src/cache.
 
 **Indexer:** each `PutObject` for FTS / filter / vector segments writes S3 first, then populates the cache from the response etag.
 
+## Warm cache (`POST /v1/namespaces/{name}/warm`)
+
+Turbopuffer [`hint_cache_warm`](https://turbopuffer.com/docs/warm-cache) analogue ([`warm.rs`](../src/warm.rs)):
+
+1. **Prefetch** `meta.json`, current FTS/filter/centroids + all cluster segments, and recent WAL tail (up to 128 segments) into the disk cache via HEAD+GET when needed.
+2. **Pin** a fully caught-up [`NamespaceView`](../src/view.rs) in the in-process LRU map ([`view_cache.rs`](../src/view_cache.rs), default max 32 namespaces via `OPENPUFFER_MAX_PINNED_NAMESPACES`).
+3. Return `200` JSON with `duration_ms`, segment counts, and `s3_get_count` for the warm pass.
+
+After warm, queries against the same process reuse the pinned view (no WAL replay) and index loads hit disk cache (HEAD only, no `GetObject` when etags match).
+
 ## Read path / query planner
 
 **Implemented** ([`search.rs`](../src/search.rs)):

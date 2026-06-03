@@ -8,12 +8,14 @@ use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
 use crate::view::NamespaceView;
+use crate::view_cache::ViewCache;
+use crate::warm::{warm_namespace, WarmStats};
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::types::ObjectIdentifier;
 use aws_sdk_s3::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
 /// Classify common S3 API failures for HTTP mapping.
 pub fn s3_error_hint(err: &anyhow::Error) -> Option<&'static str> {
@@ -32,7 +34,7 @@ pub struct Storage {
     bucket: String,
     cache: Arc<SegmentCache>,
     write_buffer: WriteBufferManager,
-    views: Arc<RwLock<HashMap<String, NamespaceView>>>,
+    views: Arc<Mutex<ViewCache>>,
 }
 
 pub struct LoadedNamespace {
@@ -46,7 +48,12 @@ pub struct LoadedNamespace {
 }
 
 impl Storage {
-    pub fn new(client: Client, bucket: String, cache: Arc<SegmentCache>) -> Arc<Self> {
+    pub fn new(
+        client: Client,
+        bucket: String,
+        cache: Arc<SegmentCache>,
+        max_pinned_namespaces: usize,
+    ) -> Arc<Self> {
         let background_indexer =
             BackgroundIndexer::spawn(client.clone(), bucket.clone(), Arc::clone(&cache));
         let write_buffer = WriteBufferManager::new(
@@ -60,7 +67,7 @@ impl Storage {
             bucket,
             cache,
             write_buffer,
-            views: Arc::new(RwLock::new(HashMap::new())),
+            views: Arc::new(Mutex::new(ViewCache::new(max_pinned_namespaces))),
         })
     }
 
@@ -130,7 +137,7 @@ impl Storage {
     }
 
     pub async fn load_namespace(&self, name: &str) -> Result<LoadedNamespace> {
-        let mut views = self.views.write().await;
+        let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(name) {
             view.catch_up(&self.client, &self.bucket, name).await?;
             return self.loaded_from_view(name, view).await;
@@ -141,6 +148,19 @@ impl Storage {
         let loaded = self.loaded_from_view(name, &view).await?;
         views.insert(name.to_string(), view);
         Ok(loaded)
+    }
+
+    /// Warm disk cache + pin in-memory view (turbopuffer `hint_cache_warm` analogue).
+    pub async fn warm_namespace(&self, name: &str) -> Result<WarmStats> {
+        let mut views = self.views.lock().await;
+        warm_namespace(
+            &self.client,
+            &self.bucket,
+            name,
+            &self.cache,
+            &mut views,
+        )
+        .await
     }
 
     async fn loaded_from_view(&self, name: &str, view: &NamespaceView) -> Result<LoadedNamespace> {
@@ -197,7 +217,7 @@ impl Storage {
         let name = name.to_string();
         let views = self.views.clone();
         tokio::spawn(async move {
-            views.write().await.remove(&name);
+            views.lock().await.remove(&name);
         });
     }
 
@@ -213,7 +233,7 @@ impl Storage {
             .write(namespace, upserts, deletes)
             .await?;
 
-        let mut views = self.views.write().await;
+        let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(namespace) {
             view.apply_committed(committed.seq, &committed.entry)?;
             if let Some((meta, _)) =
@@ -291,7 +311,7 @@ impl Storage {
                 .context("delete namespace objects")?;
         }
 
-        self.views.write().await.remove(name);
+        self.views.lock().await.remove(name);
         Ok(())
     }
 }

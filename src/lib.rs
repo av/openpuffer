@@ -7,6 +7,7 @@
 //!   GET  /health
 //!   GET  /v1/namespaces
 //!   GET  /v1/namespaces/{name}      — namespace metadata (index cursor, WAL commit, unindexed bytes)
+//!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
 //!   POST /v2/namespaces/{name}        — write (upsert_rows, upsert_columns, deletes)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
 //!   DELETE /v2/namespaces/{name}
@@ -30,6 +31,8 @@ pub mod namespace;
 pub mod search;
 pub mod storage;
 pub mod view;
+pub mod view_cache;
+pub mod warm;
 pub mod wal;
 
 pub use api::{router, AppState};

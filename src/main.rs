@@ -25,7 +25,12 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let config: AppConfig = args.app_config();
     let client = build_s3_from_serve(&args).await?;
     let cache = SegmentCache::from_optional(config.cache_dir.clone());
-    let storage = Storage::new(client, config.bucket.clone(), cache);
+    let storage = Storage::new(
+        client,
+        config.bucket.clone(),
+        cache,
+        config.max_pinned_namespaces,
+    );
 
     let state = AppState {
         storage: storage.clone(),

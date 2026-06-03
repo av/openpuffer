@@ -53,6 +53,11 @@ impl SegmentCache {
         self.s3_gets.load(Ordering::SeqCst)
     }
 
+    /// Reset GetObject counter (integration / warm-cache tests).
+    pub fn reset_s3_get_count(&self) {
+        self.s3_gets.store(0, Ordering::SeqCst);
+    }
+
     fn local_path(&self, bucket: &str, s3_key: &str) -> Option<PathBuf> {
         let root = self.root.as_ref()?;
         Some(root.join(bucket).join(s3_key))

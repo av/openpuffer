@@ -23,6 +23,7 @@ const MINIO_PASSWORD: &str = "minioadmin";
 const BUCKET: &str = "openpuffer-integration";
 const NAMESPACE: &str = "itest";
 const NAMESPACE_INCR: &str = "itest-incr";
+const NAMESPACE_WARM: &str = "itest-warm";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -179,28 +180,37 @@ impl ServeHandle {
     }
 
     fn spawn(endpoint: &str, listen: &str) -> Self {
+        Self::spawn_with_cache(endpoint, listen, None)
+    }
+
+    fn spawn_with_cache(endpoint: &str, listen: &str, cache_dir: Option<PathBuf>) -> Self {
         let bin = openpuffer_bin();
         assert!(
             bin.exists(),
-            "openpuffer binary not found at {}; run `cargo build` first",
+            "openpuffer binary not found at {}; run `cargo build --features integration` first",
             bin.display()
         );
+        let mut args = vec![
+            "serve".to_string(),
+            "--listen".to_string(),
+            listen.to_string(),
+            "--s3-endpoint".to_string(),
+            endpoint.to_string(),
+            "--s3-bucket".to_string(),
+            BUCKET.to_string(),
+            "--s3-region".to_string(),
+            "us-east-1".to_string(),
+            "--s3-access-key".to_string(),
+            MINIO_USER.to_string(),
+            "--s3-secret-key".to_string(),
+            MINIO_PASSWORD.to_string(),
+        ];
+        if let Some(dir) = cache_dir {
+            args.push("--cache-dir".to_string());
+            args.push(dir.display().to_string());
+        }
         let child = Command::new(&bin)
-            .args([
-                "serve",
-                "--listen",
-                listen,
-                "--s3-endpoint",
-                endpoint,
-                "--s3-bucket",
-                BUCKET,
-                "--s3-region",
-                "us-east-1",
-                "--s3-access-key",
-                MINIO_USER,
-                "--s3-secret-key",
-                MINIO_PASSWORD,
-            ])
+            .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -590,5 +600,87 @@ async fn incremental_index_three_wal_batches_without_regression() {
     assert!(
         fts_ids.contains(&"batch-3".to_string()),
         "FTS should see batch-3 after incremental merges, got {fts_ids:?}"
+    );
+}
+
+/// Warm endpoint populates disk cache; second query after reset uses HEAD-only (no S3 GetObject).
+#[tokio::test]
+async fn warm_cache_then_query_zero_s3_gets() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn_with_cache(
+        &endpoint,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_WARM,
+        json!([{
+            "id": "warm-doc",
+            "attributes": {
+                "embedding": [1.0, 0.0, 0.0],
+                "text": "warm cache integration test",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_WARM, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let warm_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{NAMESPACE_WARM}/warm",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("warm request");
+    assert_eq!(warm_resp.status(), StatusCode::OK, "warm failed");
+    let warm_body: Value = warm_resp.json().await.expect("warm json");
+    assert_eq!(warm_body["status"], "ok");
+    assert!(warm_body["pinned"].as_bool().unwrap_or(false));
+    assert!(warm_body["duration_ms"].as_u64().is_some());
+
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let _ = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_WARM,
+        json!(["BM25", "text", "warm"]),
+        None,
+    )
+    .await;
+
+    let stats = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats");
+    let stats_body: Value = stats.json().await.expect("stats json");
+    assert_eq!(
+        stats_body["s3_get_count"].as_u64(),
+        Some(0),
+        "query after warm should not S3 GetObject index segments (disk cache hit)"
     );
 }
