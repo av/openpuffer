@@ -34,7 +34,7 @@ pub enum FilterValue {
     Number(f64),
     Bool(bool),
     Null,
-    /// turbopuffer `upsert_condition` only: `{"$ref_new": "field"}` reads from the incoming row.
+    /// turbopuffer `upsert_condition` / `patch_condition`: `{"$ref_new": "field"}` reads from the incoming row.
     RefNew(String),
 }
 
@@ -182,6 +182,14 @@ pub fn should_apply_upsert(expr: &FilterExpr, current: Option<&Document>, new: &
     match current {
         None => true,
         Some(doc) => eval_filter_with_new(expr, doc, Some(new)),
+    }
+}
+
+/// turbopuffer `patch_condition`: skip missing ids; otherwise evaluate on current doc with patch as `$ref_new`.
+pub fn should_apply_patch(expr: &FilterExpr, current: Option<&Document>, patch: &Document) -> bool {
+    match current {
+        None => false,
+        Some(doc) => eval_filter_with_new(expr, doc, Some(patch)),
     }
 }
 
@@ -360,6 +368,26 @@ mod tests {
         };
         let cond = parse_filter(&json!(["tag", "Eq", null])).unwrap();
         assert!(eval_filter(&cond, &doc));
+    }
+
+    #[test]
+    fn patch_only_when_status_active() {
+        let active = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("status".into(), json!("active"))]),
+        };
+        let inactive = Document {
+            id: "b".into(),
+            attributes: HashMap::from([("status".into(), json!("inactive"))]),
+        };
+        let patch = Document {
+            id: "a".into(),
+            attributes: HashMap::from([("name".into(), json!("patched"))]),
+        };
+        let cond = parse_filter(&json!(["status", "Eq", "active"])).unwrap();
+        assert!(should_apply_patch(&cond, Some(&active), &patch));
+        assert!(!should_apply_patch(&cond, Some(&inactive), &patch));
+        assert!(!should_apply_patch(&cond, None, &patch));
     }
 
     #[test]

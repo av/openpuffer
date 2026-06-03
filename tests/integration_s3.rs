@@ -32,6 +32,7 @@ const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
+const NAMESPACE_PATCH_COND: &str = "itest-patch-cond";
 const NAMESPACE_DATETIME_UPSERT_COND: &str = "itest-datetime-upsert-cond";
 const NAMESPACE_ORDER_BY: &str = "itest-order-by";
 const NAMESPACE_QUERY_BILLING: &str = "itest-query-billing";
@@ -2042,6 +2043,90 @@ async fn upsert_condition_newer_timestamp_with_datetime() {
         StatusCode::BAD_REQUEST,
         "invalid datetime must be rejected: {}",
         bad.text().await.unwrap_or_default()
+    );
+}
+
+/// `patch_condition`: patch only when condition passes; missing ids ignored.
+#[tokio::test]
+async fn patch_condition_patches_matching_docs_only() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_PATCH_COND,
+        json!({
+            "upsert_rows": [
+                { "id": "active-1", "attributes": { "status": "active", "name": "before" } },
+                { "id": "inactive-1", "attributes": { "status": "inactive", "name": "before" } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!(
+        "{}/v2/namespaces/{NAMESPACE_PATCH_COND}",
+        serve.base_url
+    );
+    let resp = http
+        .post(&write_url)
+        .json(&json!({
+            "patch_condition": ["status", "Eq", "active"],
+            "patch_rows": [
+                { "id": "active-1", "attributes": { "name": "patched" } },
+                { "id": "inactive-1", "attributes": { "name": "should-not-apply" } },
+                { "id": "missing-1", "attributes": { "name": "no-doc" } }
+            ]
+        }))
+        .send()
+        .await
+        .expect("conditional patch");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("write json");
+    assert_eq!(body["rows_patched"].as_u64(), Some(1), "body={body}");
+    assert_eq!(body["rows_affected"].as_u64(), Some(1));
+
+    sleep(Duration::from_millis(1200)).await;
+
+    let export = http
+        .get(format!(
+            "{}/v1/namespaces/{NAMESPACE_PATCH_COND}/export",
+            serve.base_url
+        ))
+        .send()
+        .await
+        .expect("export");
+    assert_eq!(export.status(), StatusCode::OK);
+    let exported: Value = export.json().await.expect("export json");
+    let rows = exported["rows"].as_array().expect("export rows");
+    let mut names: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        let id = row["id"].as_str().expect("id");
+        let name = row["attributes"]["name"]
+            .as_str()
+            .expect("name attr")
+            .to_string();
+        names.insert(id.to_string(), name);
+    }
+    assert_eq!(
+        names.get("active-1").map(String::as_str),
+        Some("patched"),
+        "active doc must be patched, names={names:?}"
+    );
+    assert_eq!(
+        names.get("inactive-1").map(String::as_str),
+        Some("before"),
+        "inactive doc must be unchanged, names={names:?}"
+    );
+    assert!(
+        !names.contains_key("missing-1"),
+        "patch must not create missing doc, names={names:?}"
     );
 }
 

@@ -93,7 +93,19 @@ Optional filter evaluated per row against the **committed** doc map (plus unflus
 ]
 ```
 
-`{"$ref_new": "field"}` resolves the comparison value from the incoming upsert row (v1: `upsert_condition` only). With canonical `datetime` strings, `Lt` is chronological order.
+`{"$ref_new": "field"}` resolves the comparison value from the incoming upsert row. With canonical `datetime` strings, `Lt` is chronological order.
+
+### Conditional patches (`patch_condition`)
+
+Same filter DSL as `upsert_condition`, evaluated per `patch_rows` / `patch_columns` row against the **committed** doc map (plus unflushed buffer overlay). Missing ids are **ignored** without evaluating the condition ([turbopuffer `patch_condition`](https://turbopuffer.com/docs/write#param-patch_condition)). Does not apply to `patch_by_filter`.
+
+**Patch only when status matches:**
+
+```json
+["status", "Eq", "active"]
+```
+
+`rows_patched` counts only rows where the condition passed and the patch was written.
 
 **Write response** (turbopuffer [`write` response](https://turbopuffer.com/docs/write) subset): `rows_affected`, optional `rows_upserted` / `rows_patched` / `rows_deleted`, and `billing.billable_logical_bytes_written` (v1 estimate: 64 bytes × affected rows per request).
 

@@ -551,6 +551,18 @@ async fn write_namespace(
         },
     };
 
+    let patch_condition = match body
+        .patch_condition
+        .as_ref()
+        .filter(|v| !v.is_null())
+    {
+        None => None,
+        Some(v) => match parse_filter(v) {
+            Ok(_) => body.patch_condition.clone(),
+            Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        },
+    };
+
     let distance_metric = match body.distance_metric.as_deref() {
         None => None,
         Some(s) if s.is_empty() => None,
@@ -625,6 +637,7 @@ async fn write_namespace(
             patch_by_filter,
             body.patch_by_filter_allow_partial,
             upsert_condition,
+            patch_condition,
             distance_metric,
             body.return_affected_ids,
         )

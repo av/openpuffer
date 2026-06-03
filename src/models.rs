@@ -67,6 +67,9 @@ pub struct WriteRequest {
     /// Conditional upserts (turbopuffer): same filter DSL as query; missing docs always insert.
     #[serde(default)]
     pub upsert_condition: Option<Value>,
+    /// Conditional patches (turbopuffer): same filter DSL; missing ids are ignored without evaluation.
+    #[serde(default)]
+    pub patch_condition: Option<Value>,
     /// ANN distance for the namespace: `cosine_distance` (default) or `euclidean_squared`.
     /// Stored in `meta.json` on first write; later writes must match.
     #[serde(default)]
