@@ -6,6 +6,7 @@ use crate::models::{
 };
 use crate::schema::{merge_schema, validate_patch_attributes};
 use crate::filter::parse_filter;
+use crate::meta::{parse_distance_metric, resolve_distance_metric};
 use crate::storage::s3_error_hint;
 use crate::search;
 use crate::storage::Storage;
@@ -444,6 +445,39 @@ async fn write_namespace(
         },
     };
 
+    let distance_metric = match body.distance_metric.as_deref() {
+        None => None,
+        Some(s) if s.is_empty() => None,
+        Some(s) => match parse_distance_metric(s) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{e:#}")})),
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    if let Some(metric) = distance_metric {
+        if let Ok(Some((meta, _))) = crate::namespace::fetch_meta(
+            state.storage.client(),
+            state.storage.bucket(),
+            &name,
+        )
+        .await
+        {
+            if let Err(e) = resolve_distance_metric(&meta, Some(metric)) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{e:#}")})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     match state
         .storage
         .write_documents(
@@ -454,6 +488,8 @@ async fn write_namespace(
             body.schema,
             body.delete_by_filter,
             upsert_condition,
+            distance_metric,
+            body.return_affected_ids,
         )
         .await
     {
@@ -464,6 +500,13 @@ async fn write_namespace(
             .into_response(),
         Err(e) => {
             error!("write namespace {name}: {e:#}");
+            if e.to_string().contains("distance_metric") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{e:#}")})),
+                )
+                    .into_response();
+            }
             storage_error_response(e)
         }
     }

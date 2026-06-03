@@ -38,6 +38,8 @@ const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
 const NAMESPACE_ORDER_BY: &str = "itest-order-by";
+const NAMESPACE_DISTANCE_METRIC: &str = "itest-distance-metric";
+const NAMESPACE_AFFECTED_IDS: &str = "itest-affected-ids";
 const STRESS_DOCS: usize = 10_000;
 const STRESS_BATCH: usize = 2_000;
 const STRESS_DIM: usize = 128;
@@ -1965,4 +1967,149 @@ async fn order_by_sorts_tied_bm25_results_by_attribute() {
         vec!["ob-b".to_string(), "ob-c".to_string(), "ob-a".to_string()],
         "order_by seq desc should sort tied BM25 hits, got {ids:?}"
     );
+}
+
+/// `distance_metric` on first write is stored in meta; conflicting later write is rejected.
+#[tokio::test]
+async fn distance_metric_stored_and_enforced_on_write() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_DISTANCE_METRIC,
+        json!({
+            "distance_metric": "euclidean_squared",
+            "upsert_rows": [
+                { "id": "dm-a", "attributes": { "embedding": [0.0, 0.0] } },
+                { "id": "dm-b", "attributes": { "embedding": [3.0, 4.0] } }
+            ],
+            "schema": { "embedding": "[2]f32" }
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let meta_key = meta_key(NAMESPACE_DISTANCE_METRIC);
+    let out = s3
+        .get_object()
+        .bucket(BUCKET)
+        .key(&meta_key)
+        .send()
+        .await
+        .expect("get meta");
+    let bytes = out.body.collect().await.expect("meta body").into_bytes();
+    let meta: NamespaceMeta = serde_json::from_slice(&bytes).expect("meta json");
+    assert_eq!(
+        meta.distance_metric,
+        openpuffer::meta::DistanceMetric::EuclideanSquared
+    );
+
+    let client = reqwest::Client::new();
+    let conflict = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_DISTANCE_METRIC
+        ))
+        .json(&json!({
+            "distance_metric": "cosine_distance",
+            "upsert_rows": [{ "id": "dm-c", "attributes": { "embedding": [1.0, 0.0] } }]
+        }))
+        .send()
+        .await
+        .expect("conflict write");
+    assert_eq!(
+        conflict.status(),
+        StatusCode::BAD_REQUEST,
+        "conflicting distance_metric must be rejected: {}",
+        conflict.text().await.unwrap_or_default()
+    );
+
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_DISTANCE_METRIC, Duration::from_secs(90))
+        .await;
+    let v = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_DISTANCE_METRIC,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [0.0, 0.0]],
+            "top_k": 2
+        }),
+    )
+    .await;
+    let ids: Vec<String> = v["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| r["id"].as_str().expect("id").to_string())
+        .collect();
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some("dm-a"),
+        "euclidean_squared should rank [0,0] nearest to query [0,0], got {ids:?}"
+    );
+}
+
+/// `return_affected_ids` returns upserted and deleted id lists for the write batch.
+#[tokio::test]
+async fn return_affected_ids_lists_upserts_and_deletes() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/v2/namespaces/{}",
+            serve.base_url, NAMESPACE_AFFECTED_IDS
+        ))
+        .json(&json!({
+            "return_affected_ids": true,
+            "upsert_rows": [
+                { "id": "aff-1", "attributes": { "text": "one" } },
+                { "id": "aff-2", "attributes": { "text": "two" } }
+            ],
+            "deletes": ["aff-ghost"]
+        }))
+        .send()
+        .await
+        .expect("write");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: Value = resp.json().await.expect("write json");
+    let upserted: Vec<String> = v["upserted_ids"]
+        .as_array()
+        .expect("upserted_ids")
+        .iter()
+        .map(|x| x.as_str().expect("id").to_string())
+        .collect();
+    let deleted: Vec<String> = v["deleted_ids"]
+        .as_array()
+        .expect("deleted_ids")
+        .iter()
+        .map(|x| x.as_str().expect("id").to_string())
+        .collect();
+    assert_eq!(upserted, vec!["aff-1".to_string(), "aff-2".to_string()]);
+    assert_eq!(deleted, vec!["aff-ghost".to_string()]);
 }

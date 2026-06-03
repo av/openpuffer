@@ -15,6 +15,41 @@ pub enum DistanceMetric {
     EuclideanSquared,
 }
 
+/// Parse turbopuffer write/query `distance_metric` string.
+pub fn parse_distance_metric(s: &str) -> Result<DistanceMetric> {
+    match s {
+        "cosine_distance" => Ok(DistanceMetric::CosineDistance),
+        "euclidean_squared" => Ok(DistanceMetric::EuclideanSquared),
+        other => Err(anyhow!(
+            "invalid distance_metric {other:?}; expected cosine_distance or euclidean_squared"
+        )),
+    }
+}
+
+/// Resolve metric for the next meta commit: set on first WAL, enforce match thereafter.
+pub fn resolve_distance_metric(
+    meta: &NamespaceMeta,
+    requested: Option<DistanceMetric>,
+) -> Result<DistanceMetric> {
+    match requested {
+        None => Ok(meta.distance_metric),
+        Some(m) if meta.wal_commit_seq == 0 => Ok(m),
+        Some(m) if m == meta.distance_metric => Ok(meta.distance_metric),
+        Some(m) => Err(anyhow!(
+            "distance_metric {} conflicts with namespace {}",
+            metric_name(m),
+            metric_name(meta.distance_metric)
+        )),
+    }
+}
+
+fn metric_name(m: DistanceMetric) -> &'static str {
+    match m {
+        DistanceMetric::CosineDistance => "cosine_distance",
+        DistanceMetric::EuclideanSquared => "euclidean_squared",
+    }
+}
+
 /// Durable namespace state on object storage (turbopuffer-style commit + index cursor).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NamespaceMeta {
@@ -96,7 +131,7 @@ pub fn push_segment_id(ids: &mut Vec<u64>, id: u64) {
 
 /// Build updated metadata after appending WAL object `seq` (CAS payload).
 pub fn meta_after_wal_commit(meta: &NamespaceMeta, seq: u64) -> Result<NamespaceMeta> {
-    meta_after_wal_commit_with_schema(meta, seq, None)
+    meta_after_wal_commit_options(meta, seq, None, None)
 }
 
 /// Like [`meta_after_wal_commit`], optionally merging a write-time schema patch.
@@ -104,6 +139,16 @@ pub fn meta_after_wal_commit_with_schema(
     meta: &NamespaceMeta,
     seq: u64,
     schema_patch: Option<&Value>,
+) -> Result<NamespaceMeta> {
+    meta_after_wal_commit_options(meta, seq, schema_patch, None)
+}
+
+/// Like [`meta_after_wal_commit_with_schema`], optionally setting/enforcing `distance_metric`.
+pub fn meta_after_wal_commit_options(
+    meta: &NamespaceMeta,
+    seq: u64,
+    schema_patch: Option<&Value>,
+    distance_metric: Option<DistanceMetric>,
 ) -> Result<NamespaceMeta> {
     if seq != meta.wal_commit_seq.saturating_add(1) {
         return Err(anyhow!(
@@ -116,6 +161,7 @@ pub fn meta_after_wal_commit_with_schema(
     if let Some(patch) = schema_patch {
         next.schema = crate::schema::merge_schema(&next.schema, patch);
     }
+    next.distance_metric = resolve_distance_metric(meta, distance_metric)?;
     Ok(next)
 }
 
@@ -191,5 +237,54 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(next_wal_seq(&meta), 43);
+    }
+
+    #[test]
+    fn parse_distance_metric_accepts_turbopuffer_names() {
+        assert_eq!(
+            parse_distance_metric("cosine_distance").unwrap(),
+            DistanceMetric::CosineDistance
+        );
+        assert_eq!(
+            parse_distance_metric("euclidean_squared").unwrap(),
+            DistanceMetric::EuclideanSquared
+        );
+        assert!(parse_distance_metric("l2").is_err());
+    }
+
+    #[test]
+    fn resolve_distance_metric_first_write_and_enforce() {
+        let fresh = NamespaceMeta::default();
+        assert_eq!(
+            resolve_distance_metric(&fresh, Some(DistanceMetric::EuclideanSquared)).unwrap(),
+            DistanceMetric::EuclideanSquared
+        );
+        let committed = NamespaceMeta {
+            wal_commit_seq: 1,
+            distance_metric: DistanceMetric::EuclideanSquared,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_distance_metric(&committed, None).unwrap(),
+            DistanceMetric::EuclideanSquared
+        );
+        assert_eq!(
+            resolve_distance_metric(&committed, Some(DistanceMetric::EuclideanSquared)).unwrap(),
+            DistanceMetric::EuclideanSquared
+        );
+        assert!(resolve_distance_metric(&committed, Some(DistanceMetric::CosineDistance)).is_err());
+    }
+
+    #[test]
+    fn meta_after_wal_commit_sets_distance_metric_on_first_write() {
+        let meta = NamespaceMeta::default();
+        let next = meta_after_wal_commit_options(
+            &meta,
+            1,
+            None,
+            Some(DistanceMetric::EuclideanSquared),
+        )
+        .unwrap();
+        assert_eq!(next.distance_metric, DistanceMetric::EuclideanSquared);
     }
 }

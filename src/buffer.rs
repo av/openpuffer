@@ -13,6 +13,7 @@
 //! the WAL object is on S3 and `meta.json` CAS succeeded before waiters are released.
 
 use crate::indexer::BackgroundIndexer;
+use crate::meta::DistanceMetric;
 use crate::models::{Document, WriteStats};
 use crate::namespace::append_wal;
 use crate::wal::WalEntry;
@@ -65,6 +66,7 @@ struct BufferState {
     patches: Vec<Document>,
     deletes: Vec<String>,
     schema_patch: Option<Value>,
+    distance_metric: Option<DistanceMetric>,
     waiters: Vec<WriteWaiter>,
     timer: Option<AbortHandle>,
 }
@@ -124,6 +126,7 @@ impl WriteBufferManager {
         patches: Vec<Document>,
         deletes: Vec<String>,
         schema_patch: Option<Value>,
+        distance_metric: Option<DistanceMetric>,
         stats: WriteStats,
     ) -> Result<CommittedBatch> {
         let buf = self.buffer_for(namespace).await;
@@ -141,13 +144,17 @@ impl WriteBufferManager {
                     None => patch,
                 });
             }
+            if let Some(metric) = distance_metric {
+                st.distance_metric = Some(metric);
+            }
             st.waiters.push(WriteWaiter {
                 stats: req_stats,
                 tx,
             });
             let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
-            let schema_only = ops == 0 && st.schema_patch.is_some();
-            if ops >= self.config.max_batch_ops || schema_only {
+            let metadata_only =
+                ops == 0 && (st.schema_patch.is_some() || st.distance_metric.is_some());
+            if ops >= self.config.max_batch_ops || metadata_only {
                 true
             } else if st.timer.is_none() {
                 let mgr = Arc::new(self.clone_inner());
@@ -196,6 +203,7 @@ impl WriteBufferManager {
                         patches: Vec::new(),
                         deletes: Vec::new(),
                         schema_patch: None,
+                        distance_metric: None,
                         waiters: Vec::new(),
                         timer: None,
                     }),
@@ -231,8 +239,9 @@ impl WriteBufferManager {
         let (pending, cooldown) = {
             let st = buf.state.lock().await;
             let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
-            let schema_only = ops == 0 && st.schema_patch.is_some();
-            let pending = ops > 0 || schema_only;
+            let metadata_only =
+                ops == 0 && (st.schema_patch.is_some() || st.distance_metric.is_some());
+            let pending = ops > 0 || metadata_only;
             let last = buf.last_committed_at.lock().await;
             let cooldown =
                 remaining_commit_cooldown(*last, self.config.min_commit_interval, Instant::now());
@@ -303,7 +312,7 @@ impl WriteBufferManager {
                 let pending = {
                     let st = buf.state.lock().await;
                     let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
-                    ops > 0 || st.schema_patch.is_some()
+                    ops > 0 || st.schema_patch.is_some() || st.distance_metric.is_some()
                 };
                 if !pending {
                     break;
@@ -334,8 +343,9 @@ impl WriteBufferManager {
                 Err(_) => return,
             };
             let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
-            let schema_only = ops == 0 && st.schema_patch.is_some();
-            (ops > 0 || schema_only) && st.timer.is_none()
+            let metadata_only =
+                ops == 0 && (st.schema_patch.is_some() || st.distance_metric.is_some());
+            (ops > 0 || metadata_only) && st.timer.is_none()
         };
         if !pending {
             return;
@@ -385,6 +395,7 @@ impl WriteBufferManager {
                     && st.patches.is_empty()
                     && st.deletes.is_empty()
                     && st.schema_patch.is_none()
+                    && st.distance_metric.is_none()
                 {
                     None
                 } else {
@@ -394,13 +405,14 @@ impl WriteBufferManager {
                         std::mem::take(&mut st.patches),
                         std::mem::take(&mut st.deletes),
                         st.schema_patch.take(),
+                        st.distance_metric.take(),
                         std::mem::take(&mut st.waiters),
                     ))
                 }
             };
             match drained {
                 None => Ok(()),
-                Some((upserts, patches, deletes, schema_patch, waiters)) => {
+                Some((upserts, patches, deletes, schema_patch, distance_metric, waiters)) => {
                     let result: Result<(u64, WalEntry)> = async {
                         let entry = WalEntry::from_write(upserts, patches, deletes)?;
                         let seq = append_wal(
@@ -409,6 +421,7 @@ impl WriteBufferManager {
                             namespace,
                             entry.clone(),
                             schema_patch.as_ref(),
+                            distance_metric,
                         )
                         .await?;
                         Ok((seq, entry))

@@ -55,6 +55,13 @@ pub struct WriteRequest {
     /// Conditional upserts (turbopuffer): same filter DSL as query; missing docs always insert.
     #[serde(default)]
     pub upsert_condition: Option<Value>,
+    /// ANN distance for the namespace: `cosine_distance` (default) or `euclidean_squared`.
+    /// Stored in `meta.json` on first write; later writes must match.
+    #[serde(default)]
+    pub distance_metric: Option<String>,
+    /// Include `upserted_ids` and `deleted_ids` in the write response.
+    #[serde(default)]
+    pub return_affected_ids: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +77,10 @@ pub struct WriteStats {
     pub rows_upserted: u64,
     pub rows_patched: u64,
     pub rows_deleted: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upserted_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_ids: Option<Vec<String>>,
 }
 
 impl WriteStats {
@@ -99,12 +110,17 @@ pub struct WriteResponse {
     pub rows_patched: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_deleted: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upserted_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_ids: Option<Vec<String>>,
     pub billing: WriteBilling,
 }
 
 impl WriteResponse {
     pub fn from_stats(namespace: String, stats: WriteStats) -> Self {
         let rows_affected = stats.rows_affected();
+        let billing_bytes = stats.billable_logical_bytes_written();
         Self {
             status: "ok",
             namespace,
@@ -112,8 +128,10 @@ impl WriteResponse {
             rows_upserted: (stats.rows_upserted > 0).then_some(stats.rows_upserted),
             rows_patched: (stats.rows_patched > 0).then_some(stats.rows_patched),
             rows_deleted: (stats.rows_deleted > 0).then_some(stats.rows_deleted),
+            upserted_ids: stats.upserted_ids,
+            deleted_ids: stats.deleted_ids,
             billing: WriteBilling {
-                billable_logical_bytes_written: stats.billable_logical_bytes_written(),
+                billable_logical_bytes_written: billing_bytes,
             },
         }
     }
@@ -286,6 +304,8 @@ mod tests {
             rows_upserted: 3,
             rows_patched: 1,
             rows_deleted: 2,
+            upserted_ids: None,
+            deleted_ids: None,
         };
         assert_eq!(stats.rows_affected(), 6);
         assert_eq!(stats.billable_logical_bytes_written(), 384);
@@ -297,6 +317,8 @@ mod tests {
             "ns".into(),
             WriteStats {
                 rows_upserted: 2,
+                upserted_ids: None,
+                deleted_ids: None,
                 ..Default::default()
             },
         );
@@ -305,6 +327,24 @@ mod tests {
         assert_eq!(json["rows_upserted"], 2);
         assert!(json.get("rows_patched").is_none());
         assert!(json.get("rows_deleted").is_none());
+        assert!(json.get("upserted_ids").is_none());
         assert!(json["billing"]["billable_logical_bytes_written"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn write_response_includes_affected_ids_when_present() {
+        let resp = WriteResponse::from_stats(
+            "ns".into(),
+            WriteStats {
+                rows_upserted: 1,
+                rows_deleted: 1,
+                upserted_ids: Some(vec!["a".into()]),
+                deleted_ids: Some(vec!["b".into()]),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["upserted_ids"], serde_json::json!(["a"]));
+        assert_eq!(json["deleted_ids"], serde_json::json!(["b"]));
     }
 }

@@ -424,6 +424,8 @@ impl Storage {
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
         upsert_condition: Option<serde_json::Value>,
+        distance_metric: Option<crate::meta::DistanceMetric>,
+        return_affected_ids: bool,
     ) -> Result<crate::models::WriteStats> {
         if let Some(filter_val) = delete_by_filter {
             if !filter_val.is_null() {
@@ -442,15 +444,27 @@ impl Storage {
             .apply_upsert_condition(namespace, upserts, upsert_condition)
             .await?;
 
+        let upserted_ids: Vec<String> = upserts.iter().map(|d| d.id.clone()).collect();
+        let deleted_ids = deletes.clone();
         let stats = crate::models::WriteStats {
             rows_upserted: upserts.len() as u64,
             rows_patched: patches.len() as u64,
             rows_deleted: deletes.len() as u64,
+            upserted_ids: return_affected_ids.then_some(upserted_ids),
+            deleted_ids: return_affected_ids.then_some(deleted_ids),
         };
 
         let committed = self
             .write_buffer
-            .write(namespace, upserts, patches, deletes, schema_patch, stats)
+            .write(
+                namespace,
+                upserts,
+                patches,
+                deletes,
+                schema_patch,
+                distance_metric,
+                stats,
+            )
             .await?;
         let stats = committed.stats;
 

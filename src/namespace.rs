@@ -2,7 +2,8 @@
 
 use crate::commit_lock::namespace_commit_lock;
 use crate::meta::{
-    meta_after_wal_commit_with_schema, meta_key, next_wal_seq, NamespaceMeta, META_RETRIES,
+    meta_after_wal_commit_options, meta_key, next_wal_seq, DistanceMetric, NamespaceMeta,
+    META_RETRIES,
 };
 use serde_json::Value;
 use crate::models::Document;
@@ -186,6 +187,7 @@ pub async fn append_wal(
     namespace: &str,
     entry: WalEntry,
     schema_patch: Option<&Value>,
+    distance_metric: Option<DistanceMetric>,
 ) -> Result<u64> {
     let commit_lock = namespace_commit_lock(namespace).await;
     let _commit = commit_lock.lock().await;
@@ -201,7 +203,8 @@ pub async fn append_wal(
         let wal_body = encode(&entry)?;
         put_wal_with_retry(client, bucket, namespace, seq, wal_body).await?;
 
-        let next_meta = meta_after_wal_commit_with_schema(&meta, seq, schema_patch)?;
+        let next_meta =
+            meta_after_wal_commit_options(&meta, seq, schema_patch, distance_metric)?;
         let body = serde_json::to_vec(&next_meta)?;
 
         let mut put = client
