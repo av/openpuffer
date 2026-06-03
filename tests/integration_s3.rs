@@ -30,6 +30,8 @@ const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
 const NAMESPACE_RESTART_WRITE: &str = "itest-restart-write";
 const NAMESPACE_EXPORT: &str = "itest-export";
 const NAMESPACE_WAL_RATE: &str = "itest-wal-rate";
+const NAMESPACE_COPY_SRC: &str = "itest-copy-src";
+const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -1322,4 +1324,85 @@ async fn export_after_writes_returns_all_doc_ids() {
 
     let meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_EXPORT).await;
     assert_eq!(meta.wal_commit_seq, commit_seq);
+}
+
+/// `copy_from_namespace` clones S3 layout; query on destination returns same documents.
+#[tokio::test]
+async fn copy_from_namespace_returns_same_docs_on_dest() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_COPY_SRC,
+        json!([
+            {"id": "copy-a", "attributes": {"text": "alpha copy", "embedding": [1.0, 0.0, 0.0]}},
+            {"id": "copy-b", "attributes": {"text": "beta copy", "embedding": [0.0, 1.0, 0.0]}},
+        ]),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_COPY_SRC, Duration::from_secs(90)).await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_COPY_DEST,
+        json!({"copy_from_namespace": NAMESPACE_COPY_SRC}),
+    )
+    .await;
+
+    let src_meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_COPY_SRC).await;
+    let dest_meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_COPY_DEST).await;
+    assert_eq!(
+        dest_meta.wal_commit_seq, src_meta.wal_commit_seq,
+        "dest should inherit WAL commit seq from source"
+    );
+
+    let dest_prefix = format!("{ROOT_PREFIX}{NAMESPACE_COPY_DEST}/");
+    let dest_keys = list_keys_with_prefix(&s3, BUCKET, &dest_prefix).await;
+    assert!(
+        dest_keys.iter().any(|k| k.contains("/wal/")),
+        "dest missing wal objects: {dest_keys:?}"
+    );
+    assert!(
+        dest_keys.iter().any(|k| k.ends_with("meta.json")),
+        "dest missing meta.json: {dest_keys:?}"
+    );
+
+    let fts_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_COPY_DEST,
+        json!(["BM25", "text", "alpha"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.iter().any(|id| id == "copy-a"),
+        "dest FTS query should find copy-a, got {fts_ids:?}"
+    );
+
+    let vector_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_COPY_DEST,
+        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_ids.first().map(String::as_str),
+        Some("copy-a"),
+        "dest vector top-1 should be copy-a, got {vector_ids:?}"
+    );
 }

@@ -261,6 +261,12 @@ impl WriteBufferManager {
         }
     }
 
+    /// Drop in-memory buffer state for a namespace (e.g. after server-side namespace copy).
+    pub async fn drop_namespace(&self, namespace: &str) {
+        let mut guard = self.buffers.write().await;
+        guard.remove(namespace);
+    }
+
     /// Flush all namespaces (e.g. graceful shutdown). Bypasses per-namespace commit rate limit.
     pub async fn flush_all(&self) -> Result<()> {
         let names: Vec<String> = self.buffers.read().await.keys().cloned().collect();

@@ -264,11 +264,59 @@ async fn get_namespace_metadata(
     }
 }
 
+fn write_has_row_ops(body: &WriteRequest) -> bool {
+    !body.upsert_rows.is_empty()
+        || body.upsert_columns.is_some()
+        || !body.patch_rows.is_empty()
+        || body.patch_columns.is_some()
+        || !body.deletes.is_empty()
+        || body.schema.is_some()
+        || body
+            .delete_by_filter
+            .as_ref()
+            .is_some_and(|v| !v.is_null())
+}
+
 async fn write_namespace(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<WriteRequest>,
 ) -> impl IntoResponse {
+    if let Some(source) = body.copy_from_namespace.as_deref() {
+        if source.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "copy_from_namespace must not be empty"})),
+            )
+                .into_response();
+        }
+        if write_has_row_ops(&body) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "copy_from_namespace cannot be combined with other write operations"
+                })),
+            )
+                .into_response();
+        }
+        match state.storage.copy_from_namespace(&name, source).await {
+            Ok(()) => {
+                return (
+                    StatusCode::OK,
+                    Json(crate::models::WriteResponse::from_stats(
+                        name,
+                        crate::models::WriteStats::default(),
+                    )),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!("copy namespace {name} from {source}: {e:#}");
+                return copy_namespace_error_response(e);
+            }
+        }
+    }
+
     let mut upserts = Vec::new();
     for row in body.upsert_rows {
         if let Err(msg) = validate_doc_id(&row.id) {
@@ -512,6 +560,21 @@ fn query_performance_headers(perf: Option<&QueryPerformance>) -> HeaderMap {
         }
     }
     headers
+}
+
+fn copy_namespace_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {
+    let err: anyhow::Error = e.into();
+    let msg = err.to_string();
+    let status = if msg.contains("destination namespace must be empty")
+        || msg.contains("cannot copy namespace to itself")
+    {
+        StatusCode::BAD_REQUEST
+    } else if msg.contains("source namespace not found") {
+        StatusCode::NOT_FOUND
+    } else {
+        return storage_error_response(err);
+    };
+    (status, Json(serde_json::json!({"error": msg}))).into_response()
 }
 
 fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {

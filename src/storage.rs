@@ -301,11 +301,76 @@ impl Storage {
     }
 
     pub fn invalidate_cache(&self, name: &str) {
+        self.cache.invalidate_namespace(&self.bucket, name);
         let name = name.to_string();
         let views = self.views.clone();
         tokio::spawn(async move {
             views.lock().await.remove(&name);
         });
+    }
+
+    /// Server-side S3 copy of all objects under `openpuffer/{source}/` → `openpuffer/{dest}/`.
+    /// Destination must be empty; source must exist.
+    pub async fn copy_from_namespace(&self, dest: &str, source: &str) -> Result<()> {
+        if dest == source {
+            return Err(anyhow!("cannot copy namespace to itself"));
+        }
+        if namespace_exists(&self.client, &self.bucket, dest).await? {
+            return Err(anyhow!("destination namespace must be empty"));
+        }
+        let source_prefix = crate::models::namespace_prefix(source);
+        if !namespace_exists(&self.client, &self.bucket, source).await? {
+            return Err(anyhow!("source namespace not found"));
+        }
+
+        let dest_prefix = crate::models::namespace_prefix(dest);
+        let mut keys = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&source_prefix);
+            if let Some(t) = &token {
+                req = req.continuation_token(t);
+            }
+            let out = req.send().await.context("list source namespace objects")?;
+            for obj in out.contents() {
+                if let Some(k) = obj.key() {
+                    keys.push(k.to_string());
+                }
+            }
+            token = out.next_continuation_token().map(|s| s.to_string());
+            if token.is_none() {
+                break;
+            }
+        }
+
+        if keys.is_empty() {
+            return Err(anyhow!("source namespace not found"));
+        }
+
+        for key in &keys {
+            let suffix = key
+                .strip_prefix(&source_prefix)
+                .ok_or_else(|| anyhow!("unexpected key prefix: {key}"))?;
+            let dest_key = format!("{dest_prefix}{suffix}");
+            let copy_source = format!("{}/{}", self.bucket, key);
+            self.client
+                .copy_object()
+                .bucket(&self.bucket)
+                .key(&dest_key)
+                .copy_source(copy_source)
+                .send()
+                .await
+                .with_context(|| format!("copy {key} -> {dest_key}"))?;
+        }
+
+        self.write_buffer.drop_namespace(dest).await;
+        self.cache.invalidate_namespace(&self.bucket, dest);
+        self.views.lock().await.remove(dest);
+        Ok(())
     }
 
     /// Durably append via group-commit buffer; ACK after WAL + meta CAS on S3.

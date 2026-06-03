@@ -214,6 +214,19 @@ impl SegmentCache {
         }
     }
 
+    /// Drop cached index segments for a namespace (after copy/delete).
+    pub fn invalidate_namespace(&self, bucket: &str, namespace: &str) {
+        let Some(root) = self.root.as_ref() else {
+            return;
+        };
+        let dir = root.join(bucket).join(crate::models::ROOT_PREFIX).join(namespace);
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::debug!("invalidate cache {dir:?}: {e}");
+            }
+        }
+    }
+
     /// Background prefetch of index keys (non-blocking).
     pub fn prefetch_background(
         self: Arc<Self>,
