@@ -16,12 +16,21 @@ use anyhow::{Context, Result};
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
 
-/// Index artifacts loaded via the cold batch plan.
+/// Index artifacts loaded via the cold batch plan (full index — warm prefetch / export).
 #[derive(Debug, Default)]
 pub struct ColdIndexArtifacts {
     pub fts: Option<FtsSegment>,
     pub filter: Option<FilterSegment>,
     pub vectors: HashMap<String, VectorIndex>,
+    pub storage_roundtrips: u32,
+}
+
+/// Partial cold index: L0 + FTS + filter at query bootstrap; L1/clusters loaded per probe plan.
+#[derive(Debug, Default)]
+pub struct ColdBootstrapArtifacts {
+    pub fts: Option<FtsSegment>,
+    pub filter: Option<FilterSegment>,
+    pub l0_by_field: HashMap<String, CentroidIndexL0>,
     pub storage_roundtrips: u32,
 }
 
@@ -94,6 +103,72 @@ pub fn round2_keys(
     keys
 }
 
+/// Probed L1 object keys only (no filter, no clusters).
+pub fn l1_keys_for_query_probe(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: &CentroidIndexL0,
+    query: &[f64],
+) -> Vec<String> {
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
+    let mut keys = Vec::new();
+    for coarse_id in l0.nearest_coarse(query, l0.probe_coarse_count()) {
+        if use_legacy {
+            keys.push(CentroidIndexL1::legacy_key(namespace, coarse_id));
+        } else {
+            keys.push(CentroidIndexL1::key(namespace, field, coarse_id));
+        }
+    }
+    keys
+}
+
+/// Probed cluster object keys given L1 segments already in memory.
+pub fn cluster_keys_for_query(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: &CentroidIndexL0,
+    l1_loaded: &HashMap<u32, CentroidIndexL1>,
+    query: &[f64],
+) -> Vec<String> {
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
+    let mut keys = Vec::new();
+    for fine_id in fine_ids_for_probed_query(l0, l1_loaded, query) {
+        if use_legacy {
+            keys.push(ClusterSegment::legacy_key(namespace, fine_id));
+        } else {
+            keys.push(ClusterSegment::key(namespace, field, fine_id));
+        }
+    }
+    keys
+}
+
+/// Global fine ids to fetch after probed coarse L1 is decoded.
+pub fn fine_ids_for_probed_query(
+    l0: &CentroidIndexL0,
+    l1_loaded: &HashMap<u32, CentroidIndexL1>,
+    query: &[f64],
+) -> Vec<u32> {
+    if query.len() != l0.dimensions as usize {
+        return Vec::new();
+    }
+    let coarse_m = l0.probe_coarse_count();
+    let mut fine_ids = Vec::new();
+    for coarse_id in l0.nearest_coarse(query, coarse_m) {
+        let Some(l1) = l1_loaded.get(&coarse_id) else {
+            continue;
+        };
+        let fine_m = l0.probe_fine_count(l1);
+        for local in l1.nearest_fine(query, l0.distance_metric, fine_m) {
+            fine_ids.push(l0.global_fine_id(coarse_id, local));
+        }
+    }
+    fine_ids.sort_unstable();
+    fine_ids.dedup();
+    fine_ids
+}
+
 /// Keys for round 2 query path: filter + probed L1 + probed clusters only.
 pub fn round2_keys_for_query(
     namespace: &str,
@@ -143,7 +218,7 @@ pub fn round2_keys_for_query(
     keys
 }
 
-/// Probe plan without requiring L1 in memory: fetch L1 for top coarse, clusters resolved after decode.
+/// Probe plan without requiring L1 in memory: filter + L1 for top coarse (clusters after decode).
 pub fn round2_keys_for_query_probe(
     namespace: &str,
     meta: &NamespaceMeta,
@@ -151,17 +226,9 @@ pub fn round2_keys_for_query_probe(
     l0: &CentroidIndexL0,
     query: &[f64],
 ) -> Vec<String> {
-    let mut keys = Vec::new();
+    let mut keys = l1_keys_for_query_probe(namespace, meta, field, l0, query);
     if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
-    }
-    let use_legacy = vector_index_uses_legacy_paths(meta, field);
-    for coarse_id in l0.nearest_coarse(query, l0.probe_coarse_count()) {
-        if use_legacy {
-            keys.push(CentroidIndexL1::legacy_key(namespace, coarse_id));
-        } else {
-            keys.push(CentroidIndexL1::key(namespace, field, coarse_id));
-        }
     }
     keys
 }
@@ -218,7 +285,162 @@ async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Ve
     }
 }
 
-/// Cold index load: two batched rounds (no disk cache / no HEAD per object).
+/// Cold query bootstrap: L0 + FTS (round 1) and filter (round 2). Vector L1/clusters are per-query.
+pub async fn fetch_cold_index_bootstrap(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+) -> Result<ColdBootstrapArtifacts> {
+    let mut storage_roundtrips = 0u32;
+
+    let r1_keys = round1_index_keys(namespace, meta);
+    let r1 = if r1_keys.is_empty() {
+        HashMap::new()
+    } else {
+        storage_roundtrips += 1;
+        fetch_round(client, bucket, &r1_keys).await?
+    };
+
+    let mut l0_by_field = HashMap::new();
+    for cfg in effective_vector_fields(meta) {
+        if cfg.segment_id == 0 || meta.index_cursor == 0 || cfg.dimensions == 0 {
+            continue;
+        }
+        let key = CentroidIndexL0::key(namespace, &cfg.name);
+        let bytes = r1.get(&key).or_else(|| {
+            if vector_index_uses_legacy_paths(meta, &cfg.name) {
+                r1.get(&CentroidIndexL0::legacy_key(namespace))
+            } else {
+                None
+            }
+        });
+        if let Some(b) = bytes {
+            if let Ok(l0) = CentroidIndexL0::decode(b) {
+                if l0.num_fine_total > 0 {
+                    l0_by_field.insert(cfg.name.clone(), l0);
+                }
+            }
+        }
+    }
+
+    let mut r2_keys = Vec::new();
+    if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
+        r2_keys.push(FilterSegment::key(namespace, meta.filter_segment_id));
+    }
+    let r2 = if r2_keys.is_empty() {
+        HashMap::new()
+    } else {
+        storage_roundtrips += 1;
+        fetch_round(client, bucket, &r2_keys).await?
+    };
+
+    let fts = decode_fts_from_round(namespace, meta, &r1)?;
+    let filter = decode_filter_from_round(namespace, meta, &r2)?;
+
+    Ok(ColdBootstrapArtifacts {
+        fts,
+        filter,
+        l0_by_field,
+        storage_roundtrips,
+    })
+}
+
+/// Probed vector index for one query: L1 batch then cluster batch (two logical roundtrips).
+pub async fn fetch_cold_vector_probed(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: CentroidIndexL0,
+    query: &[f64],
+) -> Result<(VectorIndex, u32)> {
+    let mut storage_roundtrips = 0u32;
+
+    let l1_keys = l1_keys_for_query_probe(namespace, meta, field, &l0, query);
+    let l1_map = if l1_keys.is_empty() {
+        HashMap::new()
+    } else {
+        storage_roundtrips += 1;
+        fetch_round(client, bucket, &l1_keys).await?
+    };
+
+    let l1 = decode_l1_probed(namespace, meta, field, &l0, &l1_map)?;
+    let cluster_keys = cluster_keys_for_query(namespace, meta, field, &l0, &l1, query);
+    let cluster_map = if cluster_keys.is_empty() {
+        HashMap::new()
+    } else {
+        storage_roundtrips += 1;
+        fetch_round(client, bucket, &cluster_keys).await?
+    };
+
+    let fine_ids = fine_ids_for_probed_query(&l0, &l1, query);
+    let clusters =
+        decode_clusters_probed(namespace, meta, field, &cluster_map, &fine_ids)?;
+    Ok((
+        VectorIndex {
+            l0,
+            l1,
+            clusters,
+        },
+        storage_roundtrips,
+    ))
+}
+
+fn decode_l1_probed(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    l0: &CentroidIndexL0,
+    fetched: &HashMap<String, Vec<u8>>,
+) -> Result<HashMap<u32, CentroidIndexL1>> {
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
+    let mut l1 = HashMap::new();
+    for coarse_id in 0..l0.num_coarse {
+        let key = CentroidIndexL1::key(namespace, field, coarse_id);
+        let bytes = fetched.get(&key).or_else(|| {
+            if use_legacy {
+                fetched.get(&CentroidIndexL1::legacy_key(namespace, coarse_id))
+            } else {
+                None
+            }
+        });
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        l1.insert(coarse_id, CentroidIndexL1::decode(bytes)?);
+    }
+    Ok(l1)
+}
+
+fn decode_clusters_probed(
+    namespace: &str,
+    meta: &NamespaceMeta,
+    field: &str,
+    fetched: &HashMap<String, Vec<u8>>,
+    fine_ids: &[u32],
+) -> Result<HashMap<u32, ClusterSegment>> {
+    let use_legacy = vector_index_uses_legacy_paths(meta, field);
+    let mut clusters = HashMap::new();
+    for &fine_id in fine_ids {
+        let key = ClusterSegment::key(namespace, field, fine_id);
+        let bytes = fetched.get(&key).or_else(|| {
+            if use_legacy {
+                fetched.get(&ClusterSegment::legacy_key(namespace, fine_id))
+            } else {
+                None
+            }
+        });
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        clusters.insert(fine_id, ClusterSegment::decode(bytes)?);
+    }
+    Ok(clusters)
+}
+
+/// Full cold index load (all L1 + clusters). Used for warm prefetch, not the query hot path.
 pub async fn fetch_cold_index_artifacts(
     client: &Client,
     bucket: &str,
@@ -609,6 +831,98 @@ mod tests {
             None
         };
         assert!(replay_from.is_none());
+    }
+
+    #[test]
+    fn bootstrap_round2_fetches_filter_not_clusters() {
+        let meta = NamespaceMeta {
+            index_cursor: 3,
+            filter_segment_id: 3,
+            vector_segment_id: 3,
+            vector_field: "emb".into(),
+            dimensions: 2,
+            vector_fields: vec![VectorFieldConfig {
+                name: "emb".into(),
+                dimensions: 2,
+                segment_id: 3,
+                segment_ids: vec![3],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let l0 = CentroidIndexL0 {
+            vector_field: "emb".into(),
+            num_coarse: 4,
+            num_fine_total: 64,
+            fine_counts: vec![4, 4, 4, 4],
+            centroids: vec![vec![0.0, 0.0]; 4],
+            dimensions: 2,
+            ..Default::default()
+        };
+        let mut r2_keys = Vec::new();
+        if meta.filter_segment_id > 0 && meta.index_cursor > 0 {
+            r2_keys.push(FilterSegment::key("ns", meta.filter_segment_id));
+        }
+        assert!(r2_keys.iter().any(|k| k.contains("filter-")));
+        assert!(!r2_keys.iter().any(|k| k.contains("clusters-")));
+        let full_r2 = round2_keys("ns", &meta, &[("emb".into(), l0)]);
+        assert!(full_r2.iter().filter(|k| k.contains("clusters-")).count() == 64);
+    }
+
+    #[test]
+    fn probed_cluster_keys_bounded_at_large_num_fine_total() {
+        use crate::index::vector::CentroidIndexL1;
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            vector_segment_id: 1,
+            vector_field: "emb".into(),
+            dimensions: 2,
+            vector_fields: vec![VectorFieldConfig {
+                name: "emb".into(),
+                dimensions: 2,
+                segment_id: 1,
+                segment_ids: vec![1],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let l0 = CentroidIndexL0 {
+            vector_field: "emb".into(),
+            num_coarse: 16,
+            num_fine_total: 4000,
+            probe_coarse: DEFAULT_PROBE_COARSE,
+            probe_fine: DEFAULT_PROBE_FINE,
+            fine_counts: vec![250; 16],
+            centroids: (0..16)
+                .map(|i| vec![if i == 0 { 1.0 } else { 0.0 }, 0.0])
+                .collect(),
+            dimensions: 2,
+            distance_metric: crate::meta::DistanceMetric::CosineDistance,
+            ..Default::default()
+        };
+        let query = vec![1.0, 0.0];
+        let mut l1_loaded = HashMap::new();
+        for coarse_id in l0.nearest_coarse(&query, l0.probe_coarse_count()) {
+            let start = l0.global_id_start(coarse_id);
+            l1_loaded.insert(
+                coarse_id,
+                CentroidIndexL1 {
+                    segment_id: 1,
+                    coarse_id,
+                    global_id_start: start,
+                    num_fine: 250,
+                    centroids: (0..250)
+                        .map(|i| vec![if i == 0 { 1.0 } else { 0.0 }, 0.0])
+                        .collect(),
+                },
+            );
+        }
+        let probed = cluster_keys_for_query("ns", &meta, "emb", &l0, &l1_loaded, &query);
+        let full_clusters = (0..l0.num_fine_total)
+            .map(|fid| ClusterSegment::key("ns", "emb", fid))
+            .count();
+        assert!(probed.len() >= 8 && probed.len() <= 64);
+        assert!(probed.len() < full_clusters / 10);
     }
 
     #[test]

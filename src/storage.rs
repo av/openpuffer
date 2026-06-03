@@ -10,7 +10,7 @@ use crate::indexer::{
 use crate::models::IndexStatus;
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
-use crate::index::vector::VectorIndex;
+use crate::index::vector::{CentroidIndexL0, VectorIndex};
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
@@ -57,6 +57,8 @@ pub struct LoadedNamespace {
     pub meta_etag: Option<String>,
     pub fts: Option<FtsSegment>,
     pub vectors: HashMap<String, VectorIndex>,
+    /// L0 centroids loaded at cold bootstrap; probed L1/clusters filled by [`Storage::finish_cold_vector_probes`].
+    pub cold_vector_l0: HashMap<String, CentroidIndexL0>,
     pub filter_index: Option<FilterSegment>,
     pub tail_doc_ids: HashSet<String>,
     /// Logical S3 roundtrips for cold load (index batch plan + optional WAL batch).
@@ -352,15 +354,21 @@ impl Storage {
         wal_roundtrips: u32,
         skip_wal_tail: bool,
     ) -> Result<LoadedNamespace> {
-        let (fts, vectors, filter_index, index_roundtrips) = if cold_batch {
-            let art = crate::s3_batch::fetch_cold_index_artifacts(
+        let (fts, vectors, cold_vector_l0, filter_index, index_roundtrips) = if cold_batch {
+            let art = crate::s3_batch::fetch_cold_index_bootstrap(
                 &self.client,
                 &self.bucket,
                 name,
                 &view.meta,
             )
             .await?;
-            (art.fts, art.vectors, art.filter, art.storage_roundtrips)
+            (
+                art.fts,
+                HashMap::new(),
+                art.l0_by_field,
+                art.filter,
+                art.storage_roundtrips,
+            )
         } else {
             let fts = crate::indexer::load_fts_segment_for_query(
                 &self.client,
@@ -386,7 +394,7 @@ impl Storage {
                 &self.cache,
             )
             .await?;
-            (fts, vectors, filter_index, 0)
+            (fts, vectors, HashMap::new(), filter_index, 0)
         };
 
         let mut storage_roundtrips = if cold_batch {
@@ -431,10 +439,50 @@ impl Storage {
             meta_etag: view.meta_etag.clone(),
             fts,
             vectors,
+            cold_vector_l0,
             filter_index,
             tail_doc_ids,
             storage_roundtrips,
         })
+    }
+
+    /// Fetch probed L1 + cluster segments for vector `rank_by` queries (cold path only).
+    pub async fn finish_cold_vector_probes(
+        &self,
+        name: &str,
+        loaded: &mut LoadedNamespace,
+        probes: &[(String, Vec<f64>)],
+    ) -> Result<()> {
+        if loaded.cold_vector_l0.is_empty() || probes.is_empty() {
+            return Ok(());
+        }
+        let mut by_field: HashMap<String, Vec<f64>> = HashMap::new();
+        for (field, query) in probes {
+            by_field.insert(field.clone(), query.clone());
+        }
+        for (field, query) in by_field {
+            if loaded.vectors.contains_key(&field) {
+                continue;
+            }
+            let Some(l0) = loaded.cold_vector_l0.remove(&field) else {
+                continue;
+            };
+            let (vindex, probe_roundtrips) = crate::s3_batch::fetch_cold_vector_probed(
+                &self.client,
+                &self.bucket,
+                name,
+                &loaded.meta,
+                &field,
+                l0,
+                &query,
+            )
+            .await?;
+            loaded.vectors.insert(field, vindex);
+            if let Some(rt) = loaded.storage_roundtrips.as_mut() {
+                *rt = rt.saturating_add(probe_roundtrips);
+            }
+        }
+        Ok(())
     }
 
     pub fn invalidate_cache(&self, name: &str) {

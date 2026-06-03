@@ -745,6 +745,26 @@ fn parse_rank_by(v: &Value) -> Result<Ranker> {
     }
 }
 
+/// Vector fields and query vectors referenced by `rank_by` (for cold probed index fetch).
+pub fn vector_probe_specs(rank_by: &Value) -> Result<Vec<(String, Vec<f64>)>> {
+    let ranker = parse_rank_by(rank_by)?;
+    let mut out = Vec::new();
+    collect_vector_probe_specs(&ranker, &mut out);
+    Ok(out)
+}
+
+fn collect_vector_probe_specs(ranker: &Ranker, out: &mut Vec<(String, Vec<f64>)>) {
+    match ranker {
+        Ranker::Vector { field, query } => out.push((field.clone(), query.clone())),
+        Ranker::Sum(subs) | Ranker::Product(subs) => {
+            for sub in subs {
+                collect_vector_probe_specs(sub, out);
+            }
+        }
+        Ranker::Bm25 { .. } => {}
+    }
+}
+
 /// Cosine similarity (higher is better). Re-exported for tests and legacy callers.
 pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     crate::index::vector::cosine_similarity(a, b)
@@ -1448,6 +1468,19 @@ mod tests {
             };
             assert!(execute_query(&ctx, &req).is_err());
         }
+    }
+
+    #[test]
+    fn vector_probe_specs_collects_hybrid_fields() {
+        let rank_by = json!([
+            "Sum",
+            ["BM25", "text", "rust"],
+            ["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]
+        ]);
+        let specs = super::vector_probe_specs(&rank_by).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].0, "embedding");
+        assert_eq!(specs[0].1.len(), 4);
     }
 
     #[test]

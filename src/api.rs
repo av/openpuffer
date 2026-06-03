@@ -812,7 +812,17 @@ async fn query_namespace(
         .load_namespace_for_query(&name, consistency)
         .await
     {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
+            if let Ok(probes) = search::vector_probe_specs(&body.rank_by) {
+                if let Err(e) = state
+                    .storage
+                    .finish_cold_vector_probes(&name, &mut loaded, &probes)
+                    .await
+                {
+                    error!("query cold vector probe {name}: {e:#}");
+                    return storage_error_response(e);
+                }
+            }
             let ctx = search::QueryContext {
                 docs: &loaded.docs,
                 meta: &loaded.meta,
