@@ -25,6 +25,8 @@ const NAMESPACE_EXPORT: &str = "itest-export";
 const NAMESPACE_WAL_RATE: &str = "itest-wal-rate";
 const NAMESPACE_COPY_SRC: &str = "itest-copy-src";
 const NAMESPACE_COPY_DEST: &str = "itest-copy-dest";
+const NAMESPACE_BRANCH_SRC: &str = "itest-branch-src";
+const NAMESPACE_BRANCH_DEST: &str = "itest-branch-dest";
 const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
@@ -1123,6 +1125,87 @@ async fn copy_from_namespace_returns_same_docs_on_dest() {
         vector_ids.first().map(String::as_str),
         Some("copy-a"),
         "dest vector top-1 should be copy-a, got {vector_ids:?}"
+    );
+}
+
+/// `branch_from_namespace` S3-clones source; writes on branch do not affect source.
+#[tokio::test]
+async fn branch_from_namespace_independent_writes_do_not_affect_source() {
+    let fixture = S3Fixture::from_testcontainers().await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&fixture, &listen);
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_BRANCH_SRC,
+        json!([
+            {"id": "branch-src", "attributes": {"text": "branch source only", "embedding": [1.0, 0.0, 0.0]}},
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_BRANCH_SRC, Duration::from_secs(90)).await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_BRANCH_DEST,
+        json!({"branch_from_namespace": NAMESPACE_BRANCH_SRC}),
+    )
+    .await;
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_BRANCH_DEST,
+        json!([
+            {"id": "branch-only", "attributes": {"text": "branch dest exclusive", "embedding": [0.0, 1.0, 0.0]}},
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, NAMESPACE_BRANCH_DEST, Duration::from_secs(90)).await;
+
+    let dest_fts = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BRANCH_DEST,
+        json!(["BM25", "text", "exclusive"]),
+        None,
+    )
+    .await;
+    assert!(
+        dest_fts.iter().any(|id| id == "branch-only"),
+        "branch dest should find branch-only doc, got {dest_fts:?}"
+    );
+
+    let src_fts_exclusive = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BRANCH_SRC,
+        json!(["BM25", "text", "exclusive"]),
+        None,
+    )
+    .await;
+    assert!(
+        !src_fts_exclusive.iter().any(|id| id == "branch-only"),
+        "source must not see branch-only doc, got {src_fts_exclusive:?}"
+    );
+
+    let src_fts_original = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_BRANCH_SRC,
+        json!(["BM25", "text", "source"]),
+        None,
+    )
+    .await;
+    assert!(
+        src_fts_original.iter().any(|id| id == "branch-src"),
+        "source should still have branch-src, got {src_fts_original:?}"
+    );
+
+    let dest_prefix = format!("{ROOT_PREFIX}{NAMESPACE_BRANCH_DEST}/");
+    let dest_keys = list_keys_with_prefix(&fixture.client, &fixture.bucket, &dest_prefix).await;
+    assert!(
+        dest_keys.iter().any(|k| k.contains("/wal/")),
+        "branch dest missing wal objects: {dest_keys:?}"
     );
 }
 

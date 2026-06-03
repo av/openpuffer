@@ -353,6 +353,16 @@ impl Storage {
     /// Server-side S3 copy of all objects under `openpuffer/{source}/` → `openpuffer/{dest}/`.
     /// Destination must be empty; source must exist.
     pub async fn copy_from_namespace(&self, dest: &str, source: &str) -> Result<()> {
+        self.clone_namespace_s3(dest, source).await
+    }
+
+    /// Instant COW branch: same S3 server-side copy as `copy_from_namespace`.
+    pub async fn branch_from_namespace(&self, dest: &str, source: &str) -> Result<()> {
+        self.clone_namespace_s3(dest, source).await
+    }
+
+    /// List + `copy_object` entire namespace prefix (shared by copy and branch).
+    async fn clone_namespace_s3(&self, dest: &str, source: &str) -> Result<()> {
         if dest == source {
             return Err(anyhow!("cannot copy namespace to itself"));
         }

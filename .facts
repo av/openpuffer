@@ -81,6 +81,9 @@
 - label: write accepts copy_from_namespace to clone source S3 prefix into empty destination
   command: grep -q 'copy_from_namespace' src/models.rs && grep -q 'copy_from_namespace' src/storage.rs
   tags: [implemented]
+- label: write accepts branch_from_namespace instant COW clone via S3 copy into empty destination
+  command: grep -q 'branch_from_namespace' src/models.rs && grep -q 'branch_from_namespace' src/storage.rs
+  tags: [implemented]
 - label: write accepts distance_metric cosine_distance or euclidean_squared stored in meta.json
   command: grep -q 'distance_metric' src/meta.rs && grep -q 'resolve_distance_metric' src/meta.rs
   tags: [implemented]
@@ -197,6 +200,9 @@
   tags: [implemented]
 - label: integration test copy_from_namespace_returns_same_docs_on_dest clones S3 layout
   command: cargo test -F integration --test integration_s3 copy_from_namespace_returns_same_docs -q
+  tags: [implemented]
+- label: integration test branch_from_namespace_independent_writes_do_not_affect_source COW isolation
+  command: cargo test -F integration --test integration_s3 branch_from_namespace_independent_writes -q
   tags: [implemented]
 - label: integration test wal_compaction_after_full_index_query_still_works snapshots and prunes WAL
   command: cargo test -F integration --test integration_s3 wal_compaction_after_full_index -q

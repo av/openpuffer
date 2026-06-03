@@ -55,6 +55,9 @@ pub struct WriteRequest {
     /// Copy all S3 objects from another namespace (destination must be empty).
     #[serde(default)]
     pub copy_from_namespace: Option<String>,
+    /// Branch (COW clone) from another namespace — same S3 copy as `copy_from_namespace`.
+    #[serde(default)]
+    pub branch_from_namespace: Option<String>,
     /// Conditional upserts (turbopuffer): same filter DSL as query; missing docs always insert.
     #[serde(default)]
     pub upsert_condition: Option<Value>,

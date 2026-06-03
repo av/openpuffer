@@ -332,39 +332,38 @@ async fn write_namespace(
     Path(name): Path<String>,
     Json(body): Json<WriteRequest>,
 ) -> impl IntoResponse {
+    if body.copy_from_namespace.is_some() && body.branch_from_namespace.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "copy_from_namespace and branch_from_namespace are mutually exclusive"
+            })),
+        )
+            .into_response();
+    }
+
+    if let Some(source) = body.branch_from_namespace.as_deref() {
+        return handle_namespace_s3_clone(
+            &state,
+            &name,
+            source,
+            "branch_from_namespace",
+            &body,
+            NamespaceS3CloneOp::Branch,
+        )
+        .await;
+    }
+
     if let Some(source) = body.copy_from_namespace.as_deref() {
-        if source.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "copy_from_namespace must not be empty"})),
-            )
-                .into_response();
-        }
-        if write_has_row_ops(&body) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "copy_from_namespace cannot be combined with other write operations"
-                })),
-            )
-                .into_response();
-        }
-        match state.storage.copy_from_namespace(&name, source).await {
-            Ok(()) => {
-                return (
-                    StatusCode::OK,
-                    Json(crate::models::WriteResponse::from_stats(
-                        name,
-                        crate::models::WriteStats::default(),
-                    )),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                error!("copy namespace {name} from {source}: {e:#}");
-                return copy_namespace_error_response(e);
-            }
-        }
+        return handle_namespace_s3_clone(
+            &state,
+            &name,
+            source,
+            "copy_from_namespace",
+            &body,
+            NamespaceS3CloneOp::Copy,
+        )
+        .await;
     }
 
     let mut upserts = Vec::new();
@@ -740,6 +739,55 @@ fn query_performance_headers(perf: Option<&QueryPerformance>) -> HeaderMap {
         }
     }
     headers
+}
+
+enum NamespaceS3CloneOp {
+    Copy,
+    Branch,
+}
+
+async fn handle_namespace_s3_clone(
+    state: &AppState,
+    dest: &str,
+    source: &str,
+    field: &str,
+    body: &WriteRequest,
+    op: NamespaceS3CloneOp,
+) -> axum::response::Response {
+    if source.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{field} must not be empty")})),
+        )
+            .into_response();
+    }
+    if write_has_row_ops(body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("{field} cannot be combined with other write operations")
+            })),
+        )
+            .into_response();
+    }
+    let result = match op {
+        NamespaceS3CloneOp::Copy => state.storage.copy_from_namespace(dest, source).await,
+        NamespaceS3CloneOp::Branch => state.storage.branch_from_namespace(dest, source).await,
+    };
+    match result {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(crate::models::WriteResponse::from_stats(
+                dest.to_string(),
+                crate::models::WriteStats::default(),
+            )),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("{field} {dest} from {source}: {e:#}");
+            copy_namespace_error_response(e)
+        }
+    }
 }
 
 fn copy_namespace_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {
