@@ -120,6 +120,14 @@ cargo test -F integration               # MinIO testcontainers (WAL, index, rest
 cargo test -F perf                      # 5k-doc ANN candidate_ratio regression
 ```
 
+**S3 integration (requires Docker):**
+
+```bash
+./scripts/run-integration-s3.sh
+```
+
+This builds the server binary and runs `cargo test -F integration` against **real MinIO** via testcontainers. Integration tests assert **Head/List/Get** on `meta.json`, `wal/`, and `index/` (decode WAL, segment growth, copy key parity) — not HTTP-only mocks.
+
 ### External S3 (optional)
 
 Point integration tests at a real MinIO or AWS bucket:
@@ -138,6 +146,8 @@ cargo test -F integration --test integration_external_s3 -- --ignored
 - **Head/List/Get** on `meta.json`, `wal/{seq:08}.bin`, and `index/*` (not HTTP-only)
 - **Decode** bincode `WalEntry` from `wal/*.bin` and compare doc ids to HTTP export
 - **Index layout**: `fts-*.bin`, `filter-*.bin`, `centroids-l0.bin`, `centroids-l1-*.bin` (non-zero size)
+- **Incremental growth**: FTS/filter segment sizes or `fts_segment_ids` / `filter_segment_ids` chains grow after a second WAL batch (`s3_fts_and_filter_segments_grow_on_minio`)
+- **Copy parity**: `copy_from_namespace` duplicates every source key under the dest prefix (`s3_copy_from_namespace_duplicates_all_keys`)
 - **No** legacy `docs/{id}.json` or `manifest.json`
 
 ## License
