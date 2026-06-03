@@ -148,9 +148,23 @@ cargo test -F perf                      # 5k-doc ANN candidate_ratio regression
 
 This builds the server binary and runs `cargo test -F integration` against **real MinIO** via testcontainers. Integration tests assert **Head/List/Get** on `meta.json`, `wal/`, and `index/` (decode WAL, segment growth, copy key parity) — not HTTP-only mocks.
 
-### External S3 (optional)
+### Testing against real S3
 
-Point integration tests at a real MinIO or AWS bucket:
+Two ways to hit a **real** S3-compatible endpoint (MinIO or AWS) — not mocks:
+
+| Mode | Command | Backend |
+|------|---------|---------|
+| **Default** | `./scripts/run-integration-s3.sh` | Ephemeral MinIO (testcontainers) |
+| **Compose MinIO** | `./scripts/run-integration-s3.sh external` | `docker-compose.test.yml` on `:9000` |
+| **Your bucket** | Set `OPENPUFFER_TEST_S3_*` env vars | Any S3-compatible API |
+
+**Compose external tests** (starts MinIO if `:9000` is not already healthy, creates `openpuffer-integration` bucket):
+
+```bash
+./scripts/run-integration-s3.sh external
+```
+
+**Manual env** (same variables the script sets; use for CI or a shared MinIO/AWS bucket):
 
 ```bash
 export OPENPUFFER_TEST_S3_ENDPOINT=http://127.0.0.1:9000
@@ -160,6 +174,18 @@ export OPENPUFFER_TEST_S3_SECRET_KEY=minioadmin
 
 cargo test -F integration --test integration_external_s3 -- --ignored
 ```
+
+**Serve against the same bucket** (after `external` or with your own endpoint):
+
+```bash
+export OPENPUFFER_S3_ENDPOINT=http://127.0.0.1:9000
+export OPENPUFFER_S3_BUCKET=openpuffer-integration
+export OPENPUFFER_S3_ACCESS_KEY=minioadmin
+export OPENPUFFER_S3_SECRET_KEY=minioadmin
+./scripts/dev-serve.sh
+```
+
+Stop the test compose stack: `docker compose -f docker-compose.test.yml down`.
 
 ### What integration tests assert on S3
 

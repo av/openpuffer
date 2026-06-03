@@ -37,12 +37,23 @@ async fn external_s3_smoke_upsert_wal_bytes_and_query() {
 
     assert_wal_layout_after_write(&fixture.client, &fixture.bucket, NAMESPACE_EXTERNAL).await;
 
+    let wal_key = openpuffer::wal::wal_key(NAMESPACE_EXTERNAL, 1);
+    assert!(
+        object_size(&fixture.client, &fixture.bucket, &wal_key).await > 0,
+        "wal segment must be non-empty on external backend"
+    );
+
     let entry =
         decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_EXTERNAL, 1).await;
     assert_eq!(wal_upsert_ids(&entry), vec!["ext-doc-1".to_string()]);
 
     let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, NAMESPACE_EXTERNAL).await;
-    assert!(meta.wal_commit_seq >= 1);
+    assert!(meta.wal_commit_seq >= 1, "meta.json wal_commit_seq must advance");
+    assert_eq!(
+        meta.wal_commit_seq,
+        1,
+        "single upsert batch should produce wal seq 1"
+    );
 
     let export_ids = export_all_ids(&serve.base_url, NAMESPACE_EXTERNAL, None).await;
     assert!(
@@ -68,6 +79,7 @@ async fn external_s3_smoke_upsert_wal_bytes_and_query() {
         Duration::from_secs(120),
     )
     .await;
+    assert_index_objects(&fixture.client, &fixture.bucket, NAMESPACE_EXTERNAL).await;
     assert_two_level_centroids_on_backend(
         &fixture.client,
         &fixture.bucket,
