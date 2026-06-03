@@ -24,6 +24,7 @@ pub fn validate_doc_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Legacy namespace manifest (read-only fallback; new writes use WAL + meta.json).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Manifest {
     pub doc_ids: Vec<String>,

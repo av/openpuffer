@@ -1,5 +1,8 @@
 //! openpuffer — stateless vector + FTS server backed by S3-compatible storage.
 //!
+//! Durable writes use a turbopuffer-style WAL on object storage (`wal/{seq:08}.bin`
+//! + `meta.json`); see `docs/ARCHITECTURE.md`.
+//!
 //! HTTP routes (turbopuffer-compatible):
 //!   GET  /health
 //!   GET  /v1/namespaces
@@ -14,9 +17,12 @@
 
 pub mod api;
 pub mod config;
+pub mod meta;
 pub mod models;
+pub mod namespace;
 pub mod search;
 pub mod storage;
+pub mod wal;
 
 pub use api::{router, AppState};
 pub use config::AppConfig;
