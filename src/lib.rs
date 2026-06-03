@@ -40,6 +40,7 @@ pub mod metrics;
 pub mod meta;
 pub mod models;
 pub mod namespace;
+pub mod namespace_list_cache;
 pub mod s3_batch;
 pub mod schema;
 pub mod search;

@@ -16,12 +16,13 @@ use crate::search::{matching_doc_ids_for_filter, QueryConsistency, QueryContext}
 use crate::export::{export_page, ExportPage, DEFAULT_EXPORT_LIMIT};
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
+use crate::namespace_list_cache::{NamespaceListCache, DEFAULT_NAMESPACE_LIST_TTL};
 use crate::warm::{warm_namespace, WarmStats};
 use anyhow::{anyhow, Context, Result};
 use aws_sdk_s3::types::ObjectIdentifier;
 use aws_sdk_s3::Client;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
 /// Classify common S3 API failures for HTTP mapping.
@@ -43,6 +44,7 @@ pub struct Storage {
     write_buffer: WriteBufferManager,
     views: Arc<Mutex<ViewCache>>,
     limits: LimitsConfig,
+    namespace_list_cache: StdMutex<NamespaceListCache>,
 }
 
 pub struct LoadedNamespace {
@@ -86,7 +88,17 @@ impl Storage {
             write_buffer,
             views: Arc::new(Mutex::new(ViewCache::new(max_pinned_namespaces))),
             limits,
+            namespace_list_cache: StdMutex::new(NamespaceListCache::new(
+                DEFAULT_NAMESPACE_LIST_TTL,
+            )),
         })
+    }
+
+    /// Drop cached `ListObjectsV2` namespace listing (new/deleted/copied namespaces).
+    pub fn invalidate_namespace_list_cache(&self) {
+        if let Ok(mut guard) = self.namespace_list_cache.lock() {
+            guard.invalidate();
+        }
     }
 
     pub fn segment_cache(&self) -> &Arc<SegmentCache> {
@@ -151,6 +163,12 @@ impl Storage {
     }
 
     pub async fn list_namespaces(&self) -> Result<Vec<String>> {
+        if let Ok(guard) = self.namespace_list_cache.lock() {
+            if let Some(cached) = guard.get() {
+                return Ok(cached);
+            }
+        }
+
         let mut namespaces = Vec::new();
         let mut token: Option<String> = None;
         loop {
@@ -182,6 +200,9 @@ impl Storage {
         }
         namespaces.sort();
         namespaces.dedup();
+        if let Ok(mut guard) = self.namespace_list_cache.lock() {
+            guard.set(namespaces.clone());
+        }
         Ok(namespaces)
     }
 
@@ -400,6 +421,7 @@ impl Storage {
     }
 
     pub fn invalidate_cache(&self, name: &str) {
+        self.invalidate_namespace_list_cache();
         self.cache.invalidate_namespace(&self.bucket, name);
         let name = name.to_string();
         let views = self.views.clone();
@@ -477,6 +499,7 @@ impl Storage {
         }
 
         self.write_buffer.drop_namespace(dest).await;
+        self.invalidate_namespace_list_cache();
         self.cache.invalidate_namespace(&self.bucket, dest);
         self.views.lock().await.remove(dest);
         Ok(())
@@ -575,6 +598,7 @@ impl Storage {
                 stats,
             )
             .await?;
+        self.invalidate_namespace_list_cache();
         let stats = committed.stats;
 
         let mut views = self.views.lock().await;
@@ -768,6 +792,7 @@ impl Storage {
                 .context("delete namespace objects")?;
         }
 
+        self.invalidate_namespace_list_cache();
         self.views.lock().await.remove(name);
         Ok(())
     }
