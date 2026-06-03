@@ -381,3 +381,36 @@
 - label: integration_s3.rs defines fifty-one MinIO integration tests with hardened S3 harness ListObjects retries and index segment polling
   command: test $(grep -c "#\[tokio::test\]" tests/integration_s3.rs) -eq 51 && grep -q LIST_OBJECTS_RETRY_ATTEMPTS tests/common/s3_harness.rs
   tags: [implemented]
+
+# bench
+
+- label: bench feature provides tests/bench_cold.rs scripts/bench-1m.sh and docs/BENCHMARKS.md
+  command: test -f tests/bench_cold.rs && test -f scripts/bench-1m.sh && test -f docs/BENCHMARKS.md && grep -q 'bench = \["integration"\]' Cargo.toml
+  tags: [implemented]
+- label: baseline artifact benchmarks/results/baseline-10k.json records cold 10k storage_roundtrips s3_get_count p50_query_latency_ms candidates_ratio index_object_count
+  command: python3 -c "import json; d=json.load(open('benchmarks/results/baseline-10k.json')); assert all(k in d for k in ('storage_roundtrips','s3_get_count','p50_query_latency_ms','candidates_ratio','index_object_count','benchmark')) and d['benchmark']=='cold_10k'"
+  tags: [implemented]
+- label: cargo test -F bench bench_cold_10k_baseline is not ignored and compiles with integration harness
+  command: grep -q 'async fn bench_cold_10k_baseline' tests/bench_cold.rs && ! grep -B1 'bench_cold_10k_baseline' tests/bench_cold.rs | grep -q '#\[ignore' && cargo test -F bench --test bench_cold bench_cold_10k_baseline --no-run -q
+  tags: [implemented]
+
+# index/ann
+
+- label: recall@10 on 100k synthetic vectors is at least 0.90
+  command: grep -q 'fn recall_at_10_100k_synthetic_at_least_point_nine' src/index/vector.rs && cargo test --lib recall_at_10_100k_synthetic_at_least_point_nine -q
+  tags: [spec, ann]
+- label: CentroidIndexL0 ann_version 3 segments roundtrip and v2 segments still load
+  command: grep -q 'fn ann_version_v3_roundtrip' src/index/vector.rs && cargo test --lib ann_version_v3_roundtrip -q
+  tags: [spec, ann]
+- label: POST /v1/namespaces/{name}/recall returns JSON with numeric avg_recall avg_ann_count avg_exhaustive_count
+  command: grep -q 'fn recall_http_response_shape_on_minio' tests/integration_s3.rs && cargo test -F integration recall_http_response_shape_on_minio -q --test integration_s3
+  tags: [spec, ann]
+
+# query/cold
+
+- label: cold vector query S3 cluster GET count is bounded by probe plan not num_fine_total
+  command: grep -q 'fn cold_vector_query_cluster_gets_bounded_by_probe_plan' tests/integration_s3.rs && cargo test -F integration cold_vector_query_cluster_gets_bounded_by_probe_plan -q --test integration_s3
+  tags: [spec, cold]
+- label: strong caught-up cold query on 10k namespace reports storage_roundtrips at most 4
+  command: cargo test -F bench bench_cold_10k_storage_roundtrips_at_most_four -q --test bench_cold -- --include-ignored
+  tags: [spec, cold]
