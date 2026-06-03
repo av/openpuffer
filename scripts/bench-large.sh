@@ -240,7 +240,7 @@ run_dry_run() {
     n_filter="$(jq -r '.filter_queries | length' "$qf")"
     n_hybrid="$(jq -r '.hybrid_queries | length' "$qf")"
     echo "  queries=${qf}"
-    echo "  filter_queries=${n_filter} hybrid_queries=${n_hybrid} (G2 runs all; bench-large cold vector only)"
+    echo "  filter_queries=${n_filter} hybrid_queries=${n_hybrid} (bench-large runs all 1× after cold; warm repeats if --warm)"
     if [[ "$n_filter" -lt 1 || "$n_hybrid" -lt 1 ]]; then
       echo "bench-large dry-run: queries.json must include filter_queries and hybrid_queries" >&2
       exit 1
@@ -350,6 +350,129 @@ warm_query_once() {
   echo "${ms} ${ratio}"
 }
 
+# Substitute "$vector" in workload openpuffer_query (matches tests/common/synthetic_workload.rs).
+resolve_workload_query_body() {
+  local spec_json="$1"
+  local consistency_override="${2:-}"
+  if [[ -n "$consistency_override" ]]; then
+    jq -cn \
+      --argjson spec "$spec_json" \
+      --arg consistency "$consistency_override" \
+      '
+      def inject($vec):
+        if . == "$vector" then $vec
+        elif type == "array" then map(inject($vec))
+        elif type == "object" then with_entries(.value |= inject($vec))
+        else . end;
+      ($spec.openpuffer_query | inject($spec.vector)) | .consistency = $consistency
+      '
+  else
+    jq -cn \
+      --argjson spec "$spec_json" \
+      '
+      def inject($vec):
+        if . == "$vector" then $vec
+        elif type == "array" then map(inject($vec))
+        elif type == "object" then with_entries(.value |= inject($vec))
+        else . end;
+      $spec.openpuffer_query | inject($spec.vector)
+      '
+  fi
+}
+
+workload_query_once() {
+  local body="$1"
+  local t0 ms resp ratio roundtrips result_rows
+  t0=$(date +%s%3N)
+  resp="$(curl -sf -X POST "${QUERY_URL}" \
+    -H 'Content-Type: application/json' \
+    -d "$body")"
+  ms=$(( $(date +%s%3N) - t0 ))
+  ratio="$(echo "$resp" | jq '.performance.candidates_ratio // null')"
+  roundtrips="$(echo "$resp" | jq '.performance.storage_roundtrips // null')"
+  result_rows="$(echo "$resp" | jq '.rows | length')"
+  echo "${ms} ${ratio} ${roundtrips} ${result_rows}"
+}
+
+format_workload_query_run() {
+  local query_name="$1"
+  local query_kind="$2"
+  local ms="$3"
+  local ratio="${4:-null}"
+  local roundtrips="${5:-null}"
+  local result_rows="${6:-null}"
+  local phase="${7:-}"
+  jq -cn \
+    --arg query_name "$query_name" \
+    --arg query_kind "$query_kind" \
+    --argjson latency_ms "$ms" \
+    --argjson candidates_ratio "${ratio:-null}" \
+    --argjson storage_roundtrips "${roundtrips:-null}" \
+    --argjson result_rows "${result_rows:-null}" \
+    --arg phase "$phase" \
+    '{query_name:$query_name,query_kind:$query_kind,latency_ms:$latency_ms,candidates_ratio:$candidates_ratio,storage_roundtrips:$storage_roundtrips,result_rows:$result_rows} + (if $phase != "" then {phase:$phase} else {} end)'
+}
+
+# Run all filter_queries / hybrid_queries from queries.json (1× each).
+# cold: strong consistency; filter sequential (no bust), hybrid cache reset each (G2).
+# warm: eventual consistency on warm serve; no cache bust (optional when --warm).
+# Appends JSON lines to FILTER_RUN_LINES / HYBRID_RUN_LINES (caller merges with jq -s).
+run_filter_hybrid_queries() {
+  local phase="$1"
+  local consistency reset_before_hybrid=1
+  local spec_json name body ms ratio roundtrips result_rows line
+
+  if [[ -z "${QUERIES_JSON:-}" || ! -f "$QUERIES_JSON" ]]; then
+    return 0
+  fi
+
+  case "$phase" in
+    cold)
+      consistency="$QUERY_CONSISTENCY"
+      reset_before_hybrid=1
+      ;;
+    warm)
+      consistency="$WARM_CONSISTENCY"
+      reset_before_hybrid=0
+      ;;
+    *)
+      echo "run_filter_hybrid_queries: unknown phase ${phase}" >&2
+      return 1
+      ;;
+  esac
+
+  echo "Running filter queries (${phase}, consistency=${consistency}, 1× each)…"
+  while IFS= read -r spec_json; do
+    [[ -z "$spec_json" ]] && continue
+    name="$(echo "$spec_json" | jq -r '.name')"
+    body="$(resolve_workload_query_body "$spec_json" "$consistency")"
+    read -r ms ratio roundtrips result_rows < <(workload_query_once "$body")
+    line="$(format_workload_query_run "$name" "filter" "$ms" "$ratio" "$roundtrips" "$result_rows" "$phase")"
+    FILTER_RUN_LINES+=("$line")
+  done < <(jq -c '.filter_queries[]' "$QUERIES_JSON")
+
+  echo "Running hybrid queries (${phase}, consistency=${consistency}, 1× each)…"
+  while IFS= read -r spec_json; do
+    [[ -z "$spec_json" ]] && continue
+    name="$(echo "$spec_json" | jq -r '.name')"
+    if [[ "$reset_before_hybrid" == "1" ]]; then
+      reset_cache
+    fi
+    body="$(resolve_workload_query_body "$spec_json" "$consistency")"
+    read -r ms ratio roundtrips result_rows < <(workload_query_once "$body")
+    line="$(format_workload_query_run "$name" "hybrid" "$ms" "$ratio" "$roundtrips" "$result_rows" "$phase")"
+    HYBRID_RUN_LINES+=("$line")
+  done < <(jq -c '.hybrid_queries[]' "$QUERIES_JSON")
+}
+
+run_lines_to_json() {
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$@" | jq -s '.'
+  else
+    echo '[]'
+  fi
+}
+
 post_warm_endpoint() {
   local warm_url="${BASE_URL}/v1/namespaces/${NAMESPACE}/warm"
   local body status pinned
@@ -424,6 +547,14 @@ run_warm_phase() {
   WARM_P50_MS="$warm_p50"
   WARM_P95_MS="$warm_p95"
   WARM_RUNS_JSON="$warm_runs_json"
+
+  if [[ -n "${QUERIES_JSON:-}" && -f "$QUERIES_JSON" ]]; then
+    FILTER_RUN_LINES=()
+    HYBRID_RUN_LINES=()
+    run_filter_hybrid_queries warm
+    WARM_FILTER_QUERY_RUNS_JSON="$(run_lines_to_json "${FILTER_RUN_LINES[@]}")"
+    WARM_HYBRID_QUERY_RUNS_JSON="$(run_lines_to_json "${HYBRID_RUN_LINES[@]}")"
+  fi
 }
 
 percentile_ms() {
@@ -598,6 +729,18 @@ COLD_RUNS_JSON="$(printf '%s\n' "${RUN_LINES[@]}" | jq -s '.')"
 RECALL_GATE="$(tier_recall_gate)"
 BENCHMARK_NAME="cold_large_${TIER}"
 
+FILTER_QUERY_RUNS_JSON="[]"
+HYBRID_QUERY_RUNS_JSON="[]"
+WARM_FILTER_QUERY_RUNS_JSON="[]"
+WARM_HYBRID_QUERY_RUNS_JSON="[]"
+if [[ -n "${QUERIES_JSON:-}" && -f "$QUERIES_JSON" ]]; then
+  FILTER_RUN_LINES=()
+  HYBRID_RUN_LINES=()
+  run_filter_hybrid_queries cold
+  FILTER_QUERY_RUNS_JSON="$(run_lines_to_json "${FILTER_RUN_LINES[@]}")"
+  HYBRID_QUERY_RUNS_JSON="$(run_lines_to_json "${HYBRID_RUN_LINES[@]}")"
+fi
+
 WARM_P50_MS=""
 WARM_P95_MS=""
 WARM_RUNS_JSON="[]"
@@ -617,6 +760,13 @@ fi
 
 WARM_NOTE=""
 [[ "$WARM_MODE" == "1" ]] && WARM_NOTE=" Warm phase: cache-dir=${WARM_CACHE_DIR}, POST /warm, ${WARM_RUNS}× eventual."
+SECONDARY_NOTE=""
+if [[ "$(echo "$FILTER_QUERY_RUNS_JSON" | jq 'length')" -gt 0 || "$(echo "$HYBRID_QUERY_RUNS_JSON" | jq 'length')" -gt 0 ]]; then
+  SECONDARY_NOTE=" Secondary: $(echo "$FILTER_QUERY_RUNS_JSON" | jq 'length') filter + $(echo "$HYBRID_QUERY_RUNS_JSON" | jq 'length') hybrid (1× each, strong)."
+fi
+if [[ "$WARM_MODE" == "1" && "$(echo "$WARM_FILTER_QUERY_RUNS_JSON" | jq 'length')" -gt 0 ]]; then
+  SECONDARY_NOTE="${SECONDARY_NOTE} Warm secondary: filter+hybrid @ eventual."
+fi
 
 jq -n \
   --arg benchmark "$BENCHMARK_NAME" \
@@ -649,7 +799,11 @@ jq -n \
   --arg warm_consistency "$( [[ "$WARM_MODE" == "1" ]] && echo "$WARM_CONSISTENCY" || echo null )" \
   --arg warm_cache_dir "$( [[ "$WARM_MODE" == "1" ]] && echo "$WARM_CACHE_DIR" || echo null )" \
   --argjson warm_runs "$WARM_RUNS_JSON" \
-  --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE}${WARM_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}$([[ "$WARM_MODE" == "1" ]] && echo ' --warm')" \
+  --argjson filter_query_runs "$FILTER_QUERY_RUNS_JSON" \
+  --argjson hybrid_query_runs "$HYBRID_QUERY_RUNS_JSON" \
+  --argjson warm_filter_query_runs "$WARM_FILTER_QUERY_RUNS_JSON" \
+  --argjson warm_hybrid_query_runs "$WARM_HYBRID_QUERY_RUNS_JSON" \
+  --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE}${WARM_NOTE}${SECONDARY_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}$([[ "$WARM_MODE" == "1" ]] && echo ' --warm')" \
   --argjson index_keys_total "${INDEX_KEYS_TOTAL:-null}" \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
   --argjson ingest_summary "${INGEST_SUMMARY_JSON:-{}}" \
@@ -678,6 +832,8 @@ jq -n \
     recall_at_10: $recall_at_10,
     cold_query_runs: $cold_query_runs,
     cold_runs: $cold_runs,
+    filter_query_runs: $filter_query_runs,
+    hybrid_query_runs: $hybrid_query_runs,
     index_keys_total: $index_keys_total,
     index_object_count: $index_object_count,
     notes: $notes
@@ -689,7 +845,9 @@ jq -n \
       warm_query_runs: $warm_runs_count,
       warm_consistency: $warm_consistency,
       warm_cache_dir: $warm_cache_dir,
-      warm_runs: $warm_runs
+      warm_runs: $warm_runs,
+      warm_filter_query_runs: $warm_filter_query_runs,
+      warm_hybrid_query_runs: $warm_hybrid_query_runs
     } else {} end)' >"$RESULTS"
 
 echo "Wrote ${RESULTS}"

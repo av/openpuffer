@@ -447,34 +447,97 @@ EOF
 }
 
 render_secondary_query_table() {
-  local tier="$1" tpuf_file="$2"
-  local n_filter n_hybrid
-  n_filter="$(jq_field "$tpuf_file" '.filter_query_runs | length')"
-  n_hybrid="$(jq_field "$tpuf_file" '.hybrid_query_runs | length')"
-  if [[ "$n_filter" == "0" && "$n_hybrid" == "0" ]]; then
-    return 0
-  fi
-  if [[ "$n_filter" == "null" && "$n_hybrid" == "null" ]]; then
+  local tier="$1" op_file="$2" tpuf_file="$3"
+  local op_nf op_nh tpuf_nf tpuf_nh
+  op_nf="$(jq_field "$op_file" '.filter_query_runs | length')"
+  op_nh="$(jq_field "$op_file" '.hybrid_query_runs | length')"
+  tpuf_nf="$(jq_field "$tpuf_file" '.filter_query_runs | length')"
+  tpuf_nh="$(jq_field "$tpuf_file" '.hybrid_query_runs | length')"
+
+  if [[ ("$op_nf" == "0" || "$op_nf" == "null") && ("$op_nh" == "0" || "$op_nh" == "null") \
+    && ("$tpuf_nf" == "0" || "$tpuf_nf" == "null") && ("$tpuf_nh" == "0" || "$tpuf_nh" == "null") ]]; then
     return 0
   fi
 
   cat <<EOF
-### Secondary queries (turbopuffer, tier ${tier})
+### Secondary queries (filter + hybrid, tier ${tier})
 
-Per-query latency from \`filter_query_runs\` / \`hybrid_query_runs\` in tpuf JSON (1× each, \`consistency: strong\`). openpuffer bench-large records cold vector only; G2 integration gates cover filter/hybrid correctness on MinIO.
+Per-query latency from \`filter_query_runs\` / \`hybrid_query_runs\` (1× each). Cold path uses \`consistency: strong\`; openpuffer hybrid queries reset segment cache before each run (G2 pattern). When \`bench-large.sh --warm\` ran, openpuffer may also include \`warm_filter_query_runs\` / \`warm_hybrid_query_runs\` @ eventual.
 
 EOF
-  if [[ "$n_filter" != "0" && "$n_filter" != "null" ]]; then
-    echo "| Filter query | Latency (ms) |"
-    echo "|--------------|-------------:|"
-    jq -r '.filter_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$tpuf_file"
+
+  if [[ "$op_nf" != "0" && "$op_nf" != "null" || "$tpuf_nf" != "0" && "$tpuf_nf" != "null" ]]; then
+    echo "#### Filter queries"
+    echo ""
+    echo "| Query | openpuffer (ms) | turbopuffer (ms) | Ratio (op/tpuf) |"
+    echo "|-------|----------------:|-----------------:|----------------:|"
+    jq -s -r '
+      (.[0].filter_query_runs // []) as $op
+      | (.[1].filter_query_runs // []) as $tpuf
+      | ([$op[] | {name: .query_name, op: .latency_ms}]
+         + [$tpuf[] | {name: .query_name, tpuf: .latency_ms}])
+      | group_by(.name)
+      | map({
+          name: .[0].name,
+          op: (map(.op) | map(select(. != null)) | .[0] // null),
+          tpuf: (map(.tpuf) | map(select(. != null)) | .[0] // null)
+        })
+      | sort_by(.name)
+      | .[]
+      | "| \(.name) | \(.op // "—") | \(.tpuf // "—") | "
+        + (if (.op != null and .tpuf != null and .tpuf != 0)
+           then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
+           else "—" end)
+        + " |"
+    ' "$op_file" "$tpuf_file"
     echo ""
   fi
-  if [[ "$n_hybrid" != "0" && "$n_hybrid" != "null" ]]; then
-    echo "| Hybrid query | Latency (ms) |"
-    echo "|--------------|-------------:|"
-    jq -r '.hybrid_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$tpuf_file"
+
+  if [[ "$op_nh" != "0" && "$op_nh" != "null" || "$tpuf_nh" != "0" && "$tpuf_nh" != "null" ]]; then
+    echo "#### Hybrid queries"
     echo ""
+    echo "| Query | openpuffer (ms) | turbopuffer (ms) | Ratio (op/tpuf) |"
+    echo "|-------|----------------:|-----------------:|----------------:|"
+    jq -s -r '
+      (.[0].hybrid_query_runs // []) as $op
+      | (.[1].hybrid_query_runs // []) as $tpuf
+      | ([$op[] | {name: .query_name, op: .latency_ms}]
+         + [$tpuf[] | {name: .query_name, tpuf: .latency_ms}])
+      | group_by(.name)
+      | map({
+          name: .[0].name,
+          op: (map(.op) | map(select(. != null)) | .[0] // null),
+          tpuf: (map(.tpuf) | map(select(. != null)) | .[0] // null)
+        })
+      | sort_by(.name)
+      | .[]
+      | "| \(.name) | \(.op // "—") | \(.tpuf // "—") | "
+        + (if (.op != null and .tpuf != null and .tpuf != 0)
+           then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
+           else "—" end)
+        + " |"
+    ' "$op_file" "$tpuf_file"
+    echo ""
+  fi
+
+  local op_wf op_wh
+  op_wf="$(jq_field "$op_file" '.warm_filter_query_runs | length')"
+  op_wh="$(jq_field "$op_file" '.warm_hybrid_query_runs | length')"
+  if [[ "$op_wf" != "0" && "$op_wf" != "null" || "$op_wh" != "0" && "$op_wh" != "null" ]]; then
+    echo "#### openpuffer warm secondary (eventual)"
+    echo ""
+    if [[ "$op_wf" != "0" && "$op_wf" != "null" ]]; then
+      echo "| Filter query | Latency (ms) |"
+      echo "|--------------|-------------:|"
+      jq -r '.warm_filter_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$op_file"
+      echo ""
+    fi
+    if [[ "$op_wh" != "0" && "$op_wh" != "null" ]]; then
+      echo "| Hybrid query | Latency (ms) |"
+      echo "|--------------|-------------:|"
+      jq -r '.warm_hybrid_query_runs[]? | "| \(.query_name) | \(.latency_ms) |"' "$op_file"
+      echo ""
+    fi
   fi
 }
 
@@ -602,7 +665,7 @@ EOF
       render_methodology_skeleton "$tier" "$op_path" "$tpuf_path"
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
       render_results_table "$tier" "$op_path" "$tpuf_path"
-      render_secondary_query_table "$tier" "$tpuf_path"
+      render_secondary_query_table "$tier" "$op_path" "$tpuf_path"
       overlap_path="$(resolve_overlap_json "$tier")"
       render_correctness_section "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       echo ""

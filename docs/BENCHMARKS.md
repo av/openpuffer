@@ -189,7 +189,7 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
 
 **Warm queries (secondary):** `./scripts/bench-large.sh --warm` (openpuffer) or `./scripts/run-tpuf-large-benchmark.sh --warm` / `run_benchmark.py --warm` (tpuf `hint_cache_warm` + 20× eventual from `warm_query_protocol`). JSON fields `p50_warm_query_latency_ms` / `p95_warm_query_latency_ms`; `render-report.sh` shows warm rows when present.
 
-**Hybrid / filter (secondary):** use `filter_queries` / `hybrid_queries` in `queries.json` and integration patterns (`cold_hybrid_10k_*`); openpuffer gate `storage_roundtrips ≤ 4` still applies.
+**Hybrid / filter (secondary):** `bench-large.sh` and `run_benchmark.py` run all `filter_queries` / `hybrid_queries` from `queries.json` (1× each, strong) after cold vector runs; JSON fields `filter_query_runs` / `hybrid_query_runs` (openpuffer hybrid resets cache each). With `--warm`, openpuffer also records `warm_filter_query_runs` / `warm_hybrid_query_runs` @ eventual. G2 integration gates assert correctness on MinIO; `storage_roundtrips ≤ 4` on hybrid.
 
 ### Phase 5 — Debugging playbook
 
