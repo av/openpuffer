@@ -37,6 +37,7 @@ const NAMESPACE_HEALTH_META: &str = "itest-health-meta";
 const NAMESPACE_10K: &str = "itest-10k";
 const NAMESPACE_WAL_COMPACT: &str = "itest-wal-compact";
 const NAMESPACE_UPSERT_COND: &str = "itest-upsert-cond";
+const NAMESPACE_ORDER_BY: &str = "itest-order-by";
 const STRESS_DOCS: usize = 10_000;
 const STRESS_BATCH: usize = 2_000;
 const STRESS_DIM: usize = 128;
@@ -1907,5 +1908,61 @@ async fn upsert_condition_insert_if_not_exists() {
         names.get("new-1").map(String::as_str),
         Some("inserted"),
         "new doc must be inserted, names={names:?}"
+    );
+}
+
+/// `order_by` breaks ties after `rank_by` scoring (turbopuffer attribute sort shape).
+#[tokio::test]
+async fn order_by_sorts_tied_bm25_results_by_attribute() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    let shared_text = "orderby tie breaker shared tokens";
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_ORDER_BY,
+        json!({
+            "upsert_rows": [
+                { "id": "ob-a", "attributes": { "text": shared_text, "seq": 10 } },
+                { "id": "ob-b", "attributes": { "text": shared_text, "seq": 30 } },
+                { "id": "ob-c", "attributes": { "text": shared_text, "seq": 20 } }
+            ]
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(1200)).await;
+
+    let v = query_response_ns(
+        &serve.base_url,
+        NAMESPACE_ORDER_BY,
+        json!({
+            "rank_by": ["BM25", "text", "orderby tie breaker"],
+            "top_k": 3,
+            "order_by": ["seq", "desc"]
+        }),
+    )
+    .await;
+    let ids: Vec<String> = v["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| r["id"].as_str().expect("id").to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["ob-b".to_string(), "ob-c".to_string(), "ob-a".to_string()],
+        "order_by seq desc should sort tied BM25 hits, got {ids:?}"
     );
 }

@@ -109,6 +109,11 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
+    let order_by = match req.order_by.as_ref() {
+        None => None,
+        Some(v) if v.is_null() => None,
+        Some(v) => Some(parse_order_by(v)?),
+    };
     validate_ranker_vector_dims(&effective_ctx, &ranker)?;
     let mut planner = QueryPlanner {
         ctx: &effective_ctx,
@@ -132,9 +137,17 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
 
     let mut ranked = scored;
     ranked.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
+        let by_score = b
+            .1
+            .partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if let Some(ob) = order_by.as_ref() {
+            by_score
+                .then_with(|| compare_docs_by_attribute(&effective_ctx, &a.0, &b.0, ob))
+                .then_with(|| a.0.cmp(&b.0))
+        } else {
+            by_score.then_with(|| a.0.cmp(&b.0))
+        }
     });
     ranked.truncate(top_k);
 
@@ -542,6 +555,95 @@ fn validate_query_vector_dims(ctx: &QueryContext<'_>, query: &[f64]) -> Result<(
     Ok(())
 }
 
+/// Attribute sort applied after `rank_by` relevance scoring (tie-breaker for v1).
+#[derive(Debug, Clone)]
+struct OrderBy {
+    field: String,
+    descending: bool,
+}
+
+/// Sort key for attribute ordering (string / number); nulls sort first in asc, last in desc.
+#[derive(Debug, Clone, PartialEq)]
+enum AttrSortKey {
+    Null,
+    Number(f64),
+    String(String),
+}
+
+fn parse_order_by(v: &Value) -> Result<OrderBy> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| anyhow!("order_by must be a JSON array"))?;
+    if arr.len() < 2 {
+        bail!("order_by needs [field, asc|desc]");
+    }
+    let field = arr[0]
+        .as_str()
+        .ok_or_else(|| anyhow!("order_by[0] must be a string field name"))?
+        .to_string();
+    let dir = arr[1]
+        .as_str()
+        .ok_or_else(|| anyhow!("order_by[1] must be asc or desc"))?;
+    let descending = match dir.to_ascii_lowercase().as_str() {
+        "asc" | "ascending" => false,
+        "desc" | "descending" => true,
+        other => bail!("unknown order_by direction: {other} (use asc or desc)"),
+    };
+    Ok(OrderBy { field, descending })
+}
+
+fn attr_sort_key(doc: Option<&Document>, field: &str) -> AttrSortKey {
+    let Some(doc) = doc else {
+        return AttrSortKey::Null;
+    };
+    let Some(v) = doc.attributes.get(field) else {
+        return AttrSortKey::Null;
+    };
+    match v {
+        Value::Null => AttrSortKey::Null,
+        Value::String(s) => AttrSortKey::String(s.clone()),
+        Value::Number(n) => n
+            .as_f64()
+            .map(AttrSortKey::Number)
+            .unwrap_or(AttrSortKey::Null),
+        Value::Bool(b) => AttrSortKey::Number(if *b { 1.0 } else { 0.0 }),
+        _ => AttrSortKey::Null,
+    }
+}
+
+fn attr_sort_key_string(key: &AttrSortKey) -> Option<String> {
+    match key {
+        AttrSortKey::Null => None,
+        AttrSortKey::Number(n) => Some(format!("n:{n:032.8}")),
+        AttrSortKey::String(s) => Some(format!("s:{s}")),
+    }
+}
+
+fn compare_attr_keys(a: &AttrSortKey, b: &AttrSortKey, descending: bool) -> std::cmp::Ordering {
+    let ord = match (attr_sort_key_string(a), attr_sort_key_string(b)) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => x.cmp(&y),
+    };
+    if descending {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+fn compare_docs_by_attribute(
+    ctx: &QueryContext<'_>,
+    id_a: &str,
+    id_b: &str,
+    ob: &OrderBy,
+) -> std::cmp::Ordering {
+    let key_a = attr_sort_key(ctx.docs.get(id_a), &ob.field);
+    let key_b = attr_sort_key(ctx.docs.get(id_b), &ob.field);
+    compare_attr_keys(&key_a, &key_b, ob.descending)
+}
+
 fn parse_rank_by(v: &Value) -> Result<Ranker> {
     let arr = v
         .as_array()
@@ -675,6 +777,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows[0].id, "a");
@@ -723,6 +826,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows[0].dist.unwrap_or(0.0) == 0.0);
@@ -773,6 +877,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let vector_only = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", query_vec.clone()]),
@@ -780,6 +885,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let hybrid = QueryRequest {
             rank_by: json!([
@@ -791,6 +897,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
 
         let meta = NamespaceMeta {
@@ -865,6 +972,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: Some("eventual".into()),
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows.iter().all(|r| r.id != "a"));
@@ -904,6 +1012,7 @@ mod tests {
             filters: None,
             include_attributes: Some(Value::Bool(false)),
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.rows.len(), 1);
@@ -989,6 +1098,7 @@ mod tests {
             filters: Some(json!(["tier", "Eq", "pro"])),
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(!resp.rows.is_empty());
@@ -1014,6 +1124,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert_eq!(resp.performance.as_ref().unwrap().storage_roundtrips, Some(4));
@@ -1074,6 +1185,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         let perf = resp.performance.expect("performance stats");
@@ -1109,6 +1221,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty());
@@ -1139,6 +1252,7 @@ mod tests {
                 filters: None,
                 include_attributes: None,
                 consistency: None,
+                order_by: None,
             };
             assert!(execute_query(&ctx, &req).is_err());
         }
@@ -1172,6 +1286,7 @@ mod tests {
                 filters: None,
                 include_attributes: None,
                 consistency: None,
+                order_by: None,
             };
             assert!(execute_query(&ctx, &req).is_err(), "expected error for {req:?}");
         }
@@ -1227,6 +1342,7 @@ mod tests {
             filters: None,
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let err = execute_query(&ctx, &req).unwrap_err().to_string();
         assert!(err.contains("does not match"), "{err}");
@@ -1284,6 +1400,7 @@ mod tests {
             filters: Some(json!(["tier", "Eq", "pro"])),
             include_attributes: None,
             consistency: None,
+            order_by: None,
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty());
@@ -1323,5 +1440,89 @@ mod tests {
         let ids = matching_doc_ids_for_filter(&ctx, &expr).unwrap();
         assert_eq!(ids.len(), 1);
         assert!(ids.contains("drop"));
+    }
+
+    #[test]
+    fn order_by_priority_desc_breaks_score_ties() {
+        let tie_text = "tie score match token";
+        let mut map: HashMap<String, Document> = HashMap::new();
+        for (id, priority) in [("tie-a", 1), ("tie-b", 3), ("tie-c", 2)] {
+            map.insert(
+                id.into(),
+                Document {
+                    id: id.into(),
+                    attributes: [
+                        ("text".into(), json!(tie_text)),
+                        ("priority".into(), json!(priority)),
+                    ]
+                    .into(),
+                },
+            );
+        }
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let seg = FtsSegment::build(1, "text", &pairs);
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            fts_segment_id: 1,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: Some(&seg),
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "tie score"]),
+            top_k: Some(3),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+            order_by: Some(json!(["priority", "desc"])),
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        let ids: Vec<_> = resp.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["tie-b", "tie-c", "tie-a"]);
+        let scores: Vec<f64> = resp.rows.iter().map(|r| r.dist.unwrap()).collect();
+        assert!(
+            (scores[0] - scores[1]).abs() < 1e-9 && (scores[1] - scores[2]).abs() < 1e-9,
+            "expected tied BM25 scores, got {scores:?}"
+        );
+    }
+
+    #[test]
+    fn order_by_malformed_rejected() {
+        let map: HashMap<String, Document> = HashMap::new();
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["BM25", "text", "x"]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+            order_by: Some(json!(["priority"])),
+        };
+        let err = execute_query(&ctx, &req).unwrap_err().to_string();
+        assert!(err.contains("order_by"), "{err}");
     }
 }

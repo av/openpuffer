@@ -138,6 +138,9 @@ pub struct QueryRequest {
     /// `strong` (default): indexed segments + unindexed WAL tail. `eventual`: indexed only.
     #[serde(default)]
     pub consistency: Option<String>,
+    /// Secondary sort after `rank_by` scoring, e.g. `["priority", "desc"]` (turbopuffer attribute order shape).
+    #[serde(default)]
+    pub order_by: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]

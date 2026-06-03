@@ -77,6 +77,7 @@ fn perf_indexed_vector_query_candidate_ratio_and_latency() {
         filters: None,
         include_attributes: None,
         consistency: None,
+        order_by: None,
     };
 
     // Warm planner + index structures.
