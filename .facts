@@ -6,6 +6,9 @@
 
 # product
 
+- label: release v0.2.0 is documented in CHANGELOG.md and Cargo.toml with annotated git tag v0.2.0
+  command: grep -q 'version = "0.2.0"' Cargo.toml && test -f CHANGELOG.md && grep -q '## \[0.2.0\]' CHANGELOG.md && git rev-parse v0.2.0^{} >/dev/null
+  tags: [implemented]
 - label: Cargo package and binary are named openpuffer
   command: grep -qE 'name = "openpuffer"' Cargo.toml && test -f target/release/openpuffer || cargo build --release -q && test -f target/release/openpuffer
   tags: [implemented]
@@ -122,6 +125,12 @@
   tags: [implemented]
 - label: write upsert_condition accepts $ref_new filter values read from the incoming upsert row
   command: grep -q 'RefNew' src/filter.rs && cargo test --lib newer_timestamp_upsert_condition_with_ref_new -q
+  tags: [implemented]
+- label: write accepts patch_condition filtering patch_rows and patch_columns against committed doc with patch as $ref_new
+  command: grep -q 'patch_condition' src/models.rs && grep -q 'apply_patch_condition' src/storage.rs && cargo test --lib patch_only_when_status_active -q
+  tags: [implemented]
+- label: write accepts delete_condition filtering deletes with $ref_new always null on committed doc
+  command: grep -q 'delete_condition' src/models.rs && grep -q 'apply_delete_condition' src/storage.rs && cargo test --lib delete_condition_ref_new_resolves_to_null -q
   tags: [implemented]
 
 # query
@@ -335,4 +344,10 @@
   tags: [implemented]
 - label: integration test upsert_condition_newer_timestamp_with_datetime uses $ref_new and datetime Gt Lt filters on MinIO
   command: cargo test -F integration --test integration_s3 upsert_condition_newer_timestamp_with_datetime -q
+  tags: [implemented]
+- label: integration test patch_condition_patches_matching_docs_only applies patch_condition on MinIO
+  command: cargo test -F integration --test integration_s3 patch_condition_patches_matching_docs_only -q
+  tags: [implemented]
+- label: integration test delete_condition_deletes_matching_docs_only applies delete_condition on MinIO
+  command: cargo test -F integration --test integration_s3 delete_condition_deletes_matching_docs_only -q
   tags: [implemented]
