@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
+use aws_smithy_http_client::{tls, Builder as HttpClientBuilder};
+use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::buffer::WriteBufferConfig;
@@ -177,6 +180,23 @@ pub struct AppConfig {
     pub wal_corrupt_policy: WalCorruptPolicy,
 }
 
+/// Process-wide hyper-backed HTTP client (connection pool reused by all S3 `GetObject` calls).
+static SHARED_S3_HTTP: OnceLock<SharedHttpClient> = OnceLock::new();
+
+/// Process-wide Smithy HTTP client (hyper keep-alive pool; reused by all S3 traffic).
+/// In-flight cold GET parallelism is capped separately via [`cold_s3_concurrency`].
+pub fn shared_s3_http_client() -> SharedHttpClient {
+    SHARED_S3_HTTP
+        .get_or_init(|| {
+            HttpClientBuilder::new()
+                .tls_provider(tls::Provider::Rustls(
+                    tls::rustls_provider::CryptoMode::AwsLc,
+                ))
+                .build_https()
+        })
+        .clone()
+}
+
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
     let creds = Credentials::new(
         &args.s3_access_key,
@@ -186,15 +206,18 @@ pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
         "openpuffer",
     );
 
+    let http = shared_s3_http_client();
     let shared = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .credentials_provider(creds)
         .region(aws_config::Region::new(args.s3_region.clone()))
+        .http_client(http.clone())
         .load()
         .await;
 
     let s3_conf = aws_sdk_s3::config::Builder::from(&shared)
         .endpoint_url(&args.s3_endpoint)
         .force_path_style(true)
+        .http_client(http)
         .build();
 
     Ok(Client::from_conf(s3_conf))

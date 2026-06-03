@@ -9,6 +9,8 @@
 //!
 //! Large key lists are split by [`cold_max_keys_per_round`] (env
 //! `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND`, default [`DEFAULT_COLD_MAX_KEYS_PER_ROUND`]).
+//! Within each sub-batch, in-flight GETs are capped by [`cold_s3_concurrency`] (env
+//! `OPENPUFFER_COLD_S3_CONCURRENCY`, default [`DEFAULT_COLD_S3_CONCURRENCY`]).
 
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
@@ -20,10 +22,23 @@ use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_pa
 use crate::namespace::fetch_meta;
 use anyhow::{Context, Result};
 use aws_sdk_s3::Client;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 
 /// Default max parallel `GetObject` keys per cold-query round (sub-batches share one roundtrip).
 pub const DEFAULT_COLD_MAX_KEYS_PER_ROUND: usize = 128;
+
+/// Default in-flight `GetObject` calls per sub-batch (within one [`fetch_round`] chunk).
+pub const DEFAULT_COLD_S3_CONCURRENCY: usize = 32;
+
+/// In-flight parallel S3 GETs per sub-batch; override with `OPENPUFFER_COLD_S3_CONCURRENCY` (≥ 1).
+pub fn cold_s3_concurrency() -> usize {
+    std::env::var("OPENPUFFER_COLD_S3_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_COLD_S3_CONCURRENCY)
+}
 
 /// Max parallel keys per cold round; override with `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND` (≥ 1).
 pub fn cold_max_keys_per_round() -> usize {
@@ -459,22 +474,20 @@ async fn fetch_round_batch(
     bucket: &str,
     keys: &[String],
 ) -> Result<HashMap<String, Vec<u8>>> {
-    let mut handles = Vec::with_capacity(keys.len());
-    for key in keys {
-        let client = client.clone();
-        let bucket = bucket.to_string();
-        let key = key.clone();
-        handles.push(tokio::spawn(async move {
-            let bytes = get_object_bytes(&client, &bucket, &key).await?;
-            Ok::<_, anyhow::Error>((key, bytes))
-        }));
-    }
-    let mut out = HashMap::new();
-    for handle in handles {
-        let (key, bytes) = handle.await.context("fetch_round task join")??;
-        out.insert(key, bytes);
-    }
-    Ok(out)
+    let concurrency = cold_s3_concurrency();
+    let pairs: Vec<(String, Vec<u8>)> = stream::iter(keys.iter().cloned())
+        .map(|key| {
+            let client = client.clone();
+            let bucket = bucket.to_string();
+            async move {
+                let bytes = get_object_bytes(&client, &bucket, &key).await?;
+                Ok::<_, anyhow::Error>((key, bytes))
+            }
+        })
+        .buffer_unordered(concurrency)
+        .try_collect()
+        .await?;
+    Ok(pairs.into_iter().collect())
 }
 
 async fn fetch_round_optional_batch(
@@ -482,20 +495,17 @@ async fn fetch_round_optional_batch(
     bucket: &str,
     keys: &[String],
 ) -> Result<HashMap<String, Vec<u8>>> {
-    let mut handles = Vec::with_capacity(keys.len());
-    for key in keys {
-        let client = client.clone();
-        let bucket = bucket.to_string();
-        let key = key.clone();
-        handles.push(tokio::spawn(async move {
-            Ok::<Option<(String, Vec<u8>)>, anyhow::Error>(
-                get_object_bytes_optional(&client, &bucket, &key).await?,
-            )
-        }));
-    }
-    let mut out = HashMap::new();
-    for handle in handles {
-        if let Some((key, bytes)) = handle.await.context("fetch_round_optional task join")?? {
+    let concurrency = cold_s3_concurrency();
+    let mut out = HashMap::with_capacity(keys.len());
+    let mut stream = stream::iter(keys.iter().cloned())
+        .map(|key| {
+            let client = client.clone();
+            let bucket = bucket.to_string();
+            async move { get_object_bytes_optional(&client, &bucket, &key).await }
+        })
+        .buffer_unordered(concurrency);
+    while let Some(result) = stream.next().await {
+        if let Some((key, bytes)) = result? {
             out.insert(key, bytes);
         }
     }
@@ -1540,6 +1550,16 @@ mod tests {
             },
         );
         assert!(cold_plan_storage_roundtrips(&full) <= 4);
+    }
+
+    #[test]
+    fn cold_s3_concurrency_default_and_parse() {
+        assert_eq!(DEFAULT_COLD_S3_CONCURRENCY, 32);
+        std::env::remove_var("OPENPUFFER_COLD_S3_CONCURRENCY");
+        assert_eq!(cold_s3_concurrency(), 32);
+        std::env::set_var("OPENPUFFER_COLD_S3_CONCURRENCY", "16");
+        assert_eq!(cold_s3_concurrency(), 16);
+        std::env::remove_var("OPENPUFFER_COLD_S3_CONCURRENCY");
     }
 
     #[test]

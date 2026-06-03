@@ -193,6 +193,7 @@ With `--cache-dir=""`, a **strong** query uses [`plan_cold_query`](../src/s3_bat
 | Risk | Mitigation |
 |------|------------|
 | Huge parallel GET batches in one planner round | Per-round key cap in [`fetch_round`](../src/s3_batch.rs); sub-batches inside a round = **one** `storage_roundtrip`; tune with `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND` |
+| Connection churn / S3 overload on wide sub-batches | `OPENPUFFER_COLD_S3_CONCURRENCY` (default **32**) bounds in-flight GETs per sub-batch; [`shared_s3_http_client`](../src/config.rs) reuses hyper keep-alive across all S3 traffic |
 | Full-index cold fetch at scale | [`plan_cold_query`](../src/s3_batch.rs) + probed round 3 (L1/clusters bounded by `probe_coarse` × `probe_fine`, not `num_fine_total`) |
 | MinIO vs AWS latency | Correctness gates on MinIO; p50 SLO verified on AWS (`scripts/bench-1m.sh`) |
 

@@ -33,7 +33,7 @@ Bench tests and `scripts/bench-1m.sh` print one JSON object per run with these k
 
 Committed 10k snapshot: [`benchmarks/results/baseline-10k.json`](../benchmarks/results/baseline-10k.json).
 
-**Post–Phase A 10k (MinIO, probed cold, 2026-06-03):** `storage_roundtrips` 2, `cold_s3_keys_fetched` 15, `p50_query_latency_ms` 919, `candidates_ratio` 0.0058, `index_object_count` 351 (not all fetched on cold query).
+**Post–Phase A 10k (MinIO, probed cold, 2026-06-03):** `storage_roundtrips` 2, `cold_s3_keys_fetched` 15, `p50_query_latency_ms` ~700 (debug CI profile; see [`baseline-10k.json`](../benchmarks/results/baseline-10k.json)), `candidates_ratio` ~0.008, `index_object_count` ~144 (not all index objects fetched on cold query).
 
 Optional nightly artifact: set `OPENPUFFER_BENCH_WRITE_RESULTS=1` on `bench_cold_100k_nightly` → `benchmarks/results/nightly-100k.json`.
 
@@ -47,6 +47,15 @@ Set on `openpuffer serve` (and indexer builds) before indexing; values are persi
 | `--ann-fine-probe` | `OPENPUFFER_ANN_FINE_PROBE` | **2** | Top-*F* L1 fine centroids per coarse |
 
 Higher probes → better recall, more `cold_s3_keys_fetched` / `performance.candidates` / `storage_roundtrips`. See [ARCHITECTURE.md](ARCHITECTURE.md#vector-ann-spfresh-inspired) for the query path. Related: `OPENPUFFER_ANN_VERSION` (2/3), `OPENPUFFER_ANN_RERANK` (exact re-rank pool).
+
+### Cold S3 fetch tuning (`serve` + cold query path)
+
+| Environment variable | Default | Effect |
+|---------------------|---------|--------|
+| `OPENPUFFER_COLD_MAX_KEYS_PER_ROUND` | **128** | Max keys per logical cold round before splitting into sequential sub-batches (one `storage_roundtrip` per round) |
+| `OPENPUFFER_COLD_S3_CONCURRENCY` | **32** | In-flight parallel `GetObject` calls **within** each sub-batch ([`fetch_round`](../src/s3_batch.rs)); `aws-sdk` uses a process-wide shared hyper client ([`shared_s3_http_client`](../src/config.rs)) for connection reuse |
+
+On AWS 1M, try raising concurrency (e.g. `64`) if RTT-bound; lower on memory-constrained MinIO dev boxes.
 
 ## Tiers
 

@@ -99,14 +99,17 @@ pub async fn s3_fixture_from_env() -> Option<S3Fixture> {
 
 pub async fn s3_client(endpoint: &str, access_key: &str, secret_key: &str) -> Client {
     let creds = Credentials::new(access_key, secret_key, None, None, "integration-test");
+    let http = openpuffer::config::shared_s3_http_client();
     let shared = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .credentials_provider(creds)
         .region(Region::new("us-east-1"))
+        .http_client(http.clone())
         .load()
         .await;
     let conf = aws_sdk_s3::config::Builder::from(&shared)
         .endpoint_url(endpoint)
         .force_path_style(true)
+        .http_client(http)
         .build();
     Client::from_conf(conf)
 }
