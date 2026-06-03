@@ -10,6 +10,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Integration/bench/stress tests spawn `openpuffer serve` via tests/common/s3_harness.rs.
+  CARGO_BIN_EXE_openpuffer: ${{ github.workspace }}/target/release/openpuffer
 
 jobs:
   bench-100k:
@@ -27,6 +29,9 @@ jobs:
         with:
           shared-key: bench-nightly
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build openpuffer (release, bench)
+        run: cargo build --release --features bench
 
       - name: cargo test -F bench --test bench_cold (100k ignored)
         env:
@@ -56,7 +61,38 @@ jobs:
           shared-key: large-stress
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Build openpuffer (release, large_stress)
+        run: cargo build --release --features large_stress
+
       - name: cargo test -F large_stress --test stress_50k -- --ignored
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
+
+  facts-check:
+    name: facts check (optional)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [bench-100k, stress-50k]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build openpuffer (release, integration)
+        run: cargo build --release --features integration
+
+      - name: Install facts CLI
+        run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
+
+      - name: facts check
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: facts check
