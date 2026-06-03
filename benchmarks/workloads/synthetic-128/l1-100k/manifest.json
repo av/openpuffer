@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "workload": "synthetic-128",
+  "seed": 42,
+  "num_docs": 100000,
+  "dim": 128,
+  "batch_size": 10000,
+  "num_batches": 10,
+  "id_scheme": "doc-prefix",
+  "id_format": "doc-{i}",
+  "embedding_fn": "bench_sin_v1",
+  "distance_metric": "cosine_distance",
+  "attributes": {
+    "category": {
+      "type": "string",
+      "values": [
+        "cat-0",
+        "cat-1",
+        "cat-2",
+        "cat-3",
+        "cat-4",
+        "cat-5",
+        "cat-6",
+        "cat-7"
+      ],
+      "assignment": "doc_index % 8"
+    },
+    "title": {
+      "type": "string",
+      "pattern": "synthetic title {doc_index}"
+    },
+    "priority": {
+      "type": "int",
+      "assignment": "doc_index % 100"
+    },
+    "text": {
+      "type": "string",
+      "full_text_search": true,
+      "pattern": "stressterm document number {doc_index}"
+    }
+  },
+  "ingest_cadence": {
+    "sleep_seconds_between_batches": 1.1,
+    "note": "Matches docs/BENCHMARKS.md 1M ingest cadence (~1 WAL commit/s)."
+  },
+  "openpuffer": {
+    "endpoint_shape": "POST /v2/namespaces/{namespace}",
+    "first_batch_includes_schema": true,
+    "ann_version_env": "OPENPUFFER_ANN_VERSION=3"
+  },
+  "turbopuffer": {
+    "api": "namespace.write(upsert_columns=..., schema=...)",
+    "batch_bytes_hint": "10k rows \u00d7 128 f32 is well under 512 MiB"
+  },
+  "generator": {
+    "script": "benchmarks/workloads/generate_synthetic.py",
+    "compatible_with": [
+      "tests/bench_cold.rs synthetic_embedding",
+      "tests/integration_s3.rs stress_upsert_columns",
+      "src/index/vector.rs bench_synthetic_embedding"
+    ]
+  }
+}

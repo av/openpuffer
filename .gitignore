@@ -22,4 +22,4 @@ Thumbs.db
 docker-compose.override.yml
 
 # Facts agent cache (if any)
-.facts-agent/
+.facts-agent/__pycache__/
