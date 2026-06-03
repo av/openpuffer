@@ -1,0 +1,34 @@
+# Nightly 50k-document namespace stress (MinIO via testcontainers; requires Docker).
+name: Nightly large stress
+
+on:
+  schedule:
+    # 03:00 UTC daily
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  stress-50k:
+    name: stress_50k (50k docs, MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: large-stress
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test -F large_stress --test stress_50k -- --ignored
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
