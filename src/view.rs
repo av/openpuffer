@@ -60,10 +60,18 @@ impl NamespaceView {
             return Ok(false);
         }
 
-        let from = self
-            .last_applied_wal_seq
-            .max(meta.wal_snapshot_seq)
-            .saturating_add(1);
+        // WAL compaction may delete segments between our last apply and `wal_snapshot_seq`.
+        if meta.wal_snapshot_seq > self.last_applied_wal_seq {
+            let (docs, last) =
+                load_docs_at_wal_commit(client, bucket, namespace, &meta).await?;
+            self.docs = docs;
+            self.last_applied_wal_seq = last;
+            self.meta = meta;
+            self.meta_etag = etag;
+            return Ok(true);
+        }
+
+        let from = self.last_applied_wal_seq.saturating_add(1);
         if from <= meta.wal_commit_seq {
             replay_wal_range(
                 client,

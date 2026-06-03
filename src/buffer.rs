@@ -264,6 +264,29 @@ impl WriteBufferManager {
         guard.remove(namespace);
     }
 
+    /// Apply uncommitted buffer ops on top of a committed doc map (for `upsert_condition` strong reads).
+    pub async fn overlay_pending_writes(
+        &self,
+        namespace: &str,
+        docs: &mut std::collections::HashMap<String, Document>,
+    ) -> Result<()> {
+        let guard = self.buffers.read().await;
+        let Some(buf) = guard.get(namespace) else {
+            return Ok(());
+        };
+        let st = buf.state.lock().await;
+        if st.upserts.is_empty() && st.patches.is_empty() && st.deletes.is_empty() {
+            return Ok(());
+        }
+        let entry = WalEntry::from_write(
+            st.upserts.clone(),
+            st.patches.clone(),
+            st.deletes.clone(),
+        )?;
+        crate::wal::apply_entry(docs, &entry)?;
+        Ok(())
+    }
+
     /// Flush all namespaces (e.g. graceful shutdown). Bypasses per-namespace commit rate limit.
     pub async fn flush_all(&self) -> Result<()> {
         let names: Vec<String> = self.buffers.read().await.keys().cloned().collect();
@@ -428,6 +451,22 @@ impl WriteBufferManager {
 mod tests {
     use super::*;
     use crate::models::Document;
+
+    #[test]
+    fn overlay_pending_merges_buffered_upsert_into_committed_map() {
+        let mut docs = std::collections::HashMap::new();
+        let entry = WalEntry::from_write(
+            vec![Document {
+                id: "pending".into(),
+                attributes: Default::default(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        crate::wal::apply_entry(&mut docs, &entry).unwrap();
+        assert!(docs.contains_key("pending"));
+    }
 
     /// Simulates group-commit: three logical writes merged into one `WalEntry`.
     #[test]

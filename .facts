@@ -64,7 +64,10 @@
   command: cargo test --lib cosine_identical -q && test -f src/index/vector.rs
   tags: [implemented]
 - label: query accepts rank_by BM25 over FTS inverted index postings
-  command: cargo test --lib bm25_matches_keyword -q
+  command: cargo test --lib bm25_indexed_query_returns_top_doc -q
+  tags: [implemented]
+- label: write accepts upsert_condition evaluated against committed WAL and pending buffer
+  command: grep -q 'upsert_condition' src/models.rs && grep -q 'overlay_pending_writes' src/buffer.rs
   tags: [implemented]
 - label: query accepts hybrid rank_by Sum and Product combining vector and BM25
   command: grep -q 'Ranker::Sum' src/search.rs && grep -q 'Ranker::Product' src/search.rs

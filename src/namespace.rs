@@ -77,9 +77,19 @@ pub async fn load_docs_at_wal_commit(
     let mut docs = HashMap::new();
     let mut last_applied = 0u64;
 
-    if let Some(snap) = read_wal_snapshot(client, bucket, namespace).await? {
-        last_applied = snap.seq;
-        docs = snap.into_docs();
+    if meta.wal_snapshot_seq > 0 {
+        if let Some(snap) = read_wal_snapshot(client, bucket, namespace).await? {
+            if snap.seq == meta.wal_snapshot_seq {
+                last_applied = snap.seq;
+                docs = snap.into_docs();
+            } else {
+                tracing::warn!(
+                    "wal snapshot seq {} != meta.wal_snapshot_seq {} for {namespace}",
+                    snap.seq,
+                    meta.wal_snapshot_seq
+                );
+            }
+        }
     }
 
     if let Some(from) = wal_replay_from(last_applied, meta.wal_commit_seq) {

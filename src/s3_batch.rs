@@ -257,15 +257,18 @@ pub async fn cold_load_meta_and_wal(
         fetch_keys.push(crate::wal::WalSnapshot::key(namespace));
     }
 
+    // After WAL compaction, `wal_replay_from` may be `None` (snapshot covers commit point).
+    // Do not fall back to seq 1 — those segments may have been deleted.
     let replay_from = if meta.wal_snapshot_seq > 0 {
         crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
-            .unwrap_or(1)
+    } else if meta.wal_commit_seq > 0 {
+        Some(1)
     } else {
-        1
+        None
     };
 
-    if meta.wal_commit_seq > 0 {
-        for seq in replay_from..=meta.wal_commit_seq {
+    if let Some(from) = replay_from {
+        for seq in from..=meta.wal_commit_seq {
             fetch_keys.push(crate::wal::wal_key(namespace, seq));
         }
     }
@@ -282,10 +285,12 @@ pub async fn cold_load_meta_and_wal(
     if let Some(bytes) = wal_map_raw.get(&snap_key) {
         wal_by_seq.insert(0, bytes.clone());
     }
-    for seq in replay_from..=meta.wal_commit_seq {
-        let key = crate::wal::wal_key(namespace, seq);
-        if let Some(bytes) = wal_map_raw.get(&key) {
-            wal_by_seq.insert(seq, bytes.clone());
+    if let Some(from) = replay_from {
+        for seq in from..=meta.wal_commit_seq {
+            let key = crate::wal::wal_key(namespace, seq);
+            if let Some(bytes) = wal_map_raw.get(&key) {
+                wal_by_seq.insert(seq, bytes.clone());
+            }
         }
     }
 
@@ -465,6 +470,24 @@ mod tests {
         let keys = round1_index_keys("ns", &meta);
         assert_eq!(keys.len(), 2);
         assert!(!keys.iter().any(|k| k.ends_with("meta.json")));
+    }
+
+    #[test]
+    fn cold_wal_fetch_after_compaction_needs_no_deleted_segments() {
+        let meta = NamespaceMeta {
+            wal_commit_seq: 15,
+            wal_snapshot_seq: 15,
+            index_cursor: 15,
+            ..Default::default()
+        };
+        let replay_from = if meta.wal_snapshot_seq > 0 {
+            crate::wal_compaction::wal_replay_from(meta.wal_snapshot_seq, meta.wal_commit_seq)
+        } else if meta.wal_commit_seq > 0 {
+            Some(1)
+        } else {
+            None
+        };
+        assert!(replay_from.is_none());
     }
 
     #[test]

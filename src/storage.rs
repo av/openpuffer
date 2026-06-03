@@ -484,7 +484,10 @@ impl Storage {
             return Ok(upserts);
         };
         let expr = parse_filter(&cond_val)?;
-        let docs = self.load_docs_for_conditional_write(namespace).await?;
+        let mut docs = self.load_docs_for_conditional_write(namespace).await?;
+        self.write_buffer
+            .overlay_pending_writes(namespace, &mut docs)
+            .await?;
         let mut out = Vec::with_capacity(upserts.len());
         for doc in upserts {
             let current = docs.get(&doc.id);

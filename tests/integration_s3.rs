@@ -1788,10 +1788,11 @@ async fn wal_compaction_after_full_index_query_still_works() {
     );
 
     serve.stop();
+    // Cold batched load path (`--cache-dir=""`) must not refetch deleted WAL segments.
     let serve2 = ServeHandle::spawn_with_options(
         &endpoint,
         &listen,
-        None,
+        Some(PathBuf::from("")),
         Some(1),
         Some(50),
     );
