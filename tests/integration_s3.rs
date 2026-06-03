@@ -2106,16 +2106,89 @@ async fn wal_compaction_after_full_index_query_still_works() {
         "FTS after wal compaction + cold restart, ids={fts_ids:?}"
     );
 
-    let vector_ids = query_ids_ns(
+    let client = reqwest::Client::new();
+    let reset = client
+        .post(format!(
+            "{}/v1/debug/cache-stats/reset",
+            serve2.base_url
+        ))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let cold_body = query_response_ns(
         &serve2.base_url,
         NAMESPACE_WAL_COMPACT,
-        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
-        None,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 10,
+            "consistency": "strong"
+        }),
     )
     .await;
+    let vector_ids: Vec<String> = cold_body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        vector_ids.first().map(String::as_str),
+        Some("compact-0"),
+        "cold ANN top-1 after compaction + restart, ids={vector_ids:?}"
+    );
+
+    let perf = cold_body["performance"]
+        .as_object()
+        .expect("performance after compaction cold query");
+    let roundtrips = perf
+        .get("storage_roundtrips")
+        .and_then(|v| v.as_u64())
+        .expect("storage_roundtrips on cold ANN query after compaction");
     assert!(
-        vector_ids.contains(&"compact-0".to_string()),
-        "vector query after compaction, ids={vector_ids:?}"
+        roundtrips <= 4,
+        "storage_roundtrips {roundtrips} must be ≤ 4 on caught-up cold query after compaction"
+    );
+    let probed = perf
+        .get("ann_probed_clusters")
+        .and_then(|v| v.as_u64())
+        .expect("ann_probed_clusters on cold ANN query after compaction");
+    assert!(
+        probed >= 1,
+        "cold ANN after compaction must report probed clusters, got {probed}"
+    );
+    let cold_keys = perf
+        .get("cold_s3_keys_fetched")
+        .and_then(|v| v.as_u64())
+        .expect("cold_s3_keys_fetched on cold ANN query after compaction");
+    assert!(
+        cold_keys >= 1,
+        "cold query after compaction must fetch S3 keys, got {cold_keys}"
+    );
+
+    let recall_resp = client
+        .post(format!(
+            "{}/v1/namespaces/{}/recall",
+            serve2.base_url,
+            NAMESPACE_WAL_COMPACT
+        ))
+        .json(&json!({ "num": 5, "top_k": 10 }))
+        .send()
+        .await
+        .expect("recall after compaction cold restart");
+    let recall_status = recall_resp.status();
+    let recall_text = recall_resp.text().await.unwrap_or_default();
+    assert_eq!(
+        recall_status,
+        StatusCode::OK,
+        "recall after compaction failed: {recall_text}"
+    );
+    let recall_body: Value = serde_json::from_str(&recall_text).expect("recall json");
+    let avg_recall = recall_body["avg_recall"].as_f64().expect("avg_recall");
+    assert!(
+        avg_recall >= 0.5,
+        "recall@10 after compaction cold path {avg_recall} must be ≥ 0.5 on 15-doc fixture"
     );
 }
 
@@ -4427,7 +4500,7 @@ async fn s3_compaction_removes_old_wal_objects() {
     let listen = format!("127.0.0.1:{}", free_port());
     let ns = NAMESPACE_S3_COMPACT;
 
-    let serve = ServeHandle::spawn_with_options(
+    let mut serve = ServeHandle::spawn_with_options(
         &fixture,
         &listen,
         None,
@@ -4542,6 +4615,8 @@ async fn s3_compaction_removes_old_wal_objects() {
         );
     }
 
+    serve.stop();
+    // Cold batched load (`--cache-dir=""`) on a fresh process; must not hit warm server on same port.
     let serve_cold = ServeHandle::spawn_with_cache(
         &fixture,
         &listen,
@@ -4559,6 +4634,53 @@ async fn s3_compaction_removes_old_wal_objects() {
     assert!(
         fts_ids.iter().any(|id| id.starts_with("s3c-")),
         "query after compaction via cold S3 load, ids={fts_ids:?}"
+    );
+
+    let client = reqwest::Client::new();
+    let reset = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve_cold.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let cold_body = query_response_ns(
+        &serve_cold.base_url,
+        ns,
+        json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 10,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let vector_ids: Vec<String> = cold_body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        vector_ids.first().map(String::as_str),
+        Some("s3c-0"),
+        "cold ANN top-1 after s3 compaction, ids={vector_ids:?}"
+    );
+    let perf = cold_body["performance"].as_object().expect("performance");
+    let roundtrips = perf
+        .get("storage_roundtrips")
+        .and_then(|v| v.as_u64())
+        .expect("storage_roundtrips on cold ANN query after compaction");
+    assert!(
+        roundtrips <= 4,
+        "storage_roundtrips {roundtrips} must be ≤ 4 after compaction cold restart"
+    );
+    let probed = perf
+        .get("ann_probed_clusters")
+        .and_then(|v| v.as_u64())
+        .expect("ann_probed_clusters on cold ANN query after compaction");
+    assert!(
+        probed >= 1,
+        "probed cluster metrics required on cold ANN after compaction, got {probed}"
     );
 }
 
