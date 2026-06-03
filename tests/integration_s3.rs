@@ -78,7 +78,7 @@ const NAMESPACE_COLD_PLAN_DEBUG: &str = "itest-cold-plan-debug";
 const NAMESPACE_COLD_FTS_BM25: &str = "itest-cold-fts-bm25-filter";
 const NAMESPACE_COLD_HYBRID_PRODUCT: &str = "itest-cold-hybrid-product";
 const NAMESPACE_COLD_HYBRID_10K: &str = "itest-cold-hybrid-10k";
-const NAMESPACE_COLD_TWO_VEC: &str = "itest-cold-two-vector-fields";
+const NAMESPACE_COLD_TWO_VEC_10K: &str = "itest-cold-two-vector-fields-10k";
 const NAMESPACE_COLD_INDEX_LAG_FILTER: &str = "itest-cold-index-lag-filter";
 const NAMESPACE_COLD_EMPTY_DOCS: &str = "itest-cold-empty-docs";
 const NAMESPACE_S3_V3_ANN: &str = "itest-s3-ann-v3";
@@ -1614,6 +1614,29 @@ fn stress_upsert_columns(start: usize, count: usize) -> Value {
 }
 
 /// 10k upsert with filterable `tier`: ~5% `pro` (sparse subset for recall filter corpus checks).
+/// 10k upsert with two vector columns (orthogonal embeddings per doc index).
+fn stress_two_vector_upsert_columns(start: usize, count: usize) -> Value {
+    let mut ids = Vec::with_capacity(count);
+    let mut embeddings_a = Vec::with_capacity(count);
+    let mut embeddings_b = Vec::with_capacity(count);
+    for i in start..start + count {
+        ids.push(json!(format!("doc-{i}")));
+        let emb_a: Vec<f64> = (0..STRESS_DIM)
+            .map(|d| ((i * STRESS_DIM + d) as f64 * 0.001).sin())
+            .collect();
+        let emb_b: Vec<f64> = (0..STRESS_DIM)
+            .map(|d| ((i * STRESS_DIM + d) as f64 * 0.001).cos())
+            .collect();
+        embeddings_a.push(json!(emb_a));
+        embeddings_b.push(json!(emb_b));
+    }
+    json!({
+        "id": ids,
+        "embedding_a": embeddings_a,
+        "embedding_b": embeddings_b
+    })
+}
+
 fn recall_filter_upsert_columns(start: usize, count: usize) -> Value {
     let mut ids = Vec::with_capacity(count);
     let mut texts = Vec::with_capacity(count);
@@ -4822,12 +4845,19 @@ async fn cold_hybrid_10k_fts_vector_filter_on_minio() {
     );
 }
 
-/// Cold path: two vector columns — probed fetch only for the `rank_by` field.
+/// Cold path @ 10k: two vector columns — probed cluster GETs only for `rank_by` field B.
 #[tokio::test]
 async fn cold_two_vector_fields_query_probes_ranked_field_only() {
+    use openpuffer::index::vector::CentroidIndexL0;
+    use openpuffer::s3_batch::{
+        build_cold_plan_debug, cluster_get_upper_bound, fetch_cold_vector_l0,
+        fetch_cold_vector_probed, plan_cold_query, ColdPlanOpts,
+    };
+
+    let test_started = std::time::Instant::now();
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());
-    let ns = NAMESPACE_COLD_TWO_VEC;
+    let ns = NAMESPACE_COLD_TWO_VEC_10K;
 
     let serve = ServeHandle::spawn_with_cache(
         &fixture,
@@ -4836,65 +4866,296 @@ async fn cold_two_vector_fields_query_probes_ranked_field_only() {
     );
     serve.wait_ready().await;
 
-    write_batch(
-        &serve.base_url,
+    let schema = json!({
+        "embedding_a": "[128]f32",
+        "embedding_b": "[128]f32"
+    });
+    let batches = STRESS_DOCS / STRESS_BATCH;
+    for b in 0..batches {
+        if b > 0 {
+            sleep(Duration::from_millis(1100)).await;
+        }
+        let start = b * STRESS_BATCH;
+        let mut body =
+            json!({ "upsert_columns": stress_two_vector_upsert_columns(start, STRESS_BATCH) });
+        if b == 0 {
+            body["schema"] = schema.clone();
+        }
+        write_batch(&serve.base_url, ns, body).await;
+    }
+    sleep(Duration::from_millis(1200)).await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(300)).await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert_eq!(
+        meta.index_cursor, meta.wal_commit_seq,
+        "namespace must be fully indexed"
+    );
+    assert_meta_vector_fields(
+        &meta,
+        &[("embedding_a", STRESS_DIM as u32), ("embedding_b", STRESS_DIM as u32)],
+    );
+
+    let index_prefix = format!("{ROOT_PREFIX}{ns}/index/");
+    let index_keys =
+        list_keys_with_prefix(&fixture.client, &fixture.bucket, &index_prefix).await;
+    let clusters_a = index_keys
+        .iter()
+        .filter(|k| k.contains("/index/embedding_a/") && k.contains("clusters-"))
+        .count();
+    let clusters_b = index_keys
+        .iter()
+        .filter(|k| k.contains("/index/embedding_b/") && k.contains("clusters-"))
+        .count();
+    assert!(
+        clusters_a > 100 && clusters_b > 100,
+        "both fields must have many cluster objects on S3 (a={clusters_a}, b={clusters_b})"
+    );
+
+    let l0_a_key = format!("{ROOT_PREFIX}{ns}/index/embedding_a/centroids-l0.bin");
+    let l0_b_key = format!("{ROOT_PREFIX}{ns}/index/embedding_b/centroids-l0.bin");
+    let l0_a = CentroidIndexL0::decode(&get_object_bytes(&fixture.client, &fixture.bucket, &l0_a_key).await)
+        .expect("decode embedding_a L0")
+        .clamp_probe_plan_for_query();
+    let l0_b = CentroidIndexL0::decode(&get_object_bytes(&fixture.client, &fixture.bucket, &l0_b_key).await)
+        .expect("decode embedding_b L0")
+        .clamp_probe_plan_for_query();
+    assert!(
+        l0_a.num_fine_total > 100 && l0_b.num_fine_total > 100,
+        "both fields need many fine clusters (a={}, b={})",
+        l0_a.num_fine_total,
+        l0_b.num_fine_total
+    );
+
+    let query_vec: Vec<f64> = (0..STRESS_DIM)
+        .map(|d| (d as f64 * 0.02).cos())
+        .collect();
+    let max_cluster_gets_b = cluster_get_upper_bound(&l0_b);
+
+    let (vindex_b, _, _, probed_b) = fetch_cold_vector_probed(
+        &fixture.client,
+        &fixture.bucket,
         ns,
-        json!({
-            "schema": {
-                "embedding_a": "[4]f32",
-                "embedding_b": "[4]f32"
-            },
-            "upsert_rows": [
-                {
-                    "id": "doc-a",
-                    "attributes": {
-                        "embedding_a": [1.0, 0.0, 0.0, 0.0],
-                        "embedding_b": [0.0, 1.0, 0.0, 0.0]
-                    }
-                },
-                {
-                    "id": "doc-b",
-                    "attributes": {
-                        "embedding_a": [0.0, 1.0, 0.0, 0.0],
-                        "embedding_b": [1.0, 0.0, 0.0, 0.0]
-                    }
-                }
-            ]
-        }),
+        &meta,
+        "embedding_b",
+        l0_b.clone(),
+        &query_vec,
     )
-    .await;
-    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(60)).await;
+    .await
+    .expect("probed fetch embedding_b");
+    let fetched_b = vindex_b.clusters.len();
+    assert!(
+        fetched_b <= max_cluster_gets_b,
+        "embedding_b probed cluster GETs {fetched_b} must be ≤ bound {max_cluster_gets_b}"
+    );
+    assert!(
+        fetched_b < l0_b.num_fine_total as usize,
+        "embedding_b probed {fetched_b} must be << num_fine_total {}",
+        l0_b.num_fine_total
+    );
+    assert!(
+        fetched_b * 10 < clusters_b,
+        "embedding_b must not fetch all clusters: fetched {fetched_b}, s3 {clusters_b}"
+    );
+    assert!(
+        fetched_b * 10 < clusters_a,
+        "query on embedding_b must not pull embedding_a cluster segments (fetched_b={fetched_b}, s3_a={clusters_a})"
+    );
+
+    let (l0_by_field, _, _) = fetch_cold_vector_l0(&fixture.client, &fixture.bucket, ns, &meta)
+        .await
+        .expect("L0 for planner");
+    let plan_b_only = plan_cold_query(
+        ns,
+        &meta,
+        &[("embedding_b".into(), query_vec.clone())],
+        &l0_by_field,
+        None,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+    );
+    assert!(
+        plan_b_only
+            .round3_keys
+            .iter()
+            .all(|k| k.contains("/index/embedding_b/")),
+        "round3 for embedding_b query must not include embedding_a keys: {:?}",
+        plan_b_only.round3_keys
+    );
+    assert!(
+        !plan_b_only
+            .round3_keys
+            .iter()
+            .any(|k| k.contains("/index/embedding_a/")),
+        "round3 must omit embedding_a clusters when ranking embedding_b"
+    );
+
+    let plan_both = plan_cold_query(
+        ns,
+        &meta,
+        &[
+            ("embedding_a".into(), query_vec.clone()),
+            ("embedding_b".into(), query_vec.clone()),
+        ],
+        &l0_by_field,
+        None,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+    );
+    assert!(
+        plan_both
+            .round3_keys
+            .iter()
+            .any(|k| k.contains("/index/embedding_a/")),
+        "dual-probe plan must include embedding_a round3 keys"
+    );
+    assert!(
+        plan_both
+            .round3_keys
+            .iter()
+            .any(|k| k.contains("/index/embedding_b/")),
+        "dual-probe plan must include embedding_b round3 keys"
+    );
+
+    let expected_debug = build_cold_plan_debug(
+        ns,
+        &meta,
+        &[("embedding_b".into(), query_vec.clone())],
+        &l0_by_field,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+        "eventual",
+        false,
+    );
+    assert_eq!(expected_debug.probe_plan.len(), 1);
+    assert_eq!(
+        expected_debug.probe_plan[0].vector_field, "embedding_b",
+        "single-field rank_by must plan one vector probe"
+    );
+    assert!(
+        expected_debug.probe_plan[0].round3_key_count > 0,
+        "embedding_b probe must have round3 keys"
+    );
+    assert_eq!(
+        expected_debug.round_key_counts.round3,
+        plan_b_only.round3_keys.len()
+    );
+
+    let expected_dual = build_cold_plan_debug(
+        ns,
+        &meta,
+        &[
+            ("embedding_a".into(), query_vec.clone()),
+            ("embedding_b".into(), query_vec.clone()),
+        ],
+        &l0_by_field,
+        ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+        "eventual",
+        false,
+    );
+    assert_eq!(
+        expected_dual.probe_plan.len(),
+        2,
+        "dual vector probes must expose two probe_plan entries"
+    );
+    for field in ["embedding_a", "embedding_b"] {
+        let probe = expected_dual
+            .probe_plan
+            .iter()
+            .find(|p| p.vector_field == field)
+            .unwrap_or_else(|| panic!("probe_plan missing {field}"));
+        assert!(
+            probe.round3_key_count > 0,
+            "{field} must have round3 keys in dual-probe plan"
+        );
+    }
 
     let client = reqwest::Client::new();
-    let _ = client
+    client
         .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
         .send()
-        .await;
+        .await
+        .expect("cache reset");
+
+    let debug_resp = client
+        .post(format!(
+            "{}/v1/debug/namespaces/{}/cold-plan",
+            serve.base_url,
+            namespace_path_segment(ns)
+        ))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding_b", query_vec],
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("cold-plan debug POST");
+    assert_eq!(
+        debug_resp.status(),
+        200,
+        "cold-plan debug: {}",
+        debug_resp.text().await.unwrap_or_default()
+    );
+    let debug_body: Value = debug_resp.json().await.expect("cold-plan json");
+    assert_eq!(
+        debug_body["round_key_counts"]["round3"].as_u64(),
+        Some(expected_debug.round_key_counts.round3 as u64)
+    );
+    let probe = &debug_body["probe_plan"][0];
+    assert_eq!(probe["vector_field"].as_str(), Some("embedding_b"));
+    assert_eq!(
+        probe["round3_key_count"].as_u64(),
+        Some(expected_debug.probe_plan[0].round3_key_count as u64)
+    );
+    assert_eq!(
+        probe["cluster_get_upper_bound"].as_u64(),
+        Some(max_cluster_gets_b as u64)
+    );
 
     let body = query_response_ns(
         &serve.base_url,
         ns,
         json!({
-            "rank_by": ["vector", "ANN", "embedding_b", [1.0, 0.0, 0.0, 0.0]],
-            "top_k": 2
+            "rank_by": ["vector", "ANN", "embedding_b", query_vec],
+            "top_k": 10,
+            "consistency": "eventual"
         }),
     )
     .await;
     let perf = body["performance"].as_object().expect("performance");
-    assert!(
-        perf["ann_probed_clusters"].as_u64().unwrap_or(0) >= 1,
-        "cold ANN on embedding_b must report probed clusters: {perf:?}"
-    );
-    let ids: Vec<String> = body["rows"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .map(|r| r["id"].as_str().unwrap().to_string())
-        .collect();
+    let probed = perf["ann_probed_clusters"]
+        .as_u64()
+        .expect("ann_probed_clusters");
     assert_eq!(
-        ids.first().map(String::as_str),
-        Some("doc-b"),
-        "cold ANN on embedding_b should rank doc-b first, got {ids:?}"
+        probed, probed_b as u64,
+        "HTTP cold query probed clusters must match direct probed fetch"
+    );
+    assert!(
+        probed >= 1 && (probed as usize) <= max_cluster_gets_b,
+        "ann_probed_clusters {probed} must be within probe bound {max_cluster_gets_b}"
+    );
+    let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
+    assert!(
+        ratio < 0.20,
+        "cold ANN on embedding_b candidates_ratio {ratio} should stay sub-linear on 10k"
+    );
+    assert!(
+        body["rows"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "cold ANN on embedding_b must return rows"
+    );
+
+    assert!(
+        test_started.elapsed() < Duration::from_secs(360),
+        "cold_two_vector_fields 10k test exceeded 360s wall clock"
     );
 }
 
