@@ -49,6 +49,7 @@ const NAMESPACE_FAIR_C: &str = "itest-fair-c";
 const FAIR_HOT_BATCH: usize = 400;
 const FAIR_HOT_BATCHES: usize = 5;
 const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
+const NAMESPACE_MULTI_INST: &str = "itest-multi-inst-stateless";
 const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
 const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
@@ -3149,6 +3150,150 @@ async fn s3_two_instances_share_bucket() {
     );
     let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
     assert!(meta.wal_commit_seq >= 1, "meta must record WAL commits");
+}
+
+/// Two concurrent serve processes on one bucket: horizontal scale (not restart).
+#[tokio::test]
+async fn multi_instance_stateless_integration() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen_a = format!("127.0.0.1:{}", free_port());
+    let listen_b = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_MULTI_INST;
+
+    let serve_a = ServeHandle::spawn(&fixture, &listen_a);
+    serve_a.wait_ready().await;
+
+    upsert_batch(
+        &serve_a.base_url,
+        ns,
+        json!([
+            {
+                "id": "doc-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "alpha bravo unique",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "doc-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "charlie delta",
+                    "tier": "free"
+                }
+            },
+            {
+                "id": "doc-c",
+                "attributes": {
+                    "embedding": [0.9, 0.1, 0.0],
+                    "text": "alpha charlie",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve_a.base_url, ns, Duration::from_secs(45)).await;
+
+    let meta_after_a = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(
+        meta_after_a.wal_commit_seq >= 1,
+        "meta must record WAL commits from instance A"
+    );
+    let wal_a = decode_wal_entry_from_s3(&fixture.client, &fixture.bucket, ns, 1).await;
+    assert!(
+        wal_a.upserts.iter().any(|u| u.id == "doc-a"),
+        "WAL on S3 must contain doc-a from instance A"
+    );
+    assert_two_level_centroids_on_backend(&fixture.client, &fixture.bucket, ns).await;
+
+    let serve_b = ServeHandle::spawn(&fixture, &listen_b);
+    serve_b.wait_ready().await;
+    wait_until_indexed(&serve_b.base_url, ns, Duration::from_secs(45)).await;
+
+    let vector_on_b = query_ids_ns(
+        &serve_b.base_url,
+        ns,
+        json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_on_b.first().map(String::as_str),
+        Some("doc-a"),
+        "instance B must read indexed data written by A, got {vector_on_b:?}"
+    );
+
+    let fts_on_b = query_ids_ns(
+        &serve_b.base_url,
+        ns,
+        json!(["BM25", "text", "alpha"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_on_b.contains(&"doc-a".to_string()) && fts_on_b.contains(&"doc-c".to_string()),
+        "instance B FTS must see A's docs, got {fts_on_b:?}"
+    );
+
+    upsert_batch(
+        &serve_b.base_url,
+        ns,
+        json!([{
+            "id": "doc-d",
+            "attributes": {
+                "embedding": [0.0, 0.0, 1.0],
+                "text": "echo foxtrot instance b",
+                "tier": "pro"
+            }
+        }]),
+    )
+    .await;
+
+    let meta_after_b = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(
+        meta_after_b.wal_commit_seq > meta_after_a.wal_commit_seq,
+        "instance B write must advance wal_commit_seq on shared S3 meta"
+    );
+    let wal_b = decode_wal_entry_from_s3(
+        &fixture.client,
+        &fixture.bucket,
+        ns,
+        meta_after_b.wal_commit_seq,
+    )
+    .await;
+    assert!(
+        wal_b.upserts.iter().any(|u| u.id == "doc-d"),
+        "latest WAL on S3 must contain doc-d from instance B"
+    );
+
+    let client = reqwest::Client::new();
+    let warm_resp = client
+        .post(format!("{}/v1/namespaces/{ns}/warm", serve_a.base_url))
+        .send()
+        .await
+        .expect("warm on A");
+    assert_eq!(warm_resp.status(), StatusCode::OK, "warm on A failed");
+
+    let export_on_a = export_all_ids(&serve_a.base_url, ns, None).await;
+    assert!(
+        export_on_a.contains(&"doc-a".to_string()) && export_on_a.contains(&"doc-d".to_string()),
+        "instance A after warm must see B's write via S3, got {export_on_a:?}"
+    );
+
+    let vector_on_a = query_ids_ns(
+        &serve_a.base_url,
+        ns,
+        json!(["vector", "ANN", "embedding", [0.0, 0.0, 1.0]]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        vector_on_a.first().map(String::as_str),
+        Some("doc-d"),
+        "instance A query after warm must rank doc-d from B, got {vector_on_a:?}"
+    );
 }
 
 /// Cold query (`--cache-dir=""`) reports batched S3 roundtrips and loads index from MinIO.
