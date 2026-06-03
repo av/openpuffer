@@ -1781,6 +1781,8 @@ async fn ten_thousand_docs_indexed_query() {
 #[tokio::test]
 async fn recall_http_response_shape_on_minio() {
     let test_started = std::time::Instant::now();
+    let queries = load_queries(&l1_workload_dir());
+    let (recall_num, recall_top_k) = recall_defaults(&queries);
     let fixture = S3Fixture::from_testcontainers().await;
 
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
@@ -1826,7 +1828,7 @@ async fn recall_http_response_shape_on_minio() {
 
     let recall_resp = reqwest::Client::new()
         .post(format!("{}/v1/namespaces/{ns}/recall", serve.base_url))
-        .json(&json!({ "num": 5, "top_k": 10 }))
+        .json(&json!({ "num": recall_num, "top_k": recall_top_k }))
         .send()
         .await
         .expect("recall request");
@@ -1851,7 +1853,7 @@ async fn recall_http_response_shape_on_minio() {
     assert!(avg_exhaustive > 0.0, "avg_exhaustive_count {avg_exhaustive}");
     assert!(
         avg_recall >= 0.85,
-        "avg_recall {avg_recall} must be >= 0.85 on 10k indexed synthetic"
+        "avg_recall {avg_recall} must be >= 0.85 on 10k indexed synthetic (num={recall_num}, top_k={recall_top_k})"
     );
 
     assert!(
@@ -2012,6 +2014,8 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
 #[tokio::test]
 async fn recall_http_with_filters() {
     let test_started = std::time::Instant::now();
+    let queries = load_queries(&l1_workload_dir());
+    let (recall_num, recall_top_k) = recall_defaults(&queries);
     let fixture = S3Fixture::from_testcontainers().await;
 
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
@@ -2079,12 +2083,19 @@ async fn recall_http_with_filters() {
         serde_json::from_str(&text).expect("recall json")
     }
 
-    let unfiltered = post_recall(&client, &recall_url, 5, 10, None).await;
+    let unfiltered = post_recall(
+        &client,
+        &recall_url,
+        recall_num as usize,
+        recall_top_k as usize,
+        None,
+    )
+    .await;
     let filtered = post_recall(
         &client,
         &recall_url,
-        5,
-        10,
+        recall_num as usize,
+        recall_top_k as usize,
         Some(pro_filter.clone()),
     )
     .await;
@@ -2093,11 +2104,11 @@ async fn recall_http_with_filters() {
     let filtered_recall = filtered["avg_recall"].as_f64().expect("avg_recall");
     assert!(
         unfiltered_recall >= 0.85,
-        "unfiltered avg_recall {unfiltered_recall} must be >= 0.85"
+        "unfiltered avg_recall {unfiltered_recall} must be >= 0.85 (num={recall_num}, top_k={recall_top_k})"
     );
     assert!(
         filtered_recall >= 0.85,
-        "filtered avg_recall {filtered_recall} must be >= 0.85 (ANN restricted to filter set)"
+        "filtered avg_recall {filtered_recall} must be >= 0.85 (ANN restricted to filter set, num={recall_num}, top_k={recall_top_k})"
     );
 
     // Large top_k: filtered corpus (~500 pro docs) caps brute/ANN pool vs full 10k.

@@ -269,6 +269,7 @@ Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests
 ## Related tests
 
 - `cargo test -F perf` — 5k in-memory `candidates_ratio < 0.12`
+- `cargo test -F integration recall_http_response_shape_on_minio recall_http_with_filters` — `/recall` shape + filters; uses `queries.json` `recall_defaults` (num=20, top_k=10)
 - `cargo test -F integration ten_thousand_docs_indexed_query` — 10k indexed ANN smoke (warm path)
 - `cargo test -F integration s3_cold_query_reports_roundtrips_on_minio` — small-namespace cold roundtrips
 - `cargo test --release -F large_stress --test stress_50k -- --ignored` — 50k warm (v2) + v3 cold probed mid-tier
