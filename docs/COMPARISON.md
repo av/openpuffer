@@ -4,6 +4,26 @@ This document compares **[openpuffer](https://github.com/av/openpuffer)** (self-
 
 For implementation detail see [ARCHITECTURE.md](ARCHITECTURE.md). For API shapes see [turbopuffer’s docs](https://turbopuffer.com/docs).
 
+**Last refreshed:** after ~51 architecture iterations (commit area `534180c`); treat this as **architecture v0.2** maturity, not a v1.0 product claim.
+
+---
+
+## Architecture maturity (v0.2)
+
+openpuffer started as a turbopuffer-shaped API and is now a **real WAL + async index-on-S3 system**. The table below is how we describe maturity internally—not semver on the crate.
+
+| Dimension | v0.1 (early) | **v0.2 (current)** | turbopuffer (reference) |
+|-----------|--------------|-------------------|-------------------------|
+| **System of record** | WAL + meta; legacy JSON fallback | **WAL + `meta.json` + `index/` only**; integration tests forbid `docs/*.json` | Production WAL + index layout |
+| **Write path** | Basic append | Group commit, CAS, 1/s cap, compaction snapshot, CRC WAL wire format | Production batching + fleet scale |
+| **Indexer** | Inline / stub | Background fair scheduler, FTS + filter + 2-level ANN, incremental segments | Dedicated indexer pool + SPFresh maintenance |
+| **Query path** | Replay-all-WAL risk | Planner + indexed candidates + strong tail; cold `s3_batch`; warm + eventual fast path | Tuned cold/warm at 1M+ docs |
+| **Verification** | HTTP-only tests | **MinIO testcontainers + S3 byte asserts** (WAL decode, centroids, compaction deletes) | Internal + customer SLOs |
+| **Operability** | README | Deep health, export, warm, limits, optional Prometheus, docker dev/test compose | Control plane, auth, regions, billing |
+| **Production readiness** | Prototype | **Private-network / staging / fork base** | Managed SLA product |
+
+**What v0.2 means in practice:** you can run multiple stateless `serve` processes against one bucket, inspect `openpuffer/{ns}/wal|index|meta.json`, and get turbopuffer-like strong reads without a separate database. You should still **benchmark your bucket, region, and probes** before betting a business on ANN recall or cold latency.
+
 ---
 
 ## Shared model (what we deliberately copied)
@@ -12,7 +32,7 @@ Both systems treat **object storage as the system of record** for each namespace
 
 | Concept | turbopuffer | openpuffer |
 |---------|-------------|------------|
-| Durable writes | Append-only **WAL** under `{namespace}/wal/` | `openpuffer/{ns}/wal/{seq:08}.bin` (bincode `WalEntry`) |
+| Durable writes | Append-only **WAL** under `{namespace}/wal/` | `openpuffer/{ns}/wal/{seq:08}.bin` (v1: `[0x01][bincode][crc32]`) |
 | Commit point | `meta.json` CAS (`wal_commit_seq`) | Same: S3 conditional PUT on `meta.json` |
 | Index lag | Async merge into `index/`; queries see unindexed WAL | `index_cursor` + strong tail scan `(index_cursor, wal_commit_seq]` |
 | Write ACK | After durable WAL commit (not after index build) | Group-commit buffer → one WAL PUT + meta CAS → HTTP 200 |
@@ -20,7 +40,7 @@ Both systems treat **object storage as the system of record** for each namespace
 | Consistency default | Strong | `consistency: "strong"` (default) |
 | Fast warm path | NVMe + pinned views; eventual sub-10ms | `--cache-dir` + `POST …/warm` + `consistency: "eventual"` on pinned view |
 
-openpuffer is **not** a thin HTTP shim over JSON files anymore: integration tests assert real S3 keys (`meta.json`, `wal/*`, `index/*`) and decode WAL bytes from MinIO.
+openpuffer is **not** a thin HTTP shim over JSON files: integration tests assert real S3 keys (`meta.json`, `wal/*`, `index/*`), decode WAL bytes from MinIO, and verify compaction removes old segments.
 
 ---
 
@@ -29,22 +49,24 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 ### Storage & write path
 
 - **WAL-only durability** — no `docs/{id}.json` / `manifest.json` legacy layout.
+- **WAL integrity** — v1 segments: version byte + bincode + CRC32; legacy segments still replay; `OPENPUFFER_WAL_CORRUPT_POLICY` (`fail` | `skip`).
 - **Group commit** — time- and batch-sized flush (`OPENPUFFER_WRITE_MAX_DELAY_MS`, `OPENPUFFER_WRITE_MAX_BATCH_OPS`).
 - **Strong consistency** — ACK only after WAL PUT + successful `meta.json` CAS.
 - **Per-namespace write serialization** — in-process commit lock + S3 `If-Match` CAS (safe multi-client, one WAL seq at a time).
-- **~1 WAL commit / second / namespace** — enforced `min_commit_interval` (same default as turbopuffer’s 1/s cap, but not the same throughput story; see gaps).
-- **WAL compaction** — when fully indexed: `wal/snapshot.bin`, prune old segments, cold load = snapshot + tail.
+- **~1 WAL commit / second / namespace** — enforced `min_commit_interval` (same default cap as turbopuffer’s 1/s story, but not the same throughput at fleet scale; see gaps).
+- **WAL compaction** — when fully indexed: `wal/snapshot.bin`, prune old segments, cold load = snapshot + tail (integration-tested on MinIO).
 - **Writes**: `upsert_rows` / `upsert_columns`, `deletes`, `patch_rows` / `patch_columns`, `delete_by_filter`, `patch_by_filter`, `schema`, `distance_metric`, `upsert_condition`, `return_affected_ids`, `copy_from_namespace`, `branch_from_namespace`.
-- **Limits** — namespace name validation, 64 MiB body, 10k rows/request, 5k filter-batch cap (with `*_allow_partial`).
+- **Limits** — namespace name validation, 64 MiB body, 10k rows/request, 5k filter-batch cap (with `*_allow_partial` + `rows_remaining`).
+- **Write billing estimate** — `billing.billable_logical_bytes_written` on write responses.
 
 ### Background indexer
 
-- **Decoupled from ACK** — `BackgroundIndexer` wakes after flush; fair round-robin across namespaces with lag priority.
-- **FTS** — BM25 inverted segments (`fts-{seg}.bin`), incremental `apply_delta`, segment chains in meta.
+- **Decoupled from ACK** — `BackgroundIndexer` wakes after flush; fair round-robin across namespaces with lag priority (~2s slices).
+- **FTS** — BM25 inverted segments (`fts-{seg}.bin`), incremental `apply_delta`, segment chains in meta; tokenizer: Unicode NFKC, letter/number runs, English stopwords, optional Porter stem (`OPENPUFFER_FTS_STEM`).
 - **Filters** — inverted `(field, value) → doc_id` segments; intersect before ANN/FTS scoring.
 - **Vector ANN (SPFresh-inspired, simplified)** — two-level k-means: `centroids-l0.bin`, `centroids-l1-{coarse}.bin`, `clusters-{fine}.bin`; k-means++ init; incremental assign + full rebuild when `doc_count > 4 × fine_centroids`; probe tuning (`OPENPUFFER_ANN_COARSE_PROBE` / `FINE`, defaults 4/2).
 - **f16 vectors** — schema `[N]f16`, packed cluster storage, f32 scoring at query time.
-- **Multi-vector columns** — more than one indexed vector field per namespace (per-field centroid keys).
+- **Multi-vector columns** — more than one indexed vector field per namespace (per-field centroid keys under `index/{field}/`).
 
 ### Query path
 
@@ -52,22 +74,25 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 - **Filters**: `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `And`, `Or`.
 - **`order_by`** tie-break after scoring.
 - **`include_vectors`** + `vector_encoding` (`float` | `base64`); base64 f32/f16 on upsert.
-- **`consistency`**: `strong` (WAL tail + `catch_up`) vs `eventual` (indexed snapshot only on pinned views).
-- **Performance block** — `candidates`, `candidates_ratio`, `exhaustive_search_count`, `storage_roundtrips`, `query_execution_us`; billing estimates in `performance.billing`.
-- **Cold S3 batching** — two-round parallel fetch (`s3_batch.rs`) when `--cache-dir=""`.
+- **`consistency`**: `strong` (WAL tail + `catch_up`) vs `eventual` (indexed snapshot only on pinned views; no WAL I/O on warm path).
+- **Performance block** — `candidates`, `candidates_ratio`, `exhaustive_search_count`, `scored`, `storage_roundtrips`, `query_execution_us`; billing estimates in `performance.billing`.
+- **Cold S3 batching** — two-round parallel fetch (`s3_batch.rs`) when `--cache-dir=""`; S3 GET counter wired when `metrics` feature enabled.
 
 ### Operations API
 
 - `GET /health`, `GET /health?deep=1` (S3 probe).
 - `GET /v1/namespaces`, `GET /v1/namespaces/{name}` (`index_status`, `unindexed_bytes`, `approx_row_count`).
 - `POST /v1/namespaces/{name}/warm`, export at `wal_commit_seq`, `DELETE` namespace.
-- **Stateless `serve`** — multiple processes, one bucket; optional local index cache only.
+- **Consistent errors** — `{"error":"…","status":"error"}` (`ApiErrorResponse`) on validation and planner failures.
+- **Optional Prometheus** — `GET /metrics` with `--features metrics` (`wal_commits_total`, `index_lag_segments`, `s3_get_total`, query duration histogram).
+- **Stateless `serve`** — multiple processes, one bucket; optional local index cache only; integration test: two instances share a bucket.
 
 ### Testing & dev ergonomics
 
-- **67+ `.facts` checks**, 127+ unit tests, 33+ MinIO integration tests (Head/Get/decode WAL, multi-instance bucket sharing, compaction S3 proofs).
-- `docker-compose` MinIO + `scripts/dev-up.sh` / `dev-serve.sh`.
-- Perf regression: 5k-doc ANN `candidates_ratio < 12%`.
+- **95 `.facts` checks** (all tagged implemented), **142** unit tests, **41** MinIO integration tests (`cargo test -F integration`) plus `#[ignore]` external-S3 smoke.
+- **S3 harness** — `tests/common/s3_harness.rs`: Head/List/Get, decode WAL/meta, assert centroids per vector field, compaction object deletion.
+- `docker-compose.yml` (dev MinIO) + `docker-compose.test.yml` + `scripts/run-integration-s3.sh` (local + external endpoint).
+- Perf regression: 5k-doc ANN `candidates_ratio < 12%`; 10k-doc namespace indexing integration (~tens of seconds on MinIO, not an SLA).
 
 ---
 
@@ -83,9 +108,10 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 | **Query stickiness** | First query pins namespace to a node for NVMe locality | Any `serve` instance; warm pin is **per process** only |
 | **Dedicated indexers** | Separate `./tpuf indexer` pool + indexing queue on S3 | Indexer is a background task inside `serve` |
 | **Security** | API keys, permissions, audit logs, private networking, CMEK | No auth layer; no encryption beyond what S3 provides |
-| **Billing product** | Metered billing, dashboards | Estimates in JSON only (`performance.billing`) |
+| **Billing product** | Metered billing, dashboards | JSON estimates only (`performance.billing`, write billing) |
 | **Backups / DR** | Documented backup story | You own bucket versioning/replication |
 | **Status / SLOs** | Published p50 cold/warm (e.g. 1M docs cold ~400–874ms, warm ~14ms) | No production SLOs; MinIO integration timings ≠ AWS at scale |
+| **CI for external S3** | Managed pipelines | Scripts exist; no hosted CI job in-repo |
 
 ### Index & search engine depth
 
@@ -94,7 +120,7 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 | **True SPFresh** | Production centroid hierarchy, segment merges, object-storage–tuned layout | **Two-level k-means simplification**; rebuild threshold, not full SPFresh maintenance |
 | **Graph ANN** | Centroid-based (not HNSW) by design | Same family, but fewer levels, coarser segments, lower tuned recall budget |
 | **Cold latency at 1M docs** | ~400–500ms class (marketing/docs) | Not validated at 1M; 10k-doc integration ~tens of seconds to index; cold = many S3 roundtrips |
-| **FTS sophistication** | Production BM25 + optimizations | BM25 over bincode postings; simpler merge chain |
+| **FTS sophistication** | Production BM25 + optimizations | BM25 + improved tokenizer; simpler merge chain than turbopuffer at scale |
 | **Filter expressiveness** | Broader DSL (e.g. text ops, more combinators) | v1: scalar compares + `In` + `And`/`Or` only; no `Contains`/`Glob`/etc. |
 | **Recall API** | [`POST …/recall`](https://turbopuffer.com/docs/recall) | Unit-test recall@10 only; no HTTP recall endpoint |
 | **Patch vector in place** | turbopuffer patch vector support | **Vector fields cannot be patched** (400 on vector patch attrs) |
@@ -104,12 +130,12 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 
 ### Throughput & limits
 
-| Area | turbopuffer (typical) | openpuffer v1 |
-|------|----------------------|---------------|
+| Area | turbopuffer (typical) | openpuffer v0.2 |
+|------|----------------------|-----------------|
 | Write payload | Up to **512 MiB** / request | **64 MiB** hard cap |
 | Effective ingest | High batching inside 1/s WAL commits; docs cite **~10k+ vectors/s** class at scale | **~1 WAL commit/s/ns** hard cap; practical throughput is batch-size × commits/s, not cloud-scale |
 | Eventual staleness | Documented up to ~**1 hour** worst case in product docs | Index-lag bounded by your indexer speed; no hour-scale contract |
-| Auth / RBAC | Yes | None (assume private network) |
+| Auth / RBAC | Yes | None (assume private network or edge auth) |
 
 ---
 
@@ -130,7 +156,7 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 - You need **strong read-your-writes** without a separate database—only object storage + optional local cache.
 - You are building **RAG / hybrid search** prototypes where **~1 commit/s/namespace** and simplified ANN are acceptable.
 - You want **inspectable S3 layout** (`wal/`, `index/`, `meta.json`) for debugging, compliance-friendly storage, or custom tooling.
-- You plan to **fork or extend** the Rust codebase (indexer fairness, probes, compaction are all in-tree).
+- You plan to **fork or extend** the Rust codebase (indexer fairness, probes, compaction, metrics are all in-tree).
 - Your threat model allows **private-network deployment without API auth** (or you will add auth at the edge).
 
 ---
@@ -144,18 +170,19 @@ openpuffer is **not** a thin HTTP shim over JSON files anymore: integration test
 - **ANN recall and latency are business-critical** without you operating benchmarks, probe tuning, and capacity planning on your bucket/region.
 - You want **HNSW/graph indexes** or SPFresh-equivalent behavior without operating your own index research loop.
 
-For those cases, use **[turbopuffer](https://turbopuffer.com)** (managed) or treat openpuffer as an **architecture reference implementation**, not a drop-in replacement.
+For those cases, use **[turbopuffer](https://turbopuffer.com)** (managed) or treat openpuffer as an **architecture reference implementation (v0.2)**, not a drop-in replacement.
 
 ---
 
 ## Quick reference matrix
 
-| | turbopuffer | openpuffer |
-|---|-------------|------------|
+| | turbopuffer | openpuffer (v0.2) |
+|---|-------------|-------------------|
 | **License / deployment** | Commercial SaaS (+ enterprise BYOC) | Open source; self-hosted binary |
 | **System of record** | S3 (per region) | Your S3-compatible bucket |
 | **API compatibility** | Canonical | Core write/query/metadata/export/warm subset |
-| **Architecture fidelity** | Production SPFresh + FTS + filters | WAL + 2-level k-means ANN + FTS + filters (simplified) |
+| **Architecture fidelity** | Production SPFresh + FTS + filters | WAL + 2-level k-means ANN + FTS + filters (simplified, verified on MinIO) |
+| **Maturity** | Production product | Reference/staging architecture; 95 facts + S3-proof integration suite |
 | **Best fit** | Production apps at scale | Dev, staging, private cloud, learning, forks |
 
 ---
