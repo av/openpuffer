@@ -74,6 +74,7 @@ const NAMESPACE_BB3_COPY_QUERY_SRC: &str = "itest-bb3-copy-query-src";
 const NAMESPACE_BB3_COPY_QUERY_DEST: &str = "itest-bb3-copy-query-dest";
 const NAMESPACE_S3_TWO_VEC: &str = "itest-s3-two-vector-fields";
 const NAMESPACE_COLD_HYBRID_FILTER: &str = "itest-cold-hybrid-filter";
+const NAMESPACE_COLD_HYBRID_PRODUCT: &str = "itest-cold-hybrid-product";
 const NAMESPACE_COLD_HYBRID_10K: &str = "itest-cold-hybrid-10k";
 const NAMESPACE_COLD_TWO_VEC: &str = "itest-cold-two-vector-fields";
 const NAMESPACE_COLD_INDEX_LAG_FILTER: &str = "itest-cold-index-lag-filter";
@@ -4354,6 +4355,101 @@ async fn cold_hybrid_sum_vector_filter_on_minio() {
         .as_u64()
         .expect("ann_probed_clusters");
     assert!(probed >= 1, "hybrid cold query must probe ANN clusters, got {probed}");
+}
+
+/// Cold path: hybrid `Product` (vector ∩ BM25) returns only docs matching both signals.
+#[tokio::test]
+async fn cold_hybrid_product_vector_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_HYBRID_PRODUCT;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "cold-product-both",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold product alpha uniquepro",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "cold-product-bm25-only",
+                "attributes": {
+                    "embedding": [0.0, 0.0, 1.0],
+                    "text": "cold product alpha uniquepro",
+                    "tier": "pro"
+                }
+            },
+            {
+                "id": "cold-product-vector-only",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "cold product noise unrelated",
+                    "tier": "pro"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await;
+
+    let body = query_response_ns(
+        &serve.base_url,
+        ns,
+        json!({
+            "rank_by": [
+                "Product",
+                ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+                ["BM25", "text", "uniquepro"]
+            ],
+            "top_k": 3,
+            "consistency": "strong"
+        }),
+    )
+    .await;
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["cold-product-both".to_string()],
+        "Product cold query must return only doc in vector∩BM25 candidates, got {ids:?}"
+    );
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips >= 2 && roundtrips <= 4,
+        "cold Product hybrid should report batched roundtrips, got {roundtrips}"
+    );
+    let probed = perf["ann_probed_clusters"]
+        .as_u64()
+        .expect("ann_probed_clusters");
+    assert!(
+        probed >= 1,
+        "Product cold query must probe ANN clusters, got {probed}"
+    );
 }
 
 /// 10k indexed namespace: cold hybrid `Sum` (vector + BM25) + filter; FTS in bootstrap round 2.

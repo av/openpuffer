@@ -1844,6 +1844,32 @@ mod tests {
     }
 
     #[test]
+    fn vector_probe_specs_collects_hybrid_vector_in_product() {
+        let rank_by = json!([
+            "Product",
+            ["BM25", "text", "rust"],
+            ["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]
+        ]);
+        let specs = super::vector_probe_specs(&rank_by).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].0, "embedding");
+        assert_eq!(specs[0].1.len(), 4);
+    }
+
+    #[test]
+    fn vector_probe_specs_collects_two_vector_fields_in_product() {
+        let rank_by = json!([
+            "Product",
+            ["vector", "ANN", "embedding_a", [1.0, 0.0, 0.0, 0.0]],
+            ["vector", "ANN", "embedding_b", [0.0, 1.0, 0.0, 0.0]]
+        ]);
+        let specs = super::vector_probe_specs(&rank_by).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].0, "embedding_a");
+        assert_eq!(specs[1].0, "embedding_b");
+    }
+
+    #[test]
     fn malformed_rank_by_rejected() {
         let docs = HashMap::new();
         let meta = NamespaceMeta::default();
