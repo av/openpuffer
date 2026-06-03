@@ -276,8 +276,9 @@ impl Storage {
                 .await;
         }
 
+        let include_wal = consistency == QueryConsistency::Strong;
         let (mut view, wal_roundtrips, wal_s3_keys) = if cold_batch {
-            NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
+            NamespaceView::load_cold_batched(&self.client, &self.bucket, name, include_wal).await?
         } else {
             (NamespaceView::load(&self.client, &self.bucket, name).await?, 0, 0)
         };
@@ -318,7 +319,7 @@ impl Storage {
         }
 
         let (mut view, _, _) = if cold_batch {
-            NamespaceView::load_cold_batched(&self.client, &self.bucket, name).await?
+            NamespaceView::load_cold_batched(&self.client, &self.bucket, name, true).await?
         } else {
             (NamespaceView::load(&self.client, &self.bucket, name).await?, 0, 0)
         };

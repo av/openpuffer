@@ -54,6 +54,9 @@ const NAMESPACE_S3_TWO_INST: &str = "itest-s3-two-inst";
 const NAMESPACE_MULTI_INST: &str = "itest-multi-inst-stateless";
 const NAMESPACE_S3_COLD_RT: &str = "itest-s3-cold-roundtrips";
 const NAMESPACE_COLD_WAL_TAIL: &str = "itest-cold-wal-tail-r4";
+const NAMESPACE_COLD_EVENTUAL: &str = "itest-cold-eventual-wal";
+const NAMESPACE_COLD_STRONG_RT: &str = "itest-cold-strong-rt-compare";
+const NAMESPACE_COLD_EVENTUAL_RT: &str = "itest-cold-eventual-rt-compare";
 const NAMESPACE_COLD_PROBE_BOUND: &str = "itest-cold-probe-bound";
 const NAMESPACE_S3_COMPACT: &str = "itest-s3-compact";
 const NAMESPACE_S3_SEG_GROW: &str = "itest-s3-seg-grow";
@@ -4022,6 +4025,249 @@ async fn cold_strong_unindexed_wal_tail_round4_on_minio() {
         !plan_keys.is_empty(),
         "planner round-4 keys should be non-empty while index lags commit"
     );
+}
+
+/// Cold + eventual consistency with index lag: skip WAL round 1 and round 4; indexed docs visible.
+#[tokio::test]
+async fn cold_eventual_unindexed_tail_skips_wal_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns = NAMESPACE_COLD_EVENTUAL;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([
+            {
+                "id": "ev-indexed-a",
+                "attributes": {
+                    "embedding": [1.0, 0.0, 0.0],
+                    "text": "eventual cold indexed alpha"
+                }
+            },
+            {
+                "id": "ev-indexed-b",
+                "attributes": {
+                    "embedding": [0.0, 1.0, 0.0],
+                    "text": "eventual cold indexed bravo"
+                }
+            }
+        ]),
+    )
+    .await;
+    wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+
+    upsert_batch(
+        &serve.base_url,
+        ns,
+        json!([{
+            "id": "ev-tail-unindexed",
+            "attributes": {
+                "embedding": [0.99, 0.01, 0.0],
+                "text": "eventual cold tail after index cursor"
+            }
+        }]),
+    )
+    .await;
+
+    let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+    assert!(
+        meta.index_cursor < meta.wal_commit_seq,
+        "index lag required: cursor={} commit={}",
+        meta.index_cursor,
+        meta.wal_commit_seq
+    );
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+
+    let resp = client
+        .post(format!("{}/v2/namespaces/{ns}/query", serve.base_url))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 3,
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("cold eventual query");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("query json");
+    let ids: Vec<String> = body["rows"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.iter().any(|id| id.starts_with("ev-indexed-")),
+        "eventual cold query must return indexed docs from probed clusters, got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"ev-tail-unindexed".to_string()),
+        "eventual cold must not see unindexed WAL tail doc, got {ids:?}"
+    );
+
+    let perf = body["performance"].as_object().expect("performance");
+    let roundtrips = perf["storage_roundtrips"]
+        .as_u64()
+        .expect("storage_roundtrips");
+    assert!(
+        roundtrips >= 2 && roundtrips <= 4,
+        "eventual cold: meta + bootstrap + probe (no WAL rounds), got {roundtrips}"
+    );
+    let exhaustive = perf["exhaustive_search_count"].as_u64().unwrap_or(0);
+    assert_eq!(
+        exhaustive, 0,
+        "eventual cold must not exhaustively score unindexed tail, got {exhaustive}"
+    );
+
+    let plan = openpuffer::s3_batch::plan_cold_query(
+        ns,
+        &meta,
+        &[("embedding".into(), vec![1.0, 0.0, 0.0])],
+        &HashMap::new(),
+        None,
+        openpuffer::s3_batch::ColdPlanOpts {
+            include_wal_round: false,
+            include_wal_tail: false,
+        },
+    );
+    assert!(plan.round1_keys.is_empty());
+    assert!(plan.round4_keys.is_empty());
+}
+
+/// Strong cold with index lag uses more roundtrips than eventual on a fresh namespace (WAL round 1 + tail).
+#[tokio::test]
+async fn cold_strong_requires_more_roundtrips_than_eventual_with_tail_on_minio() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ns_ev = NAMESPACE_COLD_EVENTUAL_RT;
+    let ns_str = NAMESPACE_COLD_STRONG_RT;
+
+    let serve = ServeHandle::spawn_with_cache(
+        &fixture,
+        &listen,
+        Some(PathBuf::from("")),
+    );
+    serve.wait_ready().await;
+
+    for ns in [ns_ev, ns_str] {
+        upsert_batch(
+            &serve.base_url,
+            ns,
+            json!([
+                {
+                    "id": "cmp-indexed",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "compare indexed"
+                    }
+                }
+            ]),
+        )
+        .await;
+        wait_until_indexed(&serve.base_url, ns, Duration::from_secs(30)).await;
+        upsert_batch(
+            &serve.base_url,
+            ns,
+            json!([{
+                "id": "cmp-tail",
+                "attributes": {
+                    "embedding": [0.99, 0.01, 0.0],
+                    "text": "compare tail"
+                }
+            }]),
+        )
+        .await;
+    }
+
+    let mut index_lag = true;
+    for ns in [ns_ev, ns_str] {
+        let meta = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;
+        if meta.index_cursor >= meta.wal_commit_seq {
+            index_lag = false;
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
+        .send()
+        .await
+        .expect("cache reset");
+
+    let eventual_body: Value = client
+        .post(format!("{}/v2/namespaces/{ns_ev}/query", serve.base_url))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 2,
+            "consistency": "eventual"
+        }))
+        .send()
+        .await
+        .expect("eventual query")
+        .json()
+        .await
+        .expect("eventual json");
+    let strong_body: Value = client
+        .post(format!("{}/v2/namespaces/{ns_str}/query", serve.base_url))
+        .json(&json!({
+            "rank_by": ["vector", "ANN", "embedding", [1.0, 0.0, 0.0]],
+            "top_k": 2,
+            "consistency": "strong"
+        }))
+        .send()
+        .await
+        .expect("strong query")
+        .json()
+        .await
+        .expect("strong json");
+
+    let ev_rt = eventual_body["performance"]["storage_roundtrips"]
+        .as_u64()
+        .expect("eventual roundtrips");
+    let st_rt = strong_body["performance"]["storage_roundtrips"]
+        .as_u64()
+        .expect("strong roundtrips");
+    assert!(
+        st_rt > ev_rt,
+        "strong cold must use more roundtrips than eventual (strong={st_rt}, eventual={ev_rt})"
+    );
+
+    if index_lag {
+        let strong_ids: Vec<String> = strong_body["rows"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        let eventual_ids: Vec<String> = eventual_body["rows"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            strong_ids.contains(&"cmp-tail".to_string()),
+            "strong must see unindexed tail doc when index lags, got {strong_ids:?}"
+        );
+        assert!(
+            !eventual_ids.contains(&"cmp-tail".to_string()),
+            "eventual must not see tail doc when index lags, got {eventual_ids:?}"
+        );
+    }
 }
 
 /// Cold path: hybrid `Sum` (vector + BM25) with attribute filter returns only matching tier.

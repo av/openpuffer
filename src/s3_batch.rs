@@ -881,6 +881,18 @@ pub async fn fetch_cold_unindexed_wal_tail(
     Ok((entries, 1, keys_fetched))
 }
 
+/// Cold namespace open for `consistency: eventual`: `meta.json` only (no WAL round).
+pub async fn cold_load_meta_only(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+) -> Result<(NamespaceMeta, Option<String>, u32, u32)> {
+    let Some((meta, etag)) = fetch_meta(client, bucket, namespace).await? else {
+        return Ok((NamespaceMeta::default(), None, 0, 0));
+    };
+    Ok((meta, etag, 1, 0))
+}
+
 /// Cold namespace bootstrap: meta fetch + parallel WAL segments (2 roundtrips when WAL present).
 pub async fn cold_load_meta_and_wal(
     client: &Client,
@@ -1591,6 +1603,46 @@ mod tests {
             cold_fetch_sub_batch_count(plan.round3_keys.len(), DEFAULT_COLD_MAX_KEYS_PER_ROUND),
             4,
             "fetch_round would issue four capped sub-batches inside one roundtrip"
+        );
+    }
+
+    #[test]
+    fn plan_cold_query_eventual_omits_wal_rounds() {
+        let meta = NamespaceMeta {
+            index_cursor: 5,
+            wal_commit_seq: 8,
+            wal_snapshot_seq: 0,
+            ..Default::default()
+        };
+        let eventual = plan_cold_query(
+            "ns",
+            &meta,
+            &[],
+            &HashMap::new(),
+            None,
+            ColdPlanOpts {
+                include_wal_round: false,
+                include_wal_tail: false,
+            },
+        );
+        assert!(eventual.round1_keys.is_empty(), "eventual skips round-1 WAL");
+        assert!(eventual.round4_keys.is_empty(), "eventual skips round-4 tail");
+        let strong = plan_cold_query(
+            "ns",
+            &meta,
+            &[],
+            &HashMap::new(),
+            None,
+            ColdPlanOpts {
+                include_wal_round: true,
+                include_wal_tail: true,
+            },
+        );
+        assert!(!strong.round1_keys.is_empty());
+        assert!(!strong.round4_keys.is_empty());
+        assert!(
+            cold_plan_storage_roundtrips(&eventual) < cold_plan_storage_roundtrips(&strong),
+            "eventual plan must use fewer logical roundtrips than strong when index lags"
         );
     }
 

@@ -107,12 +107,34 @@ impl NamespaceView {
         })
     }
 
-    /// Cold load without disk cache: batched meta + parallel WAL (`storage_roundtrips` for WAL only).
+    /// Cold load without disk cache: batched meta + optional parallel WAL.
+    ///
+    /// When `include_wal` is false (`consistency: eventual`), only `meta.json` is fetched;
+    /// `docs` stays empty and indexed segments supply query candidates.
     pub async fn load_cold_batched(
         client: &Client,
         bucket: &str,
         namespace: &str,
+        include_wal: bool,
     ) -> Result<(Self, u32, u32)> {
+        if !include_wal {
+            let (meta, etag, wal_roundtrips, wal_s3_keys) =
+                s3_batch::cold_load_meta_only(client, bucket, namespace).await?;
+            if wal_roundtrips == 0 && etag.is_none() {
+                return Ok((Self::empty(), 0, 0));
+            }
+            return Ok((
+                Self {
+                    docs: HashMap::new(),
+                    meta,
+                    meta_etag: etag,
+                    last_applied_wal_seq: 0,
+                },
+                wal_roundtrips,
+                wal_s3_keys,
+            ));
+        }
+
         let (meta, etag, wal_bytes, wal_roundtrips, wal_s3_keys) =
             s3_batch::cold_load_meta_and_wal(client, bucket, namespace).await?;
         if wal_roundtrips == 0 && etag.is_none() {

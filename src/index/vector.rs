@@ -1261,6 +1261,32 @@ impl VectorIndex {
         scored
     }
 
+    /// Exact score for one doc id from loaded cluster members (cold eventual / no WAL doc map).
+    pub fn score_doc_id(&self, doc_id: &str, query: &[f64]) -> Option<f64> {
+        if query.len() != self.l0.dimensions as usize {
+            return None;
+        }
+        let metric = self.l0.distance_metric;
+        let dim = self.l0.dimensions as usize;
+        let element = self.l0.vector_element;
+        for cluster in self.clusters.values() {
+            for m in &cluster.members {
+                if m.doc_id == doc_id {
+                    return Some(match element {
+                        VectorElement::F32 => score_vector(query, &m.vector, metric),
+                        VectorElement::F16 => {
+                            let query_f32: Vec<f32> =
+                                query.iter().take(dim).map(|&x| x as f32).collect();
+                            let cand = m.as_f32_slice(dim);
+                            score_vector_f32(&query_f32, &cand, metric) as f64
+                        }
+                    });
+                }
+            }
+        }
+        None
+    }
+
     pub fn query_ann(&self, query: &[f64], top_k: usize) -> Vec<(String, f64)> {
         if query.len() != self.l0.dimensions as usize {
             return Vec::new();

@@ -301,10 +301,13 @@ pub fn matching_doc_ids_for_filter(
         }
     }
 
-    Ok(ids
-        .into_iter()
-        .filter(|id| ctx.docs.contains_key(id))
-        .collect())
+    Ok(if ctx.consistency == QueryConsistency::Eventual {
+        ids
+    } else {
+        ids.into_iter()
+            .filter(|id| ctx.docs.contains_key(id))
+            .collect()
+    })
 }
 
 impl<'a, 'b> QueryPlanner<'a, 'b> {
@@ -362,6 +365,10 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
     }
 
     fn filter_existing_docs(&self, ids: HashSet<String>) -> HashSet<String> {
+        if self.ctx.consistency == QueryConsistency::Eventual {
+            // Indexed ANN/FTS candidates are authoritative; cold eventual may omit WAL replay.
+            return ids;
+        }
         ids.into_iter()
             .filter(|id| self.ctx.docs.contains_key(id))
             .collect()
@@ -480,8 +487,12 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
                 let raw: Vec<(String, f64)> = candidates
                     .iter()
                     .filter_map(|id| {
-                        let doc = self.ctx.docs.get(id)?;
-                        Some((id.clone(), self.vector_raw_score(doc, field, query)))
+                        if let Some(doc) = self.ctx.docs.get(id) {
+                            return Some((id.clone(), self.vector_raw_score(doc, field, query)));
+                        }
+                        let vindex = self.ctx.vectors.get(field)?;
+                        let score = vindex.score_doc_id(id, query)?;
+                        Some((id.clone(), score))
                     })
                     .collect();
                 Ok(raw)
@@ -1226,6 +1237,70 @@ mod tests {
         };
         let resp = execute_query(&ctx, &req).unwrap();
         assert!(resp.rows.is_empty() || resp.rows.iter().all(|r| r.id != "a"));
+    }
+
+    #[test]
+    fn eventual_cold_vector_returns_indexed_without_docs_map() {
+        let indexed = vec![
+            (
+                "indexed-only".into(),
+                Document {
+                    id: "indexed-only".into(),
+                    attributes: [("embedding".into(), json!([1.0, 0.0, 0.0]))].into(),
+                },
+            ),
+            (
+                "indexed-far".into(),
+                Document {
+                    id: "indexed-far".into(),
+                    attributes: [("embedding".into(), json!([0.0, 1.0, 0.0]))].into(),
+                },
+            ),
+        ];
+        let vindex = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &indexed,
+            &json!({}),
+            crate::config::AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("vector index");
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 2,
+            vector_segment_id: 1,
+            dimensions: 3,
+            ..Default::default()
+        };
+        let empty_docs = HashMap::new();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &empty_docs,
+            meta: &meta,
+            fts: None,
+            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Eventual,
+            storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
+            ann_rerank: None,
+        };
+        let req = QueryRequest {
+            rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
+            top_k: Some(1),
+            filters: None,
+            include_attributes: None,
+            consistency: Some("eventual".into()),
+            order_by: None,
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let resp = execute_query(&ctx, &req).unwrap();
+        assert_eq!(resp.rows[0].id, "indexed-only");
     }
 
     #[test]
