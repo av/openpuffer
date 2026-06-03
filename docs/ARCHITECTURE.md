@@ -30,7 +30,9 @@ All durable state uses **WAL + index segments only**. There is no per-document `
 | `wal_commit_seq` | Last durably committed WAL file (`wal/{seq:08}.bin`) |
 | `schema` | JSON schema hints (attributes, vector dims) |
 | `distance_metric` | ANN distance: `cosine_distance` (default) or `euclidean_squared` |
-| `vector_segment_id` | WAL seq when `centroids.bin` + `clusters-*.bin` were last written |
+| `fts_segment_id` / `fts_segment_ids` | Latest FTS segment + generation chain (one file per indexer pass) |
+| `filter_segment_id` / `filter_segment_ids` | Latest filter segment + chain |
+| `vector_segment_id` / `vector_segment_ids` | WAL seq when `centroids.bin` + `clusters-*.bin` were last written |
 | `vector_field` | Indexed vector attribute (e.g. `embedding`) |
 | `dimensions` | Vector dimensionality (0 if no ANN index) |
 
@@ -96,8 +98,9 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
    - Processes namespaces in the pending queue plus any namespace where `index_cursor < wal_commit_seq` (S3 prefix scan).
 3. For each lagging namespace:
    - Read WAL from `index_cursor + 1` through `wal_commit_seq`.
-   - **FTS:** merge upserts/deletes into `fts-{seq}.bin`, set `fts_segment_id`.
-   - **Vector ANN:** rebuild centroid/cluster layout from all docs at `index_cursor` (see below), write `centroids.bin` + `clusters-{id}.bin`, set `vector_segment_id`, `vector_field`, `dimensions`.
+   - **FTS:** load latest `fts-{id}.bin`, `apply_delta` from WAL batch only, write `fts-{seq}.bin`, append `fts_segment_ids`.
+   - **Filter:** load latest filter segment, `apply_delta` (no full WAL replay).
+   - **Vector ANN:** load centroids + clusters, `apply_delta` (nearest-centroid assign for new docs); **full k-means rebuild** only when `doc_count > num_centroids × 4` (see below). Writes `centroids.bin` + `clusters-{id}.bin`, appends `vector_segment_ids`.
    - CAS-advance `index_cursor` in `meta.json`.
 4. On indexer errors: log, re-queue namespace, **retry** on next tick — writes are never blocked.
 
@@ -110,7 +113,7 @@ Indexing is **decoupled from the write hot path** ([`BackgroundIndexer`](../src/
 | SPFresh / turbopuffer | openpuffer v1 |
 |----------------------|---------------|
 | Multi-level centroid hierarchy | Single-level k-means (`k ≈ √n`, cap 256) |
-| Incremental cluster maintenance | Full rebuild from WAL `1..=index_cursor` on each index pass |
+| Incremental cluster maintenance | Incremental nearest-centroid assign; full rebuild when `doc_count > k × 4` |
 | Re-rank with fresh vectors from WAL | Cluster files store doc vectors; tail WAL scored exhaustively |
 | Many small segments + merges | One `centroids.bin` + `clusters-{centroid_id:08}.bin` per namespace |
 

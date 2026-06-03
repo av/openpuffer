@@ -8,7 +8,7 @@ use crate::cache::SegmentCache;
 use crate::index::filter::FilterSegment;
 use crate::index::fts::FtsSegment;
 use crate::index::vector::{primary_vector_field, CentroidIndex, ClusterSegment, VectorIndex};
-use crate::meta::{meta_key, NamespaceMeta, META_RETRIES};
+use crate::meta::{meta_key, push_segment_id, NamespaceMeta, META_RETRIES};
 use crate::namespace::{fetch_meta, replay_wal_entries};
 
 use anyhow::{anyhow, Context, Result};
@@ -60,10 +60,20 @@ pub async fn index_wal_range(
         segment.apply_delta(&upserts, &deletes);
         segment.segment_id = to;
 
-        let all_for_filter = docs_at_index_cursor(client, bucket, namespace, to).await?;
-        let filter_pairs: Vec<(String, crate::models::Document)> =
-            all_for_filter.into_iter().collect();
-        let filter_segment = FilterSegment::build(to, &meta.schema, &filter_pairs);
+        let mut filter_segment = load_filter_segment(
+            client,
+            bucket,
+            namespace,
+            meta.filter_segment_id,
+            cache,
+        )
+        .await?
+        .unwrap_or_else(|| FilterSegment {
+            segment_id: to,
+            ..Default::default()
+        });
+        filter_segment.apply_delta(&meta.schema, &upserts, &deletes);
+        filter_segment.segment_id = to;
         let filter_key = FilterSegment::key(namespace, to);
         let filter_body = filter_segment.encode()?;
         let filter_resp = client
@@ -98,15 +108,48 @@ pub async fn index_wal_range(
         let mut dimensions = meta.dimensions;
 
         if let Some(vfield) = primary_vector_field(&meta.schema, upserts.first().map(|(_, d)| d)) {
-            let all_docs = docs_at_index_cursor(client, bucket, namespace, to).await?;
-            let pairs: Vec<(String, crate::models::Document)> =
-                all_docs.into_iter().collect();
-            if let Some(vindex) = VectorIndex::build(
-                to,
-                &vfield,
-                meta.distance_metric,
-                &pairs,
-            )? {
+            let mut vindex = load_vector_index_for_query(
+                client,
+                bucket,
+                namespace,
+                &meta,
+                cache,
+            )
+            .await?
+            .unwrap_or_default();
+
+            if vindex.centroids.num_centroids == 0 {
+                let pairs: Vec<(String, crate::models::Document)> = upserts.clone();
+                if let Some(built) = VectorIndex::build(
+                    to,
+                    &vfield,
+                    meta.distance_metric,
+                    &pairs,
+                )? {
+                    vindex = built;
+                }
+            } else {
+                vindex.apply_delta(&upserts, &deletes)?;
+                if vindex.needs_full_rebuild() {
+                    let all_docs = docs_at_index_cursor(client, bucket, namespace, to).await?;
+                    let pairs: Vec<(String, crate::models::Document)> =
+                        all_docs.into_iter().collect();
+                    if let Some(built) = VectorIndex::build(
+                        to,
+                        &vfield,
+                        meta.distance_metric,
+                        &pairs,
+                    )? {
+                        vindex = built;
+                    }
+                }
+            }
+
+            if vindex.centroids.num_centroids > 0 {
+                vindex.centroids.segment_id = to;
+                for cluster in vindex.clusters.values_mut() {
+                    cluster.segment_id = to;
+                }
                 write_vector_index(client, bucket, namespace, &vindex, cache).await?;
                 vector_segment_id = to;
                 vector_field = vfield;
@@ -442,8 +485,11 @@ pub fn meta_after_index_commit(
     let mut next = meta.clone();
     next.index_cursor = index_cursor;
     next.fts_segment_id = fts_segment_id;
+    push_segment_id(&mut next.fts_segment_ids, fts_segment_id);
     next.filter_segment_id = filter_segment_id;
+    push_segment_id(&mut next.filter_segment_ids, filter_segment_id);
     next.vector_segment_id = vector_segment_id;
+    push_segment_id(&mut next.vector_segment_ids, vector_segment_id);
     next.vector_field = vector_field;
     next.dimensions = dimensions;
     Ok(next)
@@ -555,8 +601,11 @@ mod tests {
         let next = meta_after_index_commit(&meta, 5, 5, 5, 5, "emb".into(), 3).unwrap();
         assert_eq!(next.index_cursor, 5);
         assert_eq!(next.fts_segment_id, 5);
+        assert_eq!(next.fts_segment_ids, vec![5]);
         assert_eq!(next.filter_segment_id, 5);
+        assert_eq!(next.filter_segment_ids, vec![5]);
         assert_eq!(next.vector_segment_id, 5);
+        assert_eq!(next.vector_segment_ids, vec![5]);
         assert_eq!(next.vector_field, "emb");
         assert_eq!(next.dimensions, 3);
     }

@@ -20,6 +20,11 @@ const MAX_CENTROIDS: usize = 256;
 /// k-means iterations when building.
 const KMEANS_ITERS: usize = 10;
 
+/// Re-run full k-means when doc count exceeds `num_centroids * REBUILD_DOC_MULTIPLIER`.
+/// Tradeoff: incremental assignment is O(new_docs × k); rebuild is O(n × k × iters) but
+/// improves cluster balance as the namespace grows.
+pub const REBUILD_DOC_MULTIPLIER: usize = 4;
+
 /// One document vector stored in a cluster segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterMember {
@@ -218,6 +223,73 @@ impl VectorIndex {
             centroids,
             clusters,
         }))
+    }
+
+    /// Number of documents indexed across all clusters.
+    pub fn doc_count(&self) -> usize {
+        self.clusters.values().map(|c| c.members.len()).sum()
+    }
+
+    /// True when incremental assignments should be replaced by a full k-means rebuild.
+    pub fn needs_full_rebuild(&self) -> bool {
+        let n = self.doc_count();
+        let k = self.centroids.num_centroids as usize;
+        if k == 0 || n == 0 {
+            return true;
+        }
+        n > k.saturating_mul(REBUILD_DOC_MULTIPLIER)
+    }
+
+    /// Incrementally assign new/changed docs to nearest centroids; remove deletes.
+    pub fn apply_delta(
+        &mut self,
+        upserts: &[(String, Document)],
+        deletes: &[String],
+    ) -> Result<()> {
+        let field = self.centroids.vector_field.clone();
+        let dim = self.centroids.dimensions as usize;
+        if dim == 0 || self.centroids.centroids.is_empty() {
+            return Ok(());
+        }
+
+        for id in deletes {
+            self.remove_doc(id);
+        }
+
+        for (id, doc) in upserts {
+            self.remove_doc(id);
+            let Ok(vec) = extract_vector(&doc.attributes, &field) else {
+                continue;
+            };
+            if vec.len() != dim {
+                continue;
+            }
+            let cid = self
+                .centroids
+                .nearest_centroids(&vec, 1)
+                .first()
+                .copied()
+                .unwrap_or(0);
+            self.clusters
+                .entry(cid)
+                .or_insert_with(|| ClusterSegment {
+                    segment_id: self.centroids.segment_id,
+                    centroid_id: cid,
+                    members: Vec::new(),
+                })
+                .members
+                .push(ClusterMember {
+                    doc_id: id.clone(),
+                    vector: vec,
+                });
+        }
+        Ok(())
+    }
+
+    fn remove_doc(&mut self, doc_id: &str) {
+        for cluster in self.clusters.values_mut() {
+            cluster.members.retain(|m| m.doc_id != doc_id);
+        }
     }
 
     /// Doc ids reachable by probing nearest centroids (candidate generation, no scoring).
@@ -540,6 +612,57 @@ mod tests {
         let back = CentroidIndex::decode(&bytes).unwrap();
         assert_eq!(back.segment_id, 3);
         assert_eq!(back.centroids.len(), 2);
+    }
+
+    #[test]
+    fn apply_delta_adds_doc_to_nearest_cluster_without_rebuild() {
+        let docs = vec![
+            vec_doc("a", vec![1.0, 0.0]),
+            vec_doc("b", vec![0.0, 1.0]),
+        ];
+        let mut index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+        )
+        .unwrap()
+        .expect("index");
+        let before_count = index.doc_count();
+        let new_doc = vec_doc("near-a", vec![0.99, 0.01]);
+        index
+            .apply_delta(&[new_doc], &[])
+            .expect("apply_delta");
+        assert_eq!(index.doc_count(), before_count + 1);
+        assert!(!index.needs_full_rebuild());
+    }
+
+    #[test]
+    fn needs_full_rebuild_when_docs_exceed_multiplier() {
+        let mut docs = Vec::new();
+        for i in 0..25 {
+            docs.push(vec_doc(
+                &format!("d{i}"),
+                vec![(i as f64) * 0.1, 1.0 - (i as f64) * 0.1],
+            ));
+        }
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+        )
+        .unwrap()
+        .expect("index");
+        let k = index.centroids.num_centroids as usize;
+        assert!(
+            index.doc_count() > k.saturating_mul(REBUILD_DOC_MULTIPLIER),
+            "test setup: doc_count {} should exceed {} * {}",
+            index.doc_count(),
+            k,
+            REBUILD_DOC_MULTIPLIER
+        );
+        assert!(index.needs_full_rebuild());
     }
 
     #[test]

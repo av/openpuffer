@@ -6,7 +6,7 @@
 use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
-use openpuffer::meta::meta_key;
+use openpuffer::meta::{meta_key, NamespaceMeta};
 use openpuffer::models::ROOT_PREFIX;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -22,6 +22,7 @@ const MINIO_USER: &str = "minioadmin";
 const MINIO_PASSWORD: &str = "minioadmin";
 const BUCKET: &str = "openpuffer-integration";
 const NAMESPACE: &str = "itest";
+const NAMESPACE_INCR: &str = "itest-incr";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -235,6 +236,64 @@ impl Drop for ServeHandle {
     }
 }
 
+async fn fetch_namespace_meta(client: &Client, bucket: &str, namespace: &str) -> NamespaceMeta {
+    let key = meta_key(namespace);
+    let out = client
+        .get_object()
+        .bucket(bucket)
+        .key(&key)
+        .send()
+        .await
+        .expect("get meta.json");
+    let bytes = out
+        .body
+        .collect()
+        .await
+        .expect("read meta body")
+        .into_bytes();
+    serde_json::from_slice(&bytes).expect("parse NamespaceMeta")
+}
+
+async fn upsert_batch(base_url: &str, namespace: &str, rows: Value) {
+    let body = json!({ "upsert_rows": rows });
+    let resp = reqwest::Client::new()
+        .post(format!("{base_url}/v2/namespaces/{namespace}"))
+        .json(&body)
+        .send()
+        .await
+        .expect("upsert request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "upsert failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+}
+
+async fn wait_until_indexed_ns(base_url: &str, namespace: &str, timeout: Duration) {
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/v1/namespaces/{namespace}");
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "index_cursor never caught up for {namespace} within {timeout:?}"
+            );
+        }
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status() == StatusCode::OK {
+                let v: Value = resp.json().await.expect("metadata json");
+                let cursor = v["index_cursor"].as_u64().unwrap_or(0);
+                let commit = v["wal_commit_seq"].as_u64().unwrap_or(0);
+                if commit > 0 && cursor == commit {
+                    return;
+                }
+            }
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn upsert_documents(base_url: &str) {
     let body = json!({
         "upsert_rows": [
@@ -278,7 +337,12 @@ async fn upsert_documents(base_url: &str) {
     );
 }
 
-async fn query_ids(base_url: &str, rank_by: Value, filters: Option<Value>) -> Vec<String> {
+async fn query_ids_ns(
+    base_url: &str,
+    namespace: &str,
+    rank_by: Value,
+    filters: Option<Value>,
+) -> Vec<String> {
     let mut body = json!({
         "rank_by": rank_by,
         "top_k": 3
@@ -287,7 +351,7 @@ async fn query_ids(base_url: &str, rank_by: Value, filters: Option<Value>) -> Ve
         body["filters"] = f;
     }
     let resp = reqwest::Client::new()
-        .post(format!("{base_url}/v2/namespaces/{NAMESPACE}/query"))
+        .post(format!("{base_url}/v2/namespaces/{namespace}/query"))
         .json(&body)
         .send()
         .await
@@ -305,6 +369,10 @@ async fn query_ids(base_url: &str, rank_by: Value, filters: Option<Value>) -> Ve
         .iter()
         .map(|r| r["id"].as_str().expect("row id").to_string())
         .collect()
+}
+
+async fn query_ids(base_url: &str, rank_by: Value, filters: Option<Value>) -> Vec<String> {
+    query_ids_ns(base_url, NAMESPACE, rank_by, filters).await
 }
 
 async fn assert_search_results(base_url: &str) {
@@ -410,5 +478,117 @@ async fn minio_wal_index_layout_queries_and_restart_persistence() {
     assert!(
         legacy_doc_keys.is_empty(),
         "no docs/{{id}}.json keys under namespace, found {legacy_doc_keys:?}"
+    );
+}
+
+/// Three separate WAL commits (group-commit gap) → indexer advances cursor 3× with chained segments.
+#[tokio::test]
+async fn incremental_index_three_wal_batches_without_regression() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    // >1s between writes so each upsert becomes its own WAL segment (default group commit).
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_INCR,
+        json!([{
+            "id": "batch-1",
+            "attributes": {
+                "embedding": [1.0, 0.0, 0.0],
+                "text": "first batch wal one",
+                "tier": "a"
+            }
+        }]),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_INCR, Duration::from_secs(30)).await;
+
+    let meta1 = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_INCR).await;
+    assert_eq!(meta1.index_cursor, 1);
+    assert_eq!(meta1.wal_commit_seq, 1);
+    assert_eq!(meta1.fts_segment_ids, vec![1]);
+    assert_eq!(meta1.filter_segment_ids, vec![1]);
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_INCR,
+        json!([{
+            "id": "batch-2",
+            "attributes": {
+                "embedding": [0.0, 1.0, 0.0],
+                "text": "second batch wal two",
+                "tier": "b"
+            }
+        }]),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_INCR, Duration::from_secs(30)).await;
+
+    let meta2 = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_INCR).await;
+    assert_eq!(meta2.index_cursor, 2);
+    assert_eq!(meta2.wal_commit_seq, 2);
+    assert_eq!(meta2.fts_segment_ids, vec![1, 2]);
+    assert_eq!(meta2.filter_segment_ids, vec![1, 2]);
+
+    upsert_batch(
+        &serve.base_url,
+        NAMESPACE_INCR,
+        json!([{
+            "id": "batch-3",
+            "attributes": {
+                "embedding": [0.0, 0.0, 1.0],
+                "text": "third batch wal three",
+                "tier": "c"
+            }
+        }]),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_INCR, Duration::from_secs(30)).await;
+
+    let meta3 = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_INCR).await;
+    assert_eq!(meta3.index_cursor, 3);
+    assert_eq!(meta3.wal_commit_seq, 3);
+    assert_eq!(meta3.fts_segment_ids, vec![1, 2, 3]);
+    assert_eq!(meta3.filter_segment_ids, vec![1, 2, 3]);
+    assert_eq!(meta3.vector_segment_ids, vec![1, 2, 3]);
+
+    let index_prefix = format!("{ROOT_PREFIX}{NAMESPACE_INCR}/index/");
+    let keys = list_keys_with_prefix(&s3, BUCKET, &index_prefix).await;
+    for seq in 1..=3 {
+        let fts = format!("{ROOT_PREFIX}{NAMESPACE_INCR}/index/fts-{seq:08}.bin");
+        let filter = format!("{ROOT_PREFIX}{NAMESPACE_INCR}/index/filter-{seq:08}.bin");
+        assert!(keys.contains(&fts), "expected incremental fts segment {fts}");
+        assert!(
+            keys.contains(&filter),
+            "expected incremental filter segment {filter}"
+        );
+    }
+
+    let fts_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_INCR,
+        json!(["BM25", "text", "third"]),
+        None,
+    )
+    .await;
+    assert!(
+        fts_ids.contains(&"batch-3".to_string()),
+        "FTS should see batch-3 after incremental merges, got {fts_ids:?}"
     );
 }

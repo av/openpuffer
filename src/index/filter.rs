@@ -294,6 +294,22 @@ mod tests {
     }
 
     #[test]
+    fn apply_delta_incremental_without_full_rebuild() {
+        let docs = vec![doc(
+            "a",
+            serde_json::Map::from_iter([("kind".into(), json!("alpha"))]),
+        )];
+        let mut seg = FilterSegment::build(1, &json!({}), &docs);
+        let more = vec![doc(
+            "b",
+            serde_json::Map::from_iter([("kind".into(), json!("beta"))]),
+        )];
+        seg.apply_delta(&json!({}), &more, &[]);
+        assert_eq!(seg.all_doc_ids.len(), 2);
+        assert_eq!(seg.segment_id, 1);
+    }
+
+    #[test]
     fn segment_roundtrip_bincode() {
         let docs = vec![doc(
             "x",

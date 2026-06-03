@@ -23,12 +23,21 @@ pub struct NamespaceMeta {
     /// Latest FTS segment id on S3 (`index/fts-{id:08}.bin`).
     #[serde(default)]
     pub fts_segment_id: u64,
+    /// FTS segment generation chain (each indexer pass appends WAL seq of new segment file).
+    #[serde(default)]
+    pub fts_segment_ids: Vec<u64>,
     /// Latest vector index segment id (centroids + clusters written at this WAL seq).
     #[serde(default)]
     pub vector_segment_id: u64,
+    /// Vector index generation chain (WAL seq when centroids/clusters were written).
+    #[serde(default)]
+    pub vector_segment_ids: Vec<u64>,
     /// Latest attribute filter index segment id (`index/filter-{id:08}.bin`).
     #[serde(default)]
     pub filter_segment_id: u64,
+    /// Filter segment generation chain.
+    #[serde(default)]
+    pub filter_segment_ids: Vec<u64>,
     /// Indexed vector attribute name (e.g. `embedding`).
     #[serde(default)]
     pub vector_field: String,
@@ -48,8 +57,11 @@ impl Default for NamespaceMeta {
         Self {
             index_cursor: 0,
             fts_segment_id: 0,
+            fts_segment_ids: Vec::new(),
             vector_segment_id: 0,
+            vector_segment_ids: Vec::new(),
             filter_segment_id: 0,
+            filter_segment_ids: Vec::new(),
             vector_field: String::new(),
             dimensions: 0,
             wal_commit_seq: 0,
@@ -66,6 +78,16 @@ pub fn meta_key(namespace: &str) -> String {
 /// Next WAL sequence after a successful commit.
 pub fn next_wal_seq(meta: &NamespaceMeta) -> u64 {
     meta.wal_commit_seq.saturating_add(1)
+}
+
+/// Append a segment id to a generation chain (dedupes consecutive duplicates).
+pub fn push_segment_id(ids: &mut Vec<u64>, id: u64) {
+    if id == 0 {
+        return;
+    }
+    if ids.last() != Some(&id) {
+        ids.push(id);
+    }
 }
 
 /// Build updated metadata after appending WAL object `seq` (CAS payload).
@@ -90,8 +112,11 @@ mod tests {
         let meta = NamespaceMeta {
             index_cursor: 3,
             fts_segment_id: 3,
+            fts_segment_ids: vec![3],
             filter_segment_id: 3,
+            filter_segment_ids: vec![3],
             vector_segment_id: 3,
+            vector_segment_ids: vec![3],
             vector_field: "embedding".into(),
             dimensions: 128,
             wal_commit_seq: 10,
@@ -119,6 +144,15 @@ mod tests {
         };
         assert!(meta_after_wal_commit(&meta, 7).is_err());
         assert!(meta_after_wal_commit(&meta, 6).is_ok());
+    }
+
+    #[test]
+    fn push_segment_id_dedupes_consecutive() {
+        let mut ids = vec![1, 2];
+        push_segment_id(&mut ids, 2);
+        assert_eq!(ids, vec![1, 2]);
+        push_segment_id(&mut ids, 3);
+        assert_eq!(ids, vec![1, 2, 3]);
     }
 
     #[test]
