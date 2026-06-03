@@ -3533,15 +3533,40 @@ async fn s3_two_instances_share_bucket() {
     assert!(meta.wal_commit_seq >= 1, "meta must record WAL commits");
 }
 
+/// Cold vector query over HTTP; returns status and error body text (no assert).
+async fn cold_vector_query_http(
+    base_url: &str,
+    namespace: &str,
+    rank_by: Value,
+) -> (StatusCode, String) {
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v2/namespaces/{}/query",
+            base_url,
+            namespace_path_segment(namespace)
+        ))
+        .json(&json!({ "rank_by": rank_by, "top_k": 5 }))
+        .send()
+        .await
+        .expect("cold vector query request");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    (status, body)
+}
+
 /// Two concurrent serve processes on one bucket: horizontal scale (not restart).
+///
+/// Indexer publishes `centroids-l0.bin` after L1/clusters so probed cold loads never observe a
+/// new probe plan before segment objects exist (see `write_vector_index` in `indexer.rs`).
 #[tokio::test]
 async fn multi_instance_stateless_integration() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen_a = format!("127.0.0.1:{}", free_port());
     let listen_b = format!("127.0.0.1:{}", free_port());
     let ns = NAMESPACE_MULTI_INST;
+    let cold_cache = Some(PathBuf::from(""));
 
-    let serve_a = ServeHandle::spawn(&fixture, &listen_a);
+    let serve_a = ServeHandle::spawn_with_cache(&fixture, &listen_a, cold_cache.clone());
     serve_a.wait_ready().await;
 
     upsert_batch(
@@ -3589,7 +3614,7 @@ async fn multi_instance_stateless_integration() {
     );
     assert_two_level_centroids_on_backend(&fixture.client, &fixture.bucket, ns).await;
 
-    let serve_b = ServeHandle::spawn(&fixture, &listen_b);
+    let serve_b = ServeHandle::spawn_with_cache(&fixture, &listen_b, cold_cache);
     serve_b.wait_ready().await;
     wait_until_indexed(&serve_b.base_url, ns, Duration::from_secs(45)).await;
 
@@ -3618,22 +3643,53 @@ async fn multi_instance_stateless_integration() {
         "instance B FTS must see A's docs, got {fts_on_b:?}"
     );
 
-    write_batch(
+    // While B's indexer rewrites vector segments on S3, A hammers probed cold queries (empty
+    // cache on both instances). Must stay 200: L0 is published only after clusters exist.
+    let rank_d = json!(["vector", "ANN", "embedding", [0.0, 0.0, 1.0]]);
+    let rank_a = json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]);
+    let url_a = serve_a.base_url.clone();
+    let ns_hammer = ns.to_string();
+    let hammer = tokio::spawn(async move {
+        let mut failures = Vec::new();
+        let mut handles = Vec::new();
+        for i in 0..48 {
+            let url = url_a.clone();
+            let ns = ns_hammer.clone();
+            let rank = if i % 2 == 0 {
+                rank_a.clone()
+            } else {
+                rank_d.clone()
+            };
+            handles.push(tokio::spawn(async move {
+                cold_vector_query_http(&url, &ns, rank).await
+            }));
+        }
+        for h in handles {
+            let (status, body) = h.await.expect("cold hammer join");
+            if status != StatusCode::OK {
+                failures.push((status, body));
+            }
+        }
+        failures
+    });
+    upsert_batch(
         &serve_b.base_url,
         ns,
-        json!({
-            "block_until_indexed": true,
-            "upsert_rows": [{
-                "id": "doc-d",
-                "attributes": {
-                    "embedding": [0.0, 0.0, 1.0],
-                    "text": "echo foxtrot instance b",
-                    "tier": "pro"
-                }
-            }]
-        }),
+        json!([{
+            "id": "doc-d",
+            "attributes": {
+                "embedding": [0.0, 0.0, 1.0],
+                "text": "echo foxtrot instance b",
+                "tier": "pro"
+            }
+        }]),
     )
     .await;
+    let cold_failures = hammer.await.expect("cold hammer task");
+    assert!(
+        cold_failures.is_empty(),
+        "cold queries during B index build must not fail (L0-last ordering); failures={cold_failures:?}"
+    );
     wait_until_indexed(&serve_a.base_url, ns, Duration::from_secs(60)).await;
 
     let meta_after_b = fetch_meta_from_s3(&fixture.client, &fixture.bucket, ns).await;

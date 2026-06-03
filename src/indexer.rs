@@ -306,7 +306,10 @@ async fn write_vector_index(
     vindex: &VectorIndex,
     cache: &Arc<SegmentCache>,
 ) -> Result<()> {
-    // Publish L0 last so cold/warm queries never see a new probe plan before L1/clusters exist.
+    // Publish `centroids-l0.bin` last. L0 defines the ANN probe plan (which L1/L2/cluster keys
+    // probed loads fetch). Cold/warm paths read L0 in round 1, then dependent segments. If L0
+    // is visible before cluster objects for probed fine IDs exist, concurrent S3 readers decode
+    // missing or stale segments → flaky 500s in multi-instance integration (fixed by L0-last).
     let l0_key = CentroidIndexL0::key(namespace, field);
     let l0_body = vindex.l0.encode()?;
 
