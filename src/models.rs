@@ -39,6 +39,12 @@ pub struct WriteRequest {
     pub upsert_columns: Option<Value>,
     #[serde(default)]
     pub deletes: Vec<String>,
+    /// turbopuffer schema hints (`full_text_search`, `filterable`, `[N]f32`, …).
+    #[serde(default)]
+    pub schema: Option<Value>,
+    /// Delete all documents matching this filter (same syntax as query `filters`).
+    #[serde(default)]
+    pub delete_by_filter: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -92,6 +92,15 @@ pub fn push_segment_id(ids: &mut Vec<u64>, id: u64) {
 
 /// Build updated metadata after appending WAL object `seq` (CAS payload).
 pub fn meta_after_wal_commit(meta: &NamespaceMeta, seq: u64) -> Result<NamespaceMeta> {
+    meta_after_wal_commit_with_schema(meta, seq, None)
+}
+
+/// Like [`meta_after_wal_commit`], optionally merging a write-time schema patch.
+pub fn meta_after_wal_commit_with_schema(
+    meta: &NamespaceMeta,
+    seq: u64,
+    schema_patch: Option<&Value>,
+) -> Result<NamespaceMeta> {
     if seq != meta.wal_commit_seq.saturating_add(1) {
         return Err(anyhow!(
             "wal seq {seq} does not follow commit point {}",
@@ -100,6 +109,9 @@ pub fn meta_after_wal_commit(meta: &NamespaceMeta, seq: u64) -> Result<Namespace
     }
     let mut next = meta.clone();
     next.wal_commit_seq = seq;
+    if let Some(patch) = schema_patch {
+        next.schema = crate::schema::merge_schema(&next.schema, patch);
+    }
     Ok(next)
 }
 
@@ -134,6 +146,18 @@ mod tests {
         let next = meta_after_wal_commit(&meta, 1).unwrap();
         assert_eq!(next.wal_commit_seq, 1);
         assert_eq!(next.index_cursor, 0);
+    }
+
+    #[test]
+    fn meta_after_wal_commit_merges_schema() {
+        let meta = NamespaceMeta::default();
+        let patch = serde_json::json!({
+            "text": {"type": "string", "full_text_search": true},
+            "embedding": "[128]f32"
+        });
+        let next = meta_after_wal_commit_with_schema(&meta, 1, Some(&patch)).unwrap();
+        assert_eq!(next.schema["text"]["full_text_search"], serde_json::json!(true));
+        assert_eq!(next.schema["embedding"], serde_json::json!("[128]f32"));
     }
 
     #[test]

@@ -96,7 +96,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
 
     let mut candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
     if let Some(expr) = filter_expr.as_ref() {
-        let allowed = planner.filter_matching_ids(expr)?;
+        let allowed = matching_doc_ids_for_filter(&effective_ctx, expr)?;
         candidates = candidates
             .into_iter()
             .filter(|id| allowed.contains(id))
@@ -140,6 +140,48 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
         .collect();
 
     Ok(QueryResponse { rows })
+}
+
+/// Doc ids matching a filter (indexed segment + strong-consistency WAL tail corrections).
+///
+/// Used by query filtering and `delete_by_filter` on the write path.
+pub fn matching_doc_ids_for_filter(
+    ctx: &QueryContext<'_>,
+    expr: &FilterExpr,
+) -> Result<HashSet<String>> {
+    let mut ids = if let Some(seg) = ctx.filter_index {
+        seg.matching_doc_ids(expr)
+    } else {
+        HashSet::new()
+    };
+
+    if ctx.filter_index.is_none() {
+        for (id, doc) in ctx.docs {
+            if eval_filter(expr, doc) {
+                ids.insert(id.clone());
+            }
+        }
+        return Ok(ids);
+    }
+
+    if ctx.consistency == QueryConsistency::Strong {
+        for id in ctx.tail_doc_ids {
+            let Some(doc) = ctx.docs.get(id) else {
+                ids.remove(id);
+                continue;
+            };
+            if eval_filter(expr, doc) {
+                ids.insert(id.clone());
+            } else {
+                ids.remove(id);
+            }
+        }
+    }
+
+    Ok(ids
+        .into_iter()
+        .filter(|id| ctx.docs.contains_key(id))
+        .collect())
 }
 
 impl<'a, 'b> QueryPlanner<'a, 'b> {
@@ -197,43 +239,7 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
             .collect()
     }
 
-    /// Doc ids matching the filter (indexed segment + WAL tail corrections).
-    fn filter_matching_ids(&self, expr: &FilterExpr) -> Result<HashSet<String>> {
-        let mut ids = if let Some(seg) = self.ctx.filter_index {
-            seg.matching_doc_ids(expr)
-        } else {
-            HashSet::new()
-        };
 
-        if self.ctx.filter_index.is_none() {
-            // No index yet: exhaustive scan over loaded docs.
-            for (id, doc) in self.ctx.docs {
-                if eval_filter(expr, doc) {
-                    ids.insert(id.clone());
-                }
-            }
-            return Ok(ids);
-        }
-
-        if self.use_tail() {
-            for id in self.ctx.tail_doc_ids {
-                let Some(doc) = self.ctx.docs.get(id) else {
-                    ids.remove(id);
-                    continue;
-                };
-                if eval_filter(expr, doc) {
-                    ids.insert(id.clone());
-                } else {
-                    ids.remove(id);
-                }
-            }
-        }
-
-        Ok(ids
-            .into_iter()
-            .filter(|id| self.ctx.docs.contains_key(id))
-            .collect())
-    }
 
     fn collect_bm25_candidates(&self, field: &str, query: &str) -> Result<HashSet<String>> {
         let mut ids = HashSet::new();
@@ -877,5 +883,39 @@ mod tests {
         assert!(!resp.rows.is_empty());
         assert!(resp.rows.iter().all(|r| r.id == "pro-close" || r.id == "pro-exact"));
         assert!(!resp.rows.iter().any(|r| r.id == "free-exact"));
+    }
+
+    #[test]
+    fn matching_doc_ids_for_filter_exhaustive_without_index() {
+        let mut map: HashMap<String, Document> = HashMap::new();
+        map.insert(
+            "keep".into(),
+            Document {
+                id: "keep".into(),
+                attributes: [("tier".into(), json!("pro"))].into(),
+            },
+        );
+        map.insert(
+            "drop".into(),
+            Document {
+                id: "drop".into(),
+                attributes: [("tier".into(), json!("free"))].into(),
+            },
+        );
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let ctx = QueryContext {
+            docs: &map,
+            meta: &meta,
+            fts: None,
+            vector: None,
+            filter_index: None,
+            tail_doc_ids: &tail,
+            consistency: QueryConsistency::Strong,
+        };
+        let expr = parse_filter(&json!(["tier", "Eq", "free"])).unwrap();
+        let ids = matching_doc_ids_for_filter(&ctx, &expr).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains("drop"));
     }
 }

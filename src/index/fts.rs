@@ -232,20 +232,7 @@ pub fn index_fields_from_schema(schema: &Value) -> Vec<String> {
 }
 
 fn field_is_indexable(spec: &Value) -> bool {
-    match spec {
-        Value::String(s) => {
-            let t = s.to_lowercase();
-            t.contains("string") || t.contains("text") || t == "full_text"
-        }
-        Value::Object(m) => {
-            if let Some(Value::String(t)) = m.get("type") {
-                let t = t.to_lowercase();
-                return t.contains("string") || t.contains("text") || t == "full_text";
-            }
-            false
-        }
-        _ => false,
-    }
+    crate::schema::field_full_text_search(spec)
 }
 
 /// Per-field segments for schema-driven indexing; empty schema → one segment (all strings).

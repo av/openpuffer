@@ -169,7 +169,13 @@ async fn write_namespace(
 
     match state
         .storage
-        .write_documents(&name, upserts, body.deletes)
+        .write_documents(
+            &name,
+            upserts,
+            body.deletes,
+            body.schema,
+            body.delete_by_filter,
+        )
         .await
     {
         Ok(()) => (

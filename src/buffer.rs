@@ -12,6 +12,7 @@ use crate::models::Document;
 use crate::namespace::append_wal;
 use crate::wal::WalEntry;
 use anyhow::Result;
+use serde_json::Value;
 use aws_sdk_s3::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ pub struct CommittedBatch {
 struct BufferState {
     upserts: Vec<Document>,
     deletes: Vec<String>,
+    schema_patch: Option<Value>,
     waiters: Vec<oneshot::Sender<Result<CommittedBatch>>>,
     timer: Option<AbortHandle>,
 }
@@ -85,6 +87,7 @@ impl WriteBufferManager {
         namespace: &str,
         upserts: Vec<Document>,
         deletes: Vec<String>,
+        schema_patch: Option<Value>,
     ) -> Result<CommittedBatch> {
         let buf = self.buffer_for(namespace).await;
         let (tx, rx) = oneshot::channel();
@@ -92,9 +95,16 @@ impl WriteBufferManager {
             let mut st = buf.state.lock().await;
             st.upserts.extend(upserts);
             st.deletes.extend(deletes);
+            if let Some(patch) = schema_patch {
+                st.schema_patch = Some(match st.schema_patch.take() {
+                    Some(existing) => crate::schema::merge_schema(&existing, &patch),
+                    None => patch,
+                });
+            }
             st.waiters.push(tx);
             let ops = st.upserts.len() + st.deletes.len();
-            if ops >= self.config.max_batch_ops {
+            let schema_only = ops == 0 && st.schema_patch.is_some();
+            if ops >= self.config.max_batch_ops || schema_only {
                 true
             } else if st.timer.is_none() {
                 let mgr = Arc::new(self.clone_inner());
@@ -141,6 +151,7 @@ impl WriteBufferManager {
                     state: Mutex::new(BufferState {
                         upserts: Vec::new(),
                         deletes: Vec::new(),
+                        schema_patch: None,
                         waiters: Vec::new(),
                         timer: None,
                     }),
@@ -177,15 +188,16 @@ impl WriteBufferManager {
             return Ok(());
         };
 
-        let (upserts, deletes, waiters) = {
+        let (upserts, deletes, schema_patch, waiters) = {
             let mut st = buf.state.lock().await;
-            if st.upserts.is_empty() && st.deletes.is_empty() {
+            if st.upserts.is_empty() && st.deletes.is_empty() && st.schema_patch.is_none() {
                 return Ok(());
             }
             let _ = st.timer.take();
             (
                 std::mem::take(&mut st.upserts),
                 std::mem::take(&mut st.deletes),
+                st.schema_patch.take(),
                 std::mem::take(&mut st.waiters),
             )
         };
@@ -199,6 +211,7 @@ impl WriteBufferManager {
                 namespace,
                 docs,
                 entry.deletes.clone(),
+                schema_patch.as_ref(),
             )
             .await?;
             Ok(CommittedBatch {

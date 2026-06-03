@@ -1,5 +1,6 @@
 use crate::buffer::{WriteBufferConfig, WriteBufferManager};
 use crate::cache::SegmentCache;
+use crate::filter::parse_filter;
 use crate::indexer::{approx_unindexed_bytes, BackgroundIndexer};
 use crate::index::fts::{wal_touched_doc_ids, FtsSegment};
 use crate::index::filter::FilterSegment;
@@ -7,6 +8,7 @@ use crate::index::vector::VectorIndex;
 use crate::meta::NamespaceMeta;
 use crate::models::Document;
 use crate::namespace::replay_wal_entries;
+use crate::search::{matching_doc_ids_for_filter, QueryConsistency, QueryContext};
 use crate::view::NamespaceView;
 use crate::view_cache::ViewCache;
 use crate::warm::{warm_namespace, WarmStats};
@@ -226,11 +228,26 @@ impl Storage {
         &self,
         namespace: &str,
         upserts: Vec<Document>,
-        deletes: Vec<String>,
+        mut deletes: Vec<String>,
+        schema_patch: Option<serde_json::Value>,
+        delete_by_filter: Option<serde_json::Value>,
     ) -> Result<()> {
+        if let Some(filter_val) = delete_by_filter {
+            if !filter_val.is_null() {
+                let resolved = self
+                    .resolve_delete_by_filter(namespace, &filter_val)
+                    .await?;
+                for id in resolved {
+                    if !deletes.contains(&id) {
+                        deletes.push(id);
+                    }
+                }
+            }
+        }
+
         let committed = self
             .write_buffer
-            .write(namespace, upserts, deletes)
+            .write(namespace, upserts, deletes, schema_patch)
             .await?;
 
         let mut views = self.views.lock().await;
@@ -246,6 +263,27 @@ impl Storage {
             views.insert(namespace.to_string(), view);
         }
         Ok(())
+    }
+
+    /// Resolve doc ids for `delete_by_filter` via filter index + WAL tail (strong consistency).
+    async fn resolve_delete_by_filter(
+        &self,
+        namespace: &str,
+        filter_val: &serde_json::Value,
+    ) -> Result<Vec<String>> {
+        let expr = parse_filter(filter_val)?;
+        let loaded = self.load_namespace(namespace).await?;
+        let ctx = QueryContext {
+            docs: &loaded.docs,
+            meta: &loaded.meta,
+            fts: loaded.fts.as_ref(),
+            vector: loaded.vector.as_ref(),
+            filter_index: loaded.filter_index.as_ref(),
+            tail_doc_ids: &loaded.tail_doc_ids,
+            consistency: QueryConsistency::Strong,
+        };
+        let ids = matching_doc_ids_for_filter(&ctx, &expr)?;
+        Ok(ids.into_iter().collect())
     }
 
     /// Flush all pending write buffers (graceful shutdown).

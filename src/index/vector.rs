@@ -520,20 +520,7 @@ pub fn vector_fields_from_schema(schema: &Value) -> Vec<String> {
 }
 
 fn field_is_vector(spec: &Value) -> bool {
-    match spec {
-        Value::String(s) => {
-            let t = s.to_lowercase();
-            t.contains("f32") || t.contains("vector") || t.contains("[]f")
-        }
-        Value::Object(m) => {
-            if let Some(Value::String(t)) = m.get("type") {
-                let t = t.to_lowercase();
-                return t.contains("f32") || t.contains("vector") || t.contains("[]f");
-            }
-            false
-        }
-        _ => false,
-    }
+    crate::schema::field_is_vector_spec(spec)
 }
 
 /// Pick primary vector field (first schema vector field, or first f64 array attr seen).

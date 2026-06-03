@@ -8,7 +8,7 @@
 //!   GET  /v1/namespaces
 //!   GET  /v1/namespaces/{name}      — namespace metadata (index cursor, WAL commit, unindexed bytes)
 //!   POST /v1/namespaces/{name}/warm — prefetch index + WAL cache, pin in-memory view
-//!   POST /v2/namespaces/{name}        — write (upsert_rows, upsert_columns, deletes)
+//!   POST /v2/namespaces/{name}        — write (upsert_rows, schema, deletes, delete_by_filter)
 //!   POST /v2/namespaces/{name}/query  — vector, FTS, hybrid query
 //!   DELETE /v2/namespaces/{name}
 //!
@@ -28,6 +28,7 @@ pub mod indexer;
 pub mod meta;
 pub mod models;
 pub mod namespace;
+pub mod schema;
 pub mod search;
 pub mod storage;
 pub mod view;

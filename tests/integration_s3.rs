@@ -24,6 +24,7 @@ const BUCKET: &str = "openpuffer-integration";
 const NAMESPACE: &str = "itest";
 const NAMESPACE_INCR: &str = "itest-incr";
 const NAMESPACE_WARM: &str = "itest-warm";
+const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -265,17 +266,20 @@ async fn fetch_namespace_meta(client: &Client, bucket: &str, namespace: &str) ->
 }
 
 async fn upsert_batch(base_url: &str, namespace: &str, rows: Value) {
-    let body = json!({ "upsert_rows": rows });
+    write_batch(base_url, namespace, json!({ "upsert_rows": rows })).await;
+}
+
+async fn write_batch(base_url: &str, namespace: &str, body: Value) {
     let resp = reqwest::Client::new()
         .post(format!("{base_url}/v2/namespaces/{namespace}"))
         .json(&body)
         .send()
         .await
-        .expect("upsert request");
+        .expect("write request");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "upsert failed: {}",
+        "write failed: {}",
         resp.text().await.unwrap_or_default()
     );
 }
@@ -682,5 +686,100 @@ async fn warm_cache_then_query_zero_s3_gets() {
         stats_body["s3_get_count"].as_u64(),
         Some(0),
         "query after warm should not S3 GetObject index segments (disk cache hit)"
+    );
+}
+
+/// Schema on write persists in meta; delete_by_filter removes matching docs from queries.
+#[tokio::test]
+async fn schema_on_write_and_delete_by_filter() {
+    let minio = MinIO::default().start().await.expect("start MinIO container");
+    let host = minio.get_host().await.expect("minio host");
+    let port = minio
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let listen_port = free_port();
+    let listen = format!("127.0.0.1:{listen_port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_DEL_FILTER,
+        json!({
+            "schema": {
+                "text": {"type": "string", "full_text_search": true},
+                "tier": {"type": "string", "filterable": true},
+                "embedding": "[3]f32"
+            },
+            "upsert_rows": [
+                {
+                    "id": "doc-a",
+                    "attributes": {
+                        "embedding": [1.0, 0.0, 0.0],
+                        "text": "alpha bravo",
+                        "tier": "pro"
+                    }
+                },
+                {
+                    "id": "doc-b",
+                    "attributes": {
+                        "embedding": [0.0, 1.0, 0.0],
+                        "text": "charlie delta",
+                        "tier": "free"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    wait_until_indexed_ns(&serve.base_url, NAMESPACE_DEL_FILTER, Duration::from_secs(30)).await;
+
+    let meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_DEL_FILTER).await;
+    assert_eq!(
+        meta.schema["text"]["full_text_search"],
+        json!(true)
+    );
+    assert_eq!(meta.schema["tier"]["filterable"], json!(true));
+
+    write_batch(
+        &serve.base_url,
+        NAMESPACE_DEL_FILTER,
+        json!({ "delete_by_filter": ["tier", "Eq", "free"] }),
+    )
+    .await;
+    sleep(Duration::from_millis(1500)).await;
+
+    let all_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_DEL_FILTER,
+        json!(["BM25", "text", "alpha"]),
+        None,
+    )
+    .await;
+    assert!(
+        all_ids.contains(&"doc-a".to_string()),
+        "doc-a should remain after delete_by_filter, got {all_ids:?}"
+    );
+    assert!(
+        !all_ids.contains(&"doc-b".to_string()),
+        "doc-b (tier=free) must be removed by delete_by_filter, got {all_ids:?}"
+    );
+
+    let filter_ids = query_ids_ns(
+        &serve.base_url,
+        NAMESPACE_DEL_FILTER,
+        json!(["BM25", "text", "charlie"]),
+        Some(json!(["tier", "Eq", "free"])),
+    )
+    .await;
+    assert!(
+        filter_ids.is_empty(),
+        "deleted free-tier doc must not match filter query, got {filter_ids:?}"
     );
 }

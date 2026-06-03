@@ -1,6 +1,9 @@
 //! Per-namespace WAL append and replay on S3.
 
-use crate::meta::{meta_after_wal_commit, meta_key, next_wal_seq, NamespaceMeta, META_RETRIES};
+use crate::meta::{
+    meta_after_wal_commit_with_schema, meta_key, next_wal_seq, NamespaceMeta, META_RETRIES,
+};
+use serde_json::Value;
 use crate::models::Document;
 use crate::wal::{apply_entry, decode, encode, wal_key, WalEntry};
 use anyhow::{anyhow, Context, Result};
@@ -80,6 +83,7 @@ pub async fn append_wal(
     namespace: &str,
     upserts: Vec<Document>,
     deletes: Vec<String>,
+    schema_patch: Option<&Value>,
 ) -> Result<u64> {
     let entry = WalEntry::from_write(upserts, deletes)?;
 
@@ -101,7 +105,7 @@ pub async fn append_wal(
             .await
             .with_context(|| format!("put wal segment {seq:08}"))?;
 
-        let next_meta = meta_after_wal_commit(&meta, seq)?;
+        let next_meta = meta_after_wal_commit_with_schema(&meta, seq, schema_patch)?;
         let body = serde_json::to_vec(&next_meta)?;
 
         let mut put = client

@@ -220,33 +220,7 @@ pub fn filter_fields_from_schema(schema: &Value) -> Vec<String> {
 }
 
 fn field_is_filterable(spec: &Value) -> bool {
-    match spec {
-        Value::String(s) => {
-            let t = s.to_lowercase();
-            t.contains("string")
-                || t.contains("bool")
-                || t.contains("int")
-                || t.contains("uint")
-                || t.contains("float")
-                || t == "number"
-        }
-        Value::Object(m) => {
-            if let Some(Value::String(t)) = m.get("type") {
-                let t = t.to_lowercase();
-                return t.contains("string")
-                    || t.contains("bool")
-                    || t.contains("int")
-                    || t.contains("uint")
-                    || t.contains("float")
-                    || t == "number";
-            }
-            if m.get("filterable").and_then(|v| v.as_bool()) == Some(true) {
-                return true;
-            }
-            false
-        }
-        _ => false,
-    }
+    crate::schema::field_filterable(spec)
 }
 
 #[cfg(test)]
