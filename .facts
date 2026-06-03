@@ -114,6 +114,15 @@
 - label: limits module enforces namespace name pattern max upsert rows filter batch cap and 64 MiB write body
   command: test -f src/limits.rs && grep -q 'validate_namespace_name' src/limits.rs && cargo test -F integration --test integration_s3 server_limits_reject_invalid_namespace_and_batch_sizes -q
   tags: [implemented]
+- label: write schema uuid and []uuid canonicalize RFC4122 strings to lowercase hyphenated form on upsert
+  command: grep -q 'field_is_uuid_scalar' src/schema.rs && grep -q 'field_is_uuid_array' src/schema.rs && cargo test --lib validate_uuid_attributes_on_write -q
+  tags: [implemented]
+- label: write schema datetime canonicalizes ISO8601 RFC3339 strings to fixed-width UTC Z on upsert
+  command: grep -q 'canonicalize_datetime_str' src/schema.rs && cargo test --lib datetime_schema_type -q
+  tags: [implemented]
+- label: write upsert_condition accepts $ref_new filter values read from the incoming upsert row
+  command: grep -q 'RefNew' src/filter.rs && cargo test --lib newer_timestamp_upsert_condition_with_ref_new -q
+  tags: [implemented]
 
 # query
 
@@ -158,6 +167,9 @@
   tags: [implemented]
 - label: query performance.billing exposes billable_logical_bytes_queried and billable_logical_bytes_returned estimates
   command: test -f src/billing.rs && grep -q 'billable_logical_bytes_queried' src/models.rs && cargo test --lib query_performance_billing_estimates_queried_and_returned -q
+  tags: [implemented]
+- label: query performance.scored counts ranked documents after scoring not the pre-score candidate pool size
+  command: grep -q 'scored_count' src/search.rs && grep -q 'scored: scored_count' src/search.rs
   tags: [implemented]
 
 # stack
@@ -213,8 +225,11 @@
 - label: query on missing namespace returns 404 not found with ApiErrorResponse body
   command: grep -q 'require_namespace' src/storage.rs && cargo test -F integration --test integration_s3 api_error_shape_on_query_and_json_failures -q
   tags: [implemented]
-- label: optional metrics feature exposes GET /metrics with openpuffer_wal_commits_total and openpuffer_s3_get_total
-  command: grep -q 'openpuffer_s3_get_total' src/metrics.rs && cargo build --features metrics -q && test -f target/debug/openpuffer
+- label: optional metrics feature exposes GET /metrics with wal commits index lag query duration histogram and s3 get counters
+  command: grep -q 'openpuffer_s3_get_total' src/metrics.rs && grep -q 'openpuffer_index_lag_segments' src/metrics.rs && grep -q 'openpuffer_query_duration_seconds' src/metrics.rs && cargo build --features metrics -q && cargo test --features metrics --lib metrics_render_contains_expected_series -q
+  tags: [implemented]
+- label: s3_batch cold parallel fetch increments openpuffer_s3_get_total on each successful GetObject
+  command: grep -q 'inc_s3_get' src/s3_batch.rs && grep -q 'fetch_cold_index_artifacts' src/s3_batch.rs
   tags: [implemented]
 - label: POST /v1/namespaces/{name}/warm prefetches index segments and pins NamespaceView
   command: test -f src/warm.rs && grep -q '/warm' src/api.rs
@@ -314,4 +329,10 @@
   tags: [implemented]
 - label: integration test full_architecture_smoke exercises WAL index dual-vector hybrid filter compaction branch on MinIO
   command: cargo test -F integration --test integration_s3 full_architecture_smoke -q
+  tags: [implemented]
+- label: integration test filter_uuid_eq proves uuid Eq filter index and rejects invalid uuid on MinIO
+  command: cargo test -F integration --test integration_s3 filter_uuid_eq -q
+  tags: [implemented]
+- label: integration test upsert_condition_newer_timestamp_with_datetime uses $ref_new and datetime Gt Lt filters on MinIO
+  command: cargo test -F integration --test integration_s3 upsert_condition_newer_timestamp_with_datetime -q
   tags: [implemented]
