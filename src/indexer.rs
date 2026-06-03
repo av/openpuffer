@@ -28,7 +28,7 @@ pub async fn index_wal_range(
     cache: &Arc<SegmentCache>,
 ) -> Result<()> {
     for attempt in 0..META_RETRIES {
-        let Some((meta, meta_etag)) = fetch_meta(client, bucket, namespace).await? else {
+        let Some((meta, _)) = fetch_meta(client, bucket, namespace).await? else {
             return Ok(());
         };
 
@@ -158,8 +158,34 @@ pub async fn index_wal_range(
             }
         }
 
+        let Some((fresh_meta, _)) = fetch_meta(client, bucket, namespace).await? else {
+            return Ok(());
+        };
+        if fresh_meta.index_cursor >= fresh_meta.wal_commit_seq {
+            return Ok(());
+        }
+        if fresh_meta.index_cursor >= to {
+            return Ok(());
+        }
+        if to > fresh_meta.wal_commit_seq {
+            continue;
+        }
+
+        let commit_lock = crate::commit_lock::namespace_commit_lock(namespace).await;
+        let _commit = commit_lock.lock().await;
+
+        let Some((fresh_meta, fresh_etag)) = fetch_meta(client, bucket, namespace).await? else {
+            return Ok(());
+        };
+        if fresh_meta.index_cursor >= to {
+            return Ok(());
+        }
+        if to > fresh_meta.wal_commit_seq {
+            continue;
+        }
+
         let next_meta = meta_after_index_commit(
-            &meta,
+            &fresh_meta,
             to,
             to,
             to,
@@ -176,7 +202,7 @@ pub async fn index_wal_range(
             .key(&mkey)
             .body(ByteStream::from(meta_body));
 
-        if let Some(etag) = &meta_etag {
+        if let Some(etag) = &fresh_etag {
             put = put.if_match(etag);
         } else {
             put = put.if_none_match("*");
@@ -633,6 +659,18 @@ mod tests {
         assert_eq!(next.vector_segment_ids, vec![5]);
         assert_eq!(next.vector_field, "emb");
         assert_eq!(next.dimensions, 3);
+    }
+
+    #[test]
+    fn meta_after_index_commit_preserves_wal_commit_seq() {
+        let meta = NamespaceMeta {
+            wal_commit_seq: 10,
+            index_cursor: 4,
+            ..Default::default()
+        };
+        let next = meta_after_index_commit(&meta, 5, 5, 5, 0, String::new(), 0).unwrap();
+        assert_eq!(next.wal_commit_seq, 10);
+        assert_eq!(next.index_cursor, 5);
     }
 
     #[test]

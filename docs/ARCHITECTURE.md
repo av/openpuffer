@@ -36,7 +36,7 @@ All durable state uses **WAL + index segments only**. There is no per-document `
 | `vector_field` | Indexed vector attribute (e.g. `embedding`) |
 | `dimensions` | Vector dimensionality (0 if no ANN index) |
 
-Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent writers serialize commits (compare-and-swap on `meta.json`).
+Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent writers serialize commits (compare-and-swap on `meta.json`). A per-namespace commit mutex ([`commit_lock.rs`](../src/commit_lock.rs)) ensures only one WAL append + meta CAS runs at a time; indexer CAS re-reads `meta.json` before commit so `wal_commit_seq` is never regressed.
 
 ## Write path
 
@@ -48,6 +48,19 @@ Updates use **conditional PUT** (`If-Match` / `If-None-Match`) so concurrent wri
 6. **CAS** update `meta.json`: set `wal_commit_seq = seq` (retries on `PreconditionFailed`).
 7. **Wake** the async background indexer (non-blocking).
 8. HTTP ACK only after steps 5–6 succeed (**strong consistency**). Index build is **not** on the ACK path.
+
+**Write response** (turbopuffer [`write` response](https://turbopuffer.com/docs/write) subset): `rows_affected`, optional `rows_upserted` / `rows_patched` / `rows_deleted`, and `billing.billable_logical_bytes_written` (v1 estimate: 64 bytes × affected rows per request).
+
+### Write throughput limits (v1)
+
+| Limit | Default | Notes |
+|-------|---------|-------|
+| Group-commit delay | 1s (`OPENPUFFER_WRITE_MAX_DELAY_MS`) | Batches in-memory writes per namespace before one WAL PUT |
+| Max batch ops | 512 (`OPENPUFFER_WRITE_MAX_BATCH_OPS`) | Flush when upserts + patches + deletes reach this count |
+| Meta CAS retries | 8 | Exponential backoff 50ms × attempt; orphan WAL segment deleted on conflict |
+| Concurrent HTTP writers | Serialized per namespace | Commit lock + S3 `If-Match` on `meta.json`; safe parallel clients, one WAL seq at a time |
+| Practical throughput | ~1 WAL commit / s / ns (default delay) | Lower delay or `max_batch_ops=1` increases commit rate at higher S3 cost |
+| Payload size | No explicit cap in openpuffer | turbopuffer allows up to 512 MiB per write request |
 
 ## Local disk cache (index segments)
 

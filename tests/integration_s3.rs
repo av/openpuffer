@@ -26,6 +26,7 @@ const NAMESPACE_INCR: &str = "itest-incr";
 const NAMESPACE_WARM: &str = "itest-warm";
 const NAMESPACE_DEL_FILTER: &str = "itest-del-filter";
 const NAMESPACE_PATCH: &str = "itest-patch";
+const NAMESPACE_CONCURRENT: &str = "itestconcurrent";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -186,6 +187,16 @@ impl ServeHandle {
     }
 
     fn spawn_with_cache(endpoint: &str, listen: &str, cache_dir: Option<PathBuf>) -> Self {
+        Self::spawn_with_options(endpoint, listen, cache_dir, None, None)
+    }
+
+    fn spawn_with_options(
+        endpoint: &str,
+        listen: &str,
+        cache_dir: Option<PathBuf>,
+        write_max_batch_ops: Option<usize>,
+        write_max_delay_ms: Option<u64>,
+    ) -> Self {
         let bin = openpuffer_bin();
         assert!(
             bin.exists(),
@@ -210,6 +221,14 @@ impl ServeHandle {
         if let Some(dir) = cache_dir {
             args.push("--cache-dir".to_string());
             args.push(dir.display().to_string());
+        }
+        if let Some(ops) = write_max_batch_ops {
+            args.push("--write-max-batch-ops".to_string());
+            args.push(ops.to_string());
+        }
+        if let Some(ms) = write_max_delay_ms {
+            args.push("--write-max-delay-ms".to_string());
+            args.push(ms.to_string());
         }
         let child = Command::new(&bin)
             .args(&args)
@@ -907,4 +926,110 @@ async fn patch_rows_updates_fts_after_index() {
         "patching vector field must return 400: {}",
         resp.text().await.unwrap_or_default()
     );
+}
+
+/// Ten parallel HTTP clients upsert distinct doc ids; WAL seq monotonic, no lost docs.
+#[tokio::test]
+async fn concurrent_writes_ten_parallel_clients() {
+    let container = MinIO::default().start().await.expect("start minio");
+    let host = container.get_host().await.expect("minio host");
+    let port = container
+        .get_host_port_ipv4(9000)
+        .await
+        .expect("minio api port");
+    let endpoint = format!("http://{host}:{port}");
+    let s3 = s3_client(&endpoint).await;
+    ensure_bucket(&s3, BUCKET).await;
+
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let serve = ServeHandle::spawn(&endpoint, &listen);
+    serve.wait_ready().await;
+
+    let http = reqwest::Client::new();
+    let write_url = format!("{}/v2/namespaces/{NAMESPACE_CONCURRENT}", serve.base_url);
+
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let client = http.clone();
+        let url = write_url.clone();
+        tasks.push(tokio::spawn(async move {
+            let resp = client
+                .post(&url)
+                .json(&json!({
+                    "upsert_rows": [{
+                        "id": format!("doc-{i}"),
+                        "attributes": { "text": format!("concurrent write {i}") }
+                    }]
+                }))
+                .send()
+                .await
+                .expect("concurrent write request");
+            let status = resp.status();
+            let body: Value = resp.json().await.expect("write response json");
+            (i, status, body)
+        }));
+    }
+
+    let mut doc_ids = Vec::new();
+    for task in tasks {
+        let (i, status, body) = task.await.expect("join concurrent write");
+        assert_eq!(status, StatusCode::OK, "write doc-{i} failed: {body}");
+        assert_eq!(body["rows_affected"].as_u64(), Some(1), "doc-{i}: {body}");
+        assert_eq!(body["rows_upserted"].as_u64(), Some(1));
+        doc_ids.push(format!("doc-{i}"));
+    }
+
+    // Allow group-commit timer (default 1s) to flush any buffered writes.
+    sleep(Duration::from_millis(1200)).await;
+
+    let meta = fetch_namespace_meta(&s3, BUCKET, NAMESPACE_CONCURRENT).await;
+    assert!(
+        meta.wal_commit_seq >= 1 && meta.wal_commit_seq <= 10,
+        "wal_commit_seq must advance monotonically (1..=10 commits), meta={meta:?}"
+    );
+
+    let wal_prefix = format!("{ROOT_PREFIX}{NAMESPACE_CONCURRENT}/wal/");
+    let wal_keys = list_keys_with_prefix(&s3, BUCKET, &wal_prefix).await;
+    let mut seqs: Vec<u64> = wal_keys
+        .iter()
+        .filter_map(|k| {
+            let name = k.rsplit('/').next()?;
+            name.strip_suffix(".bin")?.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs.first(), Some(&1), "wal keys: {wal_keys:?}");
+    assert_eq!(
+        seqs.last(),
+        Some(&meta.wal_commit_seq),
+        "wal seqs must end at commit point, got {seqs:?}"
+    );
+    for w in seqs.windows(2) {
+        assert_eq!(w[1], w[0] + 1, "wal seq gap: {seqs:?}");
+    }
+
+    use openpuffer::namespace::replay_wal_range;
+    use std::collections::HashMap;
+
+    let mut docs = HashMap::new();
+    replay_wal_range(
+        &s3,
+        BUCKET,
+        NAMESPACE_CONCURRENT,
+        &mut docs,
+        1,
+        meta.wal_commit_seq,
+    )
+    .await
+    .expect("replay wal");
+    assert_eq!(
+        docs.len(),
+        10,
+        "lost docs in WAL replay (expected doc-0..doc-9): {:?}",
+        docs.keys().collect::<Vec<_>>()
+    );
+    for id in doc_ids {
+        assert!(docs.contains_key(&id), "missing doc {id}");
+    }
 }

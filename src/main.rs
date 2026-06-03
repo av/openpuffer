@@ -30,6 +30,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         config.bucket.clone(),
         cache,
         config.max_pinned_namespaces,
+        config.write_buffer.clone(),
     );
 
     let state = AppState {

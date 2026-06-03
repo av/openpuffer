@@ -8,7 +8,7 @@
 //! the WAL object is on S3 and `meta.json` CAS succeeded before waiters are released.
 
 use crate::indexer::BackgroundIndexer;
-use crate::models::Document;
+use crate::models::{Document, WriteStats};
 use crate::namespace::append_wal;
 use crate::wal::WalEntry;
 use anyhow::Result;
@@ -42,6 +42,12 @@ impl Default for WriteBufferConfig {
 pub struct CommittedBatch {
     pub seq: u64,
     pub entry: WalEntry,
+    pub stats: WriteStats,
+}
+
+struct WriteWaiter {
+    stats: WriteStats,
+    tx: oneshot::Sender<Result<CommittedBatch>>,
 }
 
 struct BufferState {
@@ -49,12 +55,14 @@ struct BufferState {
     patches: Vec<Document>,
     deletes: Vec<String>,
     schema_patch: Option<Value>,
-    waiters: Vec<oneshot::Sender<Result<CommittedBatch>>>,
+    waiters: Vec<WriteWaiter>,
     timer: Option<AbortHandle>,
 }
 
 struct NamespaceBuffer {
     state: Mutex<BufferState>,
+    /// Serializes `flush_namespace` so empty flushes do not race in-flight commits.
+    flush_lock: Mutex<()>,
 }
 
 /// Shared write buffers keyed by namespace.
@@ -93,6 +101,12 @@ impl WriteBufferManager {
     ) -> Result<CommittedBatch> {
         let buf = self.buffer_for(namespace).await;
         let (tx, rx) = oneshot::channel();
+        let req_stats = WriteStats {
+            rows_upserted: upserts.len() as u64,
+            rows_patched: patches.len() as u64,
+            rows_deleted: deletes.len() as u64,
+        };
+
         let flush_now = {
             let mut st = buf.state.lock().await;
             st.upserts.extend(upserts);
@@ -104,7 +118,10 @@ impl WriteBufferManager {
                     None => patch,
                 });
             }
-            st.waiters.push(tx);
+            st.waiters.push(WriteWaiter {
+                stats: req_stats,
+                tx,
+            });
             let ops = st.upserts.len() + st.patches.len() + st.deletes.len();
             let schema_only = ops == 0 && st.schema_patch.is_some();
             if ops >= self.config.max_batch_ops || schema_only {
@@ -159,6 +176,7 @@ impl WriteBufferManager {
                         waiters: Vec::new(),
                         timer: None,
                     }),
+                    flush_lock: Mutex::new(()),
                 })
             })
             .clone()
@@ -192,6 +210,8 @@ impl WriteBufferManager {
             return Ok(());
         };
 
+        let _flush_guard = buf.flush_lock.lock().await;
+
         let (upserts, patches, deletes, schema_patch, waiters) = {
             let mut st = buf.state.lock().await;
             if st.upserts.is_empty()
@@ -211,7 +231,7 @@ impl WriteBufferManager {
             )
         };
 
-        let result: Result<CommittedBatch> = async {
+        let result: Result<(u64, WalEntry)> = async {
             let entry = WalEntry::from_write(upserts, patches, deletes)?;
             let seq = append_wal(
                 &self.client,
@@ -221,17 +241,19 @@ impl WriteBufferManager {
                 schema_patch.as_ref(),
             )
             .await?;
-            Ok(CommittedBatch {
-                seq,
-                entry: entry.clone(),
-            })
+            Ok((seq, entry))
         }
         .await;
 
         match result {
-            Ok(committed) => {
+            Ok((seq, entry)) => {
                 for w in waiters {
-                    let _ = w.send(Ok(committed.clone()));
+                    let batch = CommittedBatch {
+                        seq,
+                        entry: entry.clone(),
+                        stats: w.stats.clone(),
+                    };
+                    let _ = w.tx.send(Ok(batch));
                 }
                 if let Some(indexer) = &self.background_indexer {
                     indexer.wake(namespace).await;
@@ -241,7 +263,7 @@ impl WriteBufferManager {
             Err(err) => {
                 let msg = format!("{err:#}");
                 for w in waiters {
-                    let _ = w.send(Err(anyhow::anyhow!("{msg}")));
+                    let _ = w.tx.send(Err(anyhow::anyhow!("{msg}")));
                 }
                 Err(err)
             }

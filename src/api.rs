@@ -192,7 +192,8 @@ async fn write_namespace(
         }
     }
 
-    let effective_schema = effective_write_schema(&state, &name, body.schema.as_ref()).await;
+    let effective_schema =
+        effective_write_schema(&state, &name, body.schema.as_ref(), !patches.is_empty()).await;
     for patch in &patches {
         if let Err(msg) = validate_patch_attributes(&patch.attributes, &effective_schema) {
             return (
@@ -215,9 +216,9 @@ async fn write_namespace(
         )
         .await
     {
-        Ok(()) => (
+        Ok(stats) => (
             StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "namespace": name})),
+            Json(crate::models::WriteResponse::from_stats(name, stats)),
         )
             .into_response(),
         Err(e) => {
@@ -231,7 +232,11 @@ async fn effective_write_schema(
     state: &AppState,
     namespace: &str,
     request_schema: Option<&serde_json::Value>,
+    needs_existing_schema: bool,
 ) -> serde_json::Value {
+    if request_schema.is_none() && !needs_existing_schema {
+        return serde_json::json!({});
+    }
     let base = match crate::namespace::fetch_meta(
         state.storage.client(),
         state.storage.bucket(),

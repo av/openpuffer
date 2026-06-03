@@ -58,6 +58,61 @@ pub struct UpsertRow {
     pub attributes: HashMap<String, Value>,
 }
 
+/// Per-request write stats (turbopuffer write response subset).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WriteStats {
+    pub rows_upserted: u64,
+    pub rows_patched: u64,
+    pub rows_deleted: u64,
+}
+
+impl WriteStats {
+    pub fn rows_affected(&self) -> u64 {
+        self.rows_upserted + self.rows_patched + self.rows_deleted
+    }
+
+    /// Approximate logical bytes written for billing observability.
+    pub fn billable_logical_bytes_written(&self) -> u64 {
+        self.rows_affected().saturating_mul(64)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WriteBilling {
+    pub billable_logical_bytes_written: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WriteResponse {
+    pub status: &'static str,
+    pub namespace: String,
+    pub rows_affected: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_upserted: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_patched: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_deleted: Option<u64>,
+    pub billing: WriteBilling,
+}
+
+impl WriteResponse {
+    pub fn from_stats(namespace: String, stats: WriteStats) -> Self {
+        let rows_affected = stats.rows_affected();
+        Self {
+            status: "ok",
+            namespace,
+            rows_affected,
+            rows_upserted: (stats.rows_upserted > 0).then_some(stats.rows_upserted),
+            rows_patched: (stats.rows_patched > 0).then_some(stats.rows_patched),
+            rows_deleted: (stats.rows_deleted > 0).then_some(stats.rows_deleted),
+            billing: WriteBilling {
+                billable_logical_bytes_written: stats.billable_logical_bytes_written(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PatchRow {
     pub id: String,
@@ -154,5 +209,33 @@ mod tests {
     fn rejects_long_ids() {
         let id = "x".repeat(MAX_DOC_ID_BYTES + 1);
         assert!(validate_doc_id(&id).is_err());
+    }
+
+    #[test]
+    fn write_stats_rows_affected_sums_ops() {
+        let stats = WriteStats {
+            rows_upserted: 3,
+            rows_patched: 1,
+            rows_deleted: 2,
+        };
+        assert_eq!(stats.rows_affected(), 6);
+        assert_eq!(stats.billable_logical_bytes_written(), 384);
+    }
+
+    #[test]
+    fn write_response_omits_zero_row_fields() {
+        let resp = WriteResponse::from_stats(
+            "ns".into(),
+            WriteStats {
+                rows_upserted: 2,
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["rows_affected"], 2);
+        assert_eq!(json["rows_upserted"], 2);
+        assert!(json.get("rows_patched").is_none());
+        assert!(json.get("rows_deleted").is_none());
+        assert!(json["billing"]["billable_logical_bytes_written"].as_u64().unwrap() > 0);
     }
 }

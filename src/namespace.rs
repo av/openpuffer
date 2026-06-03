@@ -1,5 +1,6 @@
 //! Per-namespace WAL append and replay on S3.
 
+use crate::commit_lock::namespace_commit_lock;
 use crate::meta::{
     meta_after_wal_commit_with_schema, meta_key, next_wal_seq, NamespaceMeta, META_RETRIES,
 };
@@ -84,24 +85,19 @@ pub async fn append_wal(
     entry: WalEntry,
     schema_patch: Option<&Value>,
 ) -> Result<u64> {
+    let commit_lock = namespace_commit_lock(namespace).await;
+    let _commit = commit_lock.lock().await;
 
     for attempt in 0..META_RETRIES {
         let key = meta_key(namespace);
-        let (meta, meta_etag) = match get_meta(client, bucket, &key).await? {
+        let (meta, meta_etag) = match get_meta_with_retry(client, bucket, &key).await? {
             Some((m, e)) => (m, e),
             None => (NamespaceMeta::default(), None),
         };
 
         let seq = next_wal_seq(&meta);
         let wal_body = encode(&entry)?;
-        client
-            .put_object()
-            .bucket(bucket)
-            .key(wal_key(namespace, seq))
-            .body(ByteStream::from(wal_body))
-            .send()
-            .await
-            .with_context(|| format!("put wal segment {seq:08}"))?;
+        put_wal_with_retry(client, bucket, namespace, seq, wal_body).await?;
 
         let next_meta = meta_after_wal_commit_with_schema(&meta, seq, schema_patch)?;
         let body = serde_json::to_vec(&next_meta)?;
@@ -124,6 +120,13 @@ pub async fn append_wal(
                 let service = e.into_service_error();
                 let conflict = service.meta().code() == Some("PreconditionFailed");
                 if conflict && attempt + 1 < META_RETRIES {
+                    let wal_object = wal_key(namespace, seq);
+                    let _ = client
+                        .delete_object()
+                        .bucket(bucket)
+                        .key(&wal_object)
+                        .send()
+                        .await;
                     tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
                     continue;
                 }
@@ -134,12 +137,67 @@ pub async fn append_wal(
     Err(anyhow!("meta CAS failed after retries"))
 }
 
+async fn put_wal_with_retry(
+    client: &Client,
+    bucket: &str,
+    namespace: &str,
+    seq: u64,
+    wal_body: Vec<u8>,
+) -> Result<()> {
+    const PUT_RETRIES: u32 = 4;
+    let key = wal_key(namespace, seq);
+    let mut last_err = None;
+    for attempt in 0..PUT_RETRIES {
+        match client
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(ByteStream::from(wal_body.clone()))
+            .send()
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < PUT_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_err
+        .map(|e| e.into_service_error())
+        .map(|s| anyhow!("put wal segment {seq:08}: {s}"))
+        .unwrap_or_else(|| anyhow!("put wal segment {seq:08}")))
+}
+
 async fn get_meta(
     client: &Client,
     bucket: &str,
     key: &str,
 ) -> Result<Option<(NamespaceMeta, Option<String>)>> {
-    get_meta_json(client, bucket, key).await
+    get_meta_with_retry(client, bucket, key).await
+}
+
+async fn get_meta_with_retry(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Option<(NamespaceMeta, Option<String>)>> {
+    const GET_RETRIES: u32 = 4;
+    let mut last_err = None;
+    for attempt in 0..GET_RETRIES {
+        match get_meta_json::<NamespaceMeta>(client, bucket, key).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < GET_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(25 * (attempt as u64 + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap())
 }
 
 async fn get_meta_json<T: serde::de::DeserializeOwned>(
@@ -162,12 +220,25 @@ async fn get_meta_json<T: serde::de::DeserializeOwned>(
         }
         Err(e) => {
             let service = e.into_service_error();
-            if service.is_no_such_key() {
+            let code = service.meta().code();
+            if service.is_no_such_key()
+                || code == Some("NoSuchKey")
+                || code == Some("NotFound")
+            {
                 Ok(None)
-            } else if service.meta().code() == Some("NoSuchBucket") {
+            } else if code == Some("NoSuchBucket") {
                 Err(anyhow!("S3 bucket not found"))
             } else {
-                Err(anyhow!("get object {key}: {service}"))
+                let msg = format!("{service}");
+                // MinIO sometimes returns a generic "unhandled error" on concurrent HEAD/GET
+                // against a not-yet-created `meta.json`; treat as absent namespace.
+                if key.ends_with("/meta.json")
+                    && (msg.contains("unhandled error") || msg.contains("NotFound"))
+                {
+                    Ok(None)
+                } else {
+                    Err(anyhow!("get object {key}: {service}"))
+                }
             }
         }
     }

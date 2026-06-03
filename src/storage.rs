@@ -55,13 +55,14 @@ impl Storage {
         bucket: String,
         cache: Arc<SegmentCache>,
         max_pinned_namespaces: usize,
+        write_buffer_config: WriteBufferConfig,
     ) -> Arc<Self> {
         let background_indexer =
             BackgroundIndexer::spawn(client.clone(), bucket.clone(), Arc::clone(&cache));
         let write_buffer = WriteBufferManager::new(
             client.clone(),
             bucket.clone(),
-            WriteBufferConfig::default(),
+            write_buffer_config,
             Some(background_indexer),
         );
         Arc::new(Self {
@@ -232,7 +233,7 @@ impl Storage {
         mut deletes: Vec<String>,
         schema_patch: Option<serde_json::Value>,
         delete_by_filter: Option<serde_json::Value>,
-    ) -> Result<()> {
+    ) -> Result<crate::models::WriteStats> {
         if let Some(filter_val) = delete_by_filter {
             if !filter_val.is_null() {
                 let resolved = self
@@ -250,20 +251,23 @@ impl Storage {
             .write_buffer
             .write(namespace, upserts, patches, deletes, schema_patch)
             .await?;
+        let stats = committed.stats;
 
         let mut views = self.views.lock().await;
         if let Some(view) = views.get_mut(namespace) {
             view.apply_committed(committed.seq, &committed.entry)?;
-            if let Some((meta, _)) =
-                crate::namespace::fetch_meta(&self.client, &self.bucket, namespace).await?
+            if let Ok(Some((meta, etag))) =
+                crate::namespace::fetch_meta(&self.client, &self.bucket, namespace).await
             {
                 view.meta = meta;
+                view.meta_etag = etag;
             }
         } else {
-            let view = NamespaceView::load(&self.client, &self.bucket, namespace).await?;
+            let mut view = NamespaceView::empty();
+            view.apply_committed(committed.seq, &committed.entry)?;
             views.insert(namespace.to_string(), view);
         }
-        Ok(())
+        Ok(stats)
     }
 
     /// Resolve doc ids for `delete_by_filter` via filter index + WAL tail (strong consistency).

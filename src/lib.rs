@@ -21,6 +21,7 @@
 pub mod api;
 pub mod buffer;
 pub mod cache;
+pub mod commit_lock;
 pub mod config;
 pub mod filter;
 pub mod index;

@@ -3,6 +3,9 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::buffer::WriteBufferConfig;
 
 #[derive(Parser, Debug)]
 #[command(name = "openpuffer", about = "S3-backed vector and FTS search")]
@@ -44,6 +47,14 @@ pub struct ServeArgs {
     /// Max namespaces with hot in-memory views (LRU eviction).
     #[arg(long, env = "OPENPUFFER_MAX_PINNED_NAMESPACES", default_value = "32")]
     pub max_pinned_namespaces: usize,
+
+    /// Group-commit max delay before flushing a namespace buffer (milliseconds).
+    #[arg(long, env = "OPENPUFFER_WRITE_MAX_DELAY_MS", default_value = "1000")]
+    pub write_max_delay_ms: u64,
+
+    /// Group-commit flush when pending upserts+patches+deletes reach this count.
+    #[arg(long, env = "OPENPUFFER_WRITE_MAX_BATCH_OPS", default_value = "512")]
+    pub write_max_batch_ops: usize,
 }
 
 #[derive(Clone)]
@@ -52,6 +63,7 @@ pub struct AppConfig {
     pub bucket: String,
     pub cache_dir: Option<PathBuf>,
     pub max_pinned_namespaces: usize,
+    pub write_buffer: WriteBufferConfig,
 }
 
 pub async fn s3_client(args: &ServeArgs) -> Result<Client> {
@@ -92,6 +104,14 @@ impl ServeArgs {
             bucket: self.s3_bucket.clone(),
             cache_dir,
             max_pinned_namespaces: self.max_pinned_namespaces,
+            write_buffer: self.write_buffer_config(),
+        }
+    }
+
+    pub fn write_buffer_config(&self) -> WriteBufferConfig {
+        WriteBufferConfig {
+            max_delay: Duration::from_millis(self.write_max_delay_ms),
+            max_batch_ops: self.write_max_batch_ops,
         }
     }
 }
