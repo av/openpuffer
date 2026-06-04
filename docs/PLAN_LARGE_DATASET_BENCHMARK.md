@@ -4,7 +4,51 @@ End-to-end program to load a **large-ish** namespace (primary target **1M**), pr
 
 This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) and operator runbooks in [BENCHMARKS.md](BENCHMARKS.md). It does not replace them — see [How this plan relates to SPFresh / cold @ 1M](#how-this-plan-relates-to-spfresh--cold-1m).
 
-**Harness status:** **offline program harness complete** — run [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (pytest workloads/tpuf/cross_check, render tests, `synthetic_workload_gate`, L1 + L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf`). Live G3–G5 (AWS + tpuf JSON + measured report) remain operator-owned — see [Unresolved assumptions](#unresolved-assumptions) and [Verification checklist](#verification-checklist-program-complete).
+## Program status (as of 2026-06-04)
+
+| Track | Status | Summary |
+|-------|--------|---------|
+| **Harness (offline)** | **COMPLETE** | One-command verify passes without AWS/tpuf spend; A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run |
+| **Live measurement (G3–G5)** | **BLOCKED** | Needs EC2 in target region + real AWS S3 + `TURBOPUFFER_API_KEY` (test org); this dev host had MinIO + no tpuf key — see [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
+
+### Harness evidence (representative commits)
+
+| Area | Commits | Artifact / gate |
+|------|---------|-----------------|
+| Workload A1 | `6186190`, `76ff071` | `benchmarks/workloads/generate_synthetic.py`, L1–L3 manifests |
+| Ingest/bench A2–A3 | `d788b65`, `9272b8f`, `98a9ff7`, `f877d64`, **`d0bc8ba`** | `ingest-large.sh`, `bench-large.sh` (+ S3 retry/resume) |
+| tpuf driver A4 | `08e66ce`, `696a247` | `benchmarks/tpuf_driver/run_benchmark.py` |
+| Report A5 | `59f5822`, `265c635` | `render-report.sh` measured mode |
+| G2 correctness | `5972ab7`, `67c7050`, `ef4fa97`, `33a14d1` | MinIO gates + CI `g2-minio-correctness` |
+| G3/G4 operators | `a1b34cc`, `95197a9`, `ee30fd1`, `fa08a69` | `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, preflights |
+| E2E orchestrator | `250257b`, **`bfaec74`** | `run-large-benchmark-program.sh`, **`verify-large-benchmark-program.sh`** |
+| MinIO JSON shape | `bd449b6`, `833e1bc`, `476a753` | `*-schema-minio*.example.json` (not comparison timings) |
+| G6 regression | `1902c62`, `433d2fd` | A6 dispatch dry-run; nightly `large-dataset-program` |
+
+Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-g2` for Docker MinIO parity).
+
+### Goals G1–G6
+
+| Goal | Harness | Live / publish |
+|------|:-------:|:--------------:|
+| **G1** Reproducible workload | **Done** | — |
+| **G2** Correctness before latency | **Done** (MinIO + CI) | AWS spot-check optional after G3 ingest |
+| **G3** openpuffer scale proof (AWS JSON) | **Done** (scripts, preflight, dry-run) | **Pending** — `large-aws-l1.json` |
+| **G4** turbopuffer baseline | **Done** (driver, preflight, dry-run) | **Pending** — `tpuf-l1.json` |
+| **G5** Comparison report | **Done** (skeleton + measured renderer) | **Pending** — dated report + [COMPARISON.md](COMPARISON.md) rows |
+| **G6** Regression harness | **Done** (CI/nightly/dispatch dry-run) | Live workflow optional (`enable_live_run=false`) |
+
+**Program complete** = G3/G4/3.3 live columns and G5 measured row in [Verification checklist](#verification-checklist-program-complete) checked (AWS JSON, tpuf JSON, `id-overlap-l1.json`, dated report + COMPARISON).
+
+### Next operator actions
+
+1. **Provision bench EC2** (`m7i.xlarge`, same region as S3 bucket, e.g. `us-east-1`); instance profile or `OPENPUFFER_S3_*` for a dedicated `openpuffer-bench-*` bucket — [BENCHMARKS.md § G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup).
+2. **Unset MinIO dev endpoint** on the host; run `./scripts/preflight-aws-ec2.sh` then `./scripts/run-aws-large-benchmark.sh --tier l1`; commit `benchmarks/results/large-aws-l1.json` (+ ingest sidecar).
+3. **Export `TURBOPUFFER_API_KEY`** (test org) and `TURBOPUFFER_REGION=aws-us-east-1`; run `./scripts/preflight-tpuf.sh --tier l1` then `./scripts/run-tpuf-large-benchmark.sh --tier l1`; commit `benchmarks/results/tpuf-l1.json`.
+4. **Cross-check ids** after both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` → `id-overlap-l1.json`.
+5. **Publish measured comparison**: `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); update [COMPARISON.md](COMPARISON.md) L1 table; add `@spec` facts for live artifacts.
+
+Blocked-run log: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (`bfaec74` session — MinIO endpoint, no tpuf key).
 
 ---
 
@@ -41,7 +85,7 @@ Before operator spend (G3–G5), run all offline gates in one command:
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l1
 ```
 
-**Program complete** (live comparison) still requires the four `[ ]` rows in [Verification checklist](#verification-checklist-program-complete) — measured AWS/tpuf JSON and report.
+**Program complete** (live comparison) still requires G3/G4/3.3 live artifacts and a measured G5 report — see [§ Program status](#program-status-as-of-2026-06-04) and [Verification checklist](#verification-checklist-program-complete).
 
 ---
 
@@ -594,9 +638,8 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 
 | Item | Done | Evidence |
 |------|:----:|----------|
-| **Offline harness verify (one command)** | [x] | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) — pytest, render tests, `synthetic_workload_gate`, L1/L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf` |
-| MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` (also `--with-g2` on verify script) |
-| MinIO G2 CI job | [x] | `.github/workflows/ci.yml` → `g2-minio-correctness`; `67c7050` |
+| **Offline harness verify (one command)** | [x] | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) — pytest, render tests, `synthetic_workload_gate`, L1/L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf`; `bfaec74` |
+| MinIO G2 (subset, integration+bench, CI) | [x] | [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `synthetic_workload_gate`, `integration_s3` `synthetic_128_g2_*`, `bench_cold_10k_*`; `./scripts/run-integration-s3.sh` + `cargo test -F bench`; CI `g2-minio-correctness`; `5972ab7`, `67c7050`, `ef4fa97` |
 | Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); G3: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4--turbopuffer-operator-setup), `preflight-tpuf.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
 | A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6`; production S3 retry/resume (`ingest-large-retry.sh`, `OPENPUFFER_INGEST_START_BATCH`) |
@@ -607,18 +650,13 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | G4 `run-tpuf-large-benchmark.sh` | [x] harness / [ ] live | fact `eos`; `95197a9`; **no** `benchmarks/results/tpuf-l1.json` |
 | A6 `benchmark-large-dispatch.yml` + optional `benchmark-large-live.yml` | [x] dry-run / [x] live skeleton | `1902c62` dispatch; live workflow + [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) (secrets preflight; `enable_live_run` default false) |
 | Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
-| MinIO integration + bench green | [x] | `./scripts/run-integration-s3.sh` + `cargo test -F bench`; `ef4fa97` (2026-06-04) |
-| MinIO schema example JSON (full: ingest timing, filter/hybrid, warm) | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; `./scripts/run-minio-large-schema-example.sh` (`--warm` default); facts `3np`, `ccb` |
-| MinIO schema CI fast path (`--docs 10000`) | [x] | `./scripts/run-minio-large-schema-example.sh --docs 10000` → committed `large-aws-l1-schema-minio-10k.example.json`, `ingest-large-l1-schema-minio-10k.example.json`; CI `g2-minio-correctness` (compose MinIO + 25m step) |
-| G5 exemplar report (`NOT MEASURED`) | [x] skeleton | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8` |
-| Live `large-aws-{tier}.json` (AWS) | [ ] | Requires `OPENPUFFER_S3_*` on EC2; `run-aws-large-benchmark.sh --tier l1` |
-| Live `tpuf-{tier}.json` | [ ] | Requires `TURBOPUFFER_API_KEY`; `run-tpuf-large-benchmark.sh --tier l1` |
-| Measured report + COMPARISON rows | [ ] | `render-report.sh` without `--dry-run`; [COMPARISON.md](COMPARISON.md) L1 table still placeholder (`5ec9851`) |
+| MinIO schema example JSON (100k full + 10k CI fast path) | [x] | `run-minio-large-schema-example.sh` (`--warm` default; `--docs 10000` in CI); `large-aws-l1-schema-minio*.example.json`, `ingest-large-l1-schema-minio*.example.json`; facts `3np`, `ccb`; `833e1bc`, `33a14d1` |
+| G5 exemplar report (`NOT MEASURED`) | [x] skeleton / [ ] measured | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8`; live: `render-report.sh` without `--dry-run` + [COMPARISON.md](COMPARISON.md) L1 rows (`5ec9851` placeholder) |
 | `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
 
-**Offline harness complete** when `./scripts/verify-large-benchmark-program.sh` passes (no AWS/tpuf credentials).
+**Offline harness complete** — see [§ Program status](#program-status-as-of-2026-06-04) (harness **COMPLETE** as of 2026-06-04).
 
-**Program complete** when the four `[ ]` live/measured rows above are checked and methodology in the dated report matches [Unresolved assumptions](#unresolved-assumptions) defaults (or documents overrides).
+**Program complete** when G3, G4, Phase 3.3 live columns and G5 measured row above are checked; methodology must match [Unresolved assumptions](#unresolved-assumptions) defaults (or document overrides in the dated report).
 
 ---
 
