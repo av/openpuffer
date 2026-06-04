@@ -48,6 +48,11 @@ LEGACY_MINIO_OK=(
   benchmarks/results/nightly-100k.json
 )
 
+is_op_scaling_snapshot() {
+  local base="$1"
+  [[ "$base" =~ ^op-scaling-.*\.json$ ]]
+}
+
 is_legacy_minio_ok() {
   local rel="$1"
   local p
@@ -140,6 +145,13 @@ check_file() {
 
   if is_legacy_minio_ok "$rel"; then
     echo "  OK (legacy G2) $rel environment=${env:-<unset>}"
+    return 0
+  fi
+
+  if is_op_scaling_snapshot "$base"; then
+    [[ "$env" == "minio-testcontainers" || "$env" == minio-* ]] \
+      || fail "$rel: op-scaling snapshots must use environment=minio-testcontainers (got ${env:-<unset>})"
+    echo "  OK (op-scaling) $rel environment=${env}"
     return 0
   fi
 

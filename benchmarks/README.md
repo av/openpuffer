@@ -78,7 +78,7 @@ Git policy is enforced at **write time** (preflight guards), **add time** (`.git
 | `results/cold-50k-v3.json` | Legacy 50k v3 cold gate snapshot |
 | `results/nightly-100k.json` | Nightly 100k MinIO snapshot |
 | `results/tpuf-official-reference.json` | Official tpuf 10M×1024 homepage latencies + spec pointers (scaling comparison) |
-| `results/op-scaling-{10k,50k,100k}.json`, `op-scaling-10k-warm.json` | MinIO cold/warm scaling tiers (release+v3); [`scripts/run-op-scaling-benchmark.sh`](../scripts/run-op-scaling-benchmark.sh) |
+| `results/op-scaling-{10k,50k,100k}.json`, `op-scaling-10k-warm.json`, `op-scaling-10k-synthetic128.json` | MinIO cold/warm scaling tiers (release+v3); [`scripts/run-op-scaling-benchmark.sh`](../scripts/run-op-scaling-benchmark.sh) |
 | `specs/tpuf/vector-10m-{cold,hot}.toml` | Vendored from [tpuf-benchmark/website](https://github.com/turbopuffer/tpuf-benchmark/tree/main/benchmarks/website) |
 | `results/*-schema-minio*.example.json` | MinIO **shape** exemplars (`environment=minio`) |
 | `results/ingest-large-*-schema-minio*.example.json` | Ingest sidecars for schema examples |
@@ -164,7 +164,27 @@ make bench-verify
 # optional: make bench-g2-minio   # MinIO G2 only (Docker; not part of bench-verify)
 ```
 
-Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/bench schema tests, `synthetic_workload_gate`, and L1–L3 harness dry-runs. CI [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) also runs `preflight-large-benchmark-all.sh --skip-overlap` for the selected tier, then this verify gate.
+Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/bench schema tests, `synthetic_workload_gate`, L1–L3 harness dry-runs, and **op vs tpuf scaling smoke** on committed `op-scaling-*.json` (no MinIO bench in verify). CI [`ci.yml`](../.github/workflows/ci.yml) job `op-scaling-comparison` runs the same fast gate; [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) runs full `verify-large-benchmark-program.sh`.
+
+#### openpuffer vs turbopuffer scaling (committed JSON)
+
+**CI / offline smoke** (no Docker; uses committed results):
+
+```bash
+./scripts/verify-op-scaling-comparison.sh
+# or: make bench-verify-op-scaling
+```
+
+**Refresh full MinIO scaling suite** (slow — 10k/50k/100k/warm + synthetic-128; **not** run in CI):
+
+```bash
+make bench-op-scaling          # regenerate benchmarks/results/op-scaling-*.json
+make bench-compare-tpuf        # print extrapolation vs tpuf-official-reference.json
+./scripts/validate-benchmark-json.sh benchmarks/results/op-scaling-*.json
+git add benchmarks/results/op-scaling-*.json
+```
+
+Report: [docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). Skip scaling inside full verify: `VERIFY_FLAGS="--skip-op-scaling"`.
 
 ### 2. Program dry-run (no credentials)
 

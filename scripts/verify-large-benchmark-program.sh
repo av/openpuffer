@@ -7,6 +7,10 @@
 #   ./scripts/verify-large-benchmark-program.sh --skip-l2-l3   # L1 + shared gates only
 #   ./scripts/verify-large-benchmark-program.sh --with-g2       # adds MinIO Docker G2 (slow)
 #   ./scripts/verify-large-benchmark-program.sh --skip-facts    # skip facts CLI (e.g. CI subset)
+#   ./scripts/verify-large-benchmark-program.sh --skip-op-scaling  # skip op-vs-tpuf scaling smoke
+#
+# Scaling comparison only (fast; committed JSON):
+#   ./scripts/verify-op-scaling-comparison.sh
 #
 # Live comparison (G3–G5) still requires credentials:
 #   ./scripts/run-large-benchmark-program.sh --tier l1
@@ -23,12 +27,14 @@ source "$ROOT/scripts/lib/benchmark-python-deps.sh"
 SKIP_L2_L3=0
 WITH_G2=0
 SKIP_FACTS=0
+SKIP_OP_SCALING=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-l2-l3) SKIP_L2_L3=1 ;;
     --with-g2) WITH_G2=1 ;;
     --skip-facts) SKIP_FACTS=1 ;;
+    --skip-op-scaling) SKIP_OP_SCALING=1 ;;
     -h|--help)
       sed -n '2,16p' "$0"
       exit 0
@@ -78,8 +84,13 @@ step "no secret echo in benchmark harness (grep gate)"
 step "benchmark JSON schema (fixtures + *.example.json)"
 ./scripts/validate-benchmark-json.sh
 
-step "op-scaling JSON schema (committed MinIO tiers)"
-./scripts/test_validate-op-scaling-json.sh
+if [[ "$SKIP_OP_SCALING" != "1" ]]; then
+  step "op vs tpuf scaling comparison (committed JSON smoke)"
+  ./scripts/verify-op-scaling-comparison.sh
+else
+  echo ""
+  echo "==> skipping op-vs-tpuf scaling comparison (--skip-op-scaling)"
+fi
 
 step "benchmark JSON normalize (--check)"
 ./scripts/test_normalize-benchmark-json.sh

@@ -36,7 +36,9 @@ for pattern in \
   scripts/normalize-benchmark-json.sh \
   scripts/test_normalize-benchmark-json.sh \
   scripts/test_check-large-aws-gates.sh \
-  scripts/test_check-tpuf-gates.sh; do
+  scripts/test_check-tpuf-gates.sh \
+  scripts/*op-scaling* \
+  scripts/verify-op-scaling-comparison.sh; do
   for f in $pattern; do
     [[ -f "$f" ]] || continue
     scripts+=("$f")
