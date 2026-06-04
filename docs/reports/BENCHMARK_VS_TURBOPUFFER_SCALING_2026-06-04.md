@@ -243,7 +243,7 @@ Hold-out from a **linear** fit on collapsed tiers predicts **~1054 ms** @ 100k; 
 | Requirement | Why |
 |-------------|-----|
 | **AWS S3** (or same region as client) for openpuffer | Match object-storage latency class, not MinIO loopback |
-| **`TURBOPUFFER_API_KEY`** (test org) | Run live tpuf at matched tiers via `run-tpuf-large-benchmark.sh` / G4 |
+| **`TURBOPUFFER_API_KEY`** (test org) | Run live tpuf at matched tiers via `run-tpuf-large-benchmark.sh` / G4; optional minimal 10k probe → `benchmarks/results/tpuf-scaling-10k-live.json` (**blocked 2026-06-05:** key unset in operator env) |
 | **EC2 in target region** | Same-region client as S3 and tpuf (`aws-us-east-1` or plan region) |
 | **Matched workload** | Same `queries.json` / seed / `top_k` / distance; align doc counts where affordable (100k–1M L1/L2 first) |
 | **Matched dimensions** | Prefer 128-d on both sides for L1; 1024-d only if budget allows full embedding ingest |

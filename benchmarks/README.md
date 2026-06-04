@@ -38,7 +38,7 @@ benchmarks/
 | `scripts/lib/large-benchmark-preflight.sh` | Shared S3/tpuf/workload guards |
 | `tests/common/synthetic_workload.rs` | Rust loader for G2 integration/bench gates |
 | `docs/reports/` | Generated `BENCHMARK_VS_TURBOPUFFER_<date>.md` |
-| `.facts` | `@spec` facts tagged `bench-large`, `bench-tpuf` |
+| `.facts` | `@spec` facts tagged `bench-large`, `bench-tpuf`, `bench-op-scaling` |
 
 Subdirectory docs: [workloads/synthetic-128/README.md](workloads/synthetic-128/README.md), [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md), [tpuf_driver/README.md](tpuf_driver/README.md), [cross_check/README.md](cross_check/README.md), [report/README.md](report/README.md).
 
@@ -330,6 +330,7 @@ Other harness scripts (`validate-benchmark-json.sh`, `normalize-benchmark-json.s
 ```bash
 facts check --tags bench-large
 facts check --tags bench-tpuf
+facts check --tags bench-op-scaling
 ```
 
 - **Dispatch (dry-run):** [.github/workflows/benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml)

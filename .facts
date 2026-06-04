@@ -599,3 +599,22 @@
 - label: PLAN Phase 0-C outcomes verified — manual check against committed benchmark artifacts and ann/cold facts (1M AWS still pending)
   command: test -f benchmarks/results/baseline-10k.json && test -f benchmarks/results/nightly-100k.json && test -f benchmarks/results/cold-50k-v3.json && test -f scripts/bench-1m.sh && test -f docs/PLAN_SPFRESH_AND_COLD_1M.md && ! test -f benchmarks/results/1m-aws.json && echo 'Manual verify: ls -l benchmarks/results/baseline-10k.json benchmarks/results/nightly-100k.json benchmarks/results/cold-50k-v3.json; facts check --tags "ann or cold"; 1M gate pending — run scripts/bench-1m.sh then commit benchmarks/results/1m-aws.json'
   tags: [plan, implemented]
+
+# bench-op-scaling
+- label: tpuf-official-reference.json records 10M x 1024 official cold p50 874 ms and warm p50 14 ms
+  command: python3 -c "import json; d=json.load(open(\"benchmarks/results/tpuf-official-reference.json\")); assert d[\"schema_version\"]==\"tpuf_official_reference_v1\" and d[\"workload\"][\"document_count\"]==10_000_000 and d[\"workload\"][\"dimensions\"]==1024 and d[\"latencies_ms\"][\"cold\"][\"p50\"]==874 and d[\"latencies_ms\"][\"warm\"][\"p50\"]==14"
+  tags: [bench-op-scaling, bench-tpuf, implemented]
+- label: committed op-scaling JSON tiers 10k 50k 100k warm synthetic128 pass validate-benchmark-json and pytest schema gate
+  command: ./scripts/test_validate-op-scaling-json.sh && python3 -m pytest benchmarks/report/test_op_scaling_schema.py -q
+  tags: [bench-op-scaling, bench, implemented]
+- label: compare-op-scaling-to-tpuf.sh emits EXTRAP_JSON verdict with tpuf 874 ms extrapolation and operator notes
+  command: ./scripts/test_compare-op-scaling-to-tpuf.sh
+  tags: [bench-op-scaling, bench-tpuf, implemented]
+- label: verify-op-scaling-comparison.sh offline gate wired in ci.yml op-scaling-comparison job
+  command: test -x scripts/verify-op-scaling-comparison.sh && grep -q op-scaling-comparison .github/workflows/ci.yml && grep -q verify-op-scaling-comparison.sh .github/workflows/ci.yml && ./scripts/verify-op-scaling-comparison.sh >/dev/null
+  tags: [bench-op-scaling, bench, implemented]
+
+# bench-op-scaling live
+- label: live tpuf scaling probe JSON benchmarks/results/tpuf-scaling-10k-live.json at 10k docs when TURBOPUFFER_API_KEY set
+  command: if test -f benchmarks/results/tpuf-scaling-10k-live.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/tpuf-scaling-10k-live.json && python3 -c "import json; d=json.load(open(\"benchmarks/results/tpuf-scaling-10k-live.json\")); assert d.get(\"namespace_docs\", d.get(\"num_docs\", 0))==10000"; else echo "PENDING @spec (skipped): benchmarks/results/tpuf-scaling-10k-live.json — export TURBOPUFFER_API_KEY; minimal 10k tpuf probe via tpuf_driver; git add benchmarks/results/tpuf-scaling-10k-live.json; then facts at <id> implemented --remove-tag pending --remove-tag skipped"; ! test -f benchmarks/results/tpuf-scaling-10k-live.json; fi
+  tags: [spec, bench-op-scaling, bench-tpuf, pending, skipped]
