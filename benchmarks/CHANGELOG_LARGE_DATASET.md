@@ -2,9 +2,11 @@
 
 Chronological record of commits that built the **offline harness** for [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) (A1–A6, G2–G6, JSON schemas, operator wrappers). **Live G3/G4 JSON and measured G5** are still operator-pending; see [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md).
 
-**Verify gate:** `./scripts/verify-large-benchmark-program.sh` (exit **0** @ `7a38d7f`, 2026-06-04T02:54:51Z)
+**Verify gate:** `./scripts/verify-large-benchmark-program.sh` (exit **0** @ `a779510`, 2026-06-04; 18 passed, G2 optional `--with-g2`)
 
-**Session log:** timeboxed run 2026-06-04 (~90 iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
+**Milestone tag:** `large-dataset-harness-v1` → `c7f66a3` (annotated, 2026-06-04) — offline harness complete before post-tag doc polish (iterations 98–113)
+
+**Session log:** timeboxed run 2026-06-04 (**114** iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
 
 ---
 
@@ -13,15 +15,18 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 | Field | Value |
 |-------|--------|
 | **Time window** | 2026-06-04 00:24 CEST → ~06:00 CEST (timeboxed PLAN_LARGE_DATASET_BENCHMARK implementation) |
-| **Total iterations** | **~90** (A1–A6 + G2–G6 harness build, polish, closure; see tables below) |
-| **Harness commits** | `6186190` … `f7643e8` (offline program complete) |
-| **Verify gate** | `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`7a38d7f`** (2026-06-04T02:54:51Z; optional `--with-g2` for MinIO Docker parity) |
+| **Total iterations** | **114** (A1–A6 + G2–G6 harness build, polish, milestone tag, doc closure; see tables below) |
+| **Harness commits** | `6186190` … `a779510` (offline program complete; tag @ `c7f66a3`) |
+| **Verify gate** | `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`a779510`** (18 passed; optional `--with-g2` for MinIO Docker parity) |
+| **Milestone tag** | `git checkout large-dataset-harness-v1` → **`c7f66a3`** |
 
 ### Harness complete
 
 All **offline** checklist rows for [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) are satisfied: synthetic workload (A1), ingest/bench/tpuf drivers (A2–A4), report merge + measured renderer (A5), CI dispatch + nightly dry-run (A6), G2 MinIO correctness gates, G3/G4 operator wrappers + preflights, G5 schema/exemplar JSON + `fill-comparison-from-report.sh`, G6 regression wiring, JSON schemas L1–L3, id-overlap mock, SLO gate scripts (`check-large-aws-gates`, `check-tpuf-gates`), and the unified verify gate.
 
-**Statement:** The large-dataset benchmark **harness is complete** and safe for operator handoff / merge. `./scripts/verify-large-benchmark-program.sh` is the single offline gate; last full audit passed at `7a38d7f`.
+**Statement:** The large-dataset benchmark **harness is complete** and safe for operator handoff / merge. `./scripts/verify-large-benchmark-program.sh` is the single offline gate; last full audit passed at `a779510` (post-tag polish through iteration 113).
+
+**Milestone:** Annotated tag **`large-dataset-harness-v1`** on `c7f66a3` marks the offline harness baseline (pinned Python deps). Commits `d4a96f1` … `a779510` are documentation and operator UX only — no harness behavior change required before live G3–G5.
 
 Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md). Archived phase spec: [PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md](../docs/archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md).
 
@@ -39,7 +44,58 @@ Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DA
 
 **Do not** re-run live G3/G4 on the MinIO dev host. Use [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) on bench EC2; blocked attempts: [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md).
 
-**Operator sequence (L1):** preflight AWS → `run-aws-large-benchmark.sh` → preflight tpuf → `run-tpuf-large-benchmark.sh` → `run-id-overlap-spotcheck.sh` → `run-large-benchmark-program.sh --measured-report` (or `render-report.sh` + `fill-comparison-from-report.sh`).
+**Operator sequence (L1):** `preflight-large-benchmark-all.sh` (or `make bench-preflight`) → G3 `run-aws-large-benchmark.sh` → G4 `run-tpuf-large-benchmark.sh` → `run-id-overlap-spotcheck.sh` → SLO gates → `run-large-benchmark-program.sh --measured-report` (or `render-report.sh` + `fill-comparison-from-report.sh`) → [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md) for `@spec` `8zb`/`7ow`.
+
+---
+
+## Epilogue — iterations 85–114 (2026-06-04)
+
+Post–iteration-84 polish: SLO gates, PLAN archive, milestone tag, unified preflight, CI dispatch preflight, link/anchor sweeps, and session closure. **Live G3–G5 unchanged** — still EC2 + AWS S3 + `TURBOPUFFER_API_KEY`.
+
+| Iter | Commit | Description |
+|------|--------|-------------|
+| **85** | `7e1f876` | id-overlap live mode: clearer empty-namespace errors + preflight |
+| **86** | `8480ccb` | `render-report.sh` partial merge when only large-aws or only tpuf JSON present |
+| **87** | `d516003`, `14f0980`, `161ee75` | SLO gate scripts (`check-large-aws-gates`, `check-tpuf-gates`); wired into program chain |
+| **88** | `7a38d7f` | L2/L3 `render-report --dry-run` falls back to tier `*.example.json` |
+| **89** | `3b99883` | HANDOFF / CHANGELOG: verify gate recorded @ `7a38d7f` |
+| **90** | `38ca7c6` | `fill-comparison-from-report.sh` — populate COMPARISON.md L1 from measured G5 |
+| **91** | `5dd8175` | Optional Prometheus scrape during `bench-large` (BENCHMARKS § Phase 5.2; not in comparison JSON) |
+| **92** | `f7643e8` | Archive PLAN Phases 1–7; main PLAN Phase 8 harness table; fact counts 34/18 |
+| **93** | `1dc58b2` | Session 2026-06-04 summary + iterations 75–90 table (this file) |
+| **94** | `49c3431` | Harness TODO sweep complete — no offline PLAN `[ ]` before live G3–G5 |
+| **95** | `69199ab` | HANDOFF scope audit: harness/scripts/docs/API only; no UI assets |
+| **96** | `c7f66a3` | Pin `jsonschema` + `turbopuffer` in `benchmarks/requirements.txt` |
+| **97** | `8a56cbd` | Annotated tag **`large-dataset-harness-v1`** @ `c7f66a3`; HANDOFF checkout instructions |
+| **98** | `d4a96f1` | Verify gate exit **0** @ `8a56cbd` (post-tag HEAD; 34 + 18 facts) |
+| **99** | `c160a4b` | `bench_cold` module docs ↔ large-dataset program + synthetic-128 |
+| **100** | `13e0593` | Fix broken relative links in PLAN + `benchmarks/README.md` |
+| **101** | `20e9a41` | BENCHMARKS/COMPARISON `--` anchor slug fixes |
+| **102** | `d4ac309` | Secrets + tpuf README BENCHMARKS anchor fixes |
+| **103** | `b6dcae1` | Archive PLAN Phases 1–7: G3 BENCHMARKS anchor fix |
+| **104** | `dcf1b9a` | `preflight-large-benchmark-all.sh` — G3/G4/overlap bundle |
+| **105** | `7cd54ef` | Main PLAN Phases 4–6 BENCHMARKS anchor fixes |
+| **106** | `71f2175` | `make bench-preflight` → unified preflight bundle |
+| **107** | `7780e5a` | A6 `benchmark-large-dispatch`: preflight before verify (`--skip-overlap --tier`) |
+| **108** | `2bf2dce` | [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md) — activate `@spec` `8zb`/`7ow` after live JSON |
+| **109** | — | Verify exit **0** @ `2bf2dce` (18 passed; G2 skipped) |
+| **110** | — | Progress log sync (iterations 85–108) |
+| **111** | — | Session closure @ `2bf2dce`: harness complete; live G3–G5 pending |
+| **112** | `5f03f2b` | HANDOFF: optional `verify-large-benchmark-program.sh --with-g2` for Docker G2 |
+| **113** | `a779510` | Root README: expanded large-dataset benchmark section |
+| **114** | — | CHANGELOG epilogue 85–114; session metadata + `large-dataset-harness-v1` tag reference |
+
+### Tag `large-dataset-harness-v1`
+
+```bash
+git fetch --tags
+git checkout large-dataset-harness-v1   # → c7f66a3
+git show large-dataset-harness-v1       # annotated message
+```
+
+Tag marks **offline harness complete** (A1–A6, G2, G3/G4 operators, G5 renderer, G6 CI/nightly, verify gate, schemas, id-overlap mock). **Not included:** measured `large-aws-l1.json`, `tpuf-l1.json`, id-overlap live JSON, or publishable G5/COMPARISON rows. Post-tag commits are doc/operator polish only.
+
+**Checkout for live run:** use `main` @ `a779510` or later for [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) + [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md); use tag when bisecting harness baseline.
 
 ---
 
@@ -124,6 +180,9 @@ Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DA
 | **SLO gates** | `d516003`, `14f0980`, `161ee75` | `check-large-aws-gates.sh`, `check-tpuf-gates.sh`; wired into program chain |
 | **Publish helpers** | `38ca7c6`, `8480ccb`, `7e1f876` | `fill-comparison-from-report.sh`; partial render merge; id-overlap live UX |
 | **Session closure** | `7a38d7f`, `3b99883`, `f7643e8`, `5dd8175`, `af43e43`, `387b7d0` | Final verify @ `7a38d7f`; PLAN archive; Prometheus doc; live @spec placeholders |
+| **Milestone tag** | `c7f66a3`, `8a56cbd` | Pin benchmark deps; annotated `large-dataset-harness-v1` |
+| **Post-tag polish** | `d4a96f1` … `a779510` | Verify records, link/anchor sweeps, unified preflight, CI preflight, OPERATOR_AFTER_LIVE_RUN, README |
+| **Epilogue** | — | CHANGELOG iterations 85–114 table + tag reference (iter 114) |
 
 ---
 
@@ -131,6 +190,25 @@ Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DA
 
 | Date | Commit | Description |
 |------|--------|-------------|
+| 2026-06-04 | — | CHANGELOG epilogue iterations 85–114; session metadata @ 114 iterations |
+| 2026-06-04 | `a779510` | Root README: expanded large-dataset benchmark section |
+| 2026-06-04 | `5f03f2b` | HANDOFF: optional verify `--with-g2` for Docker MinIO G2 |
+| 2026-06-04 | `2bf2dce` | [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md) — post-live `@spec` `8zb`/`7ow` |
+| 2026-06-04 | `7780e5a` | CI: `preflight-large-benchmark-all` in `benchmark-large-dispatch` |
+| 2026-06-04 | `71f2175` | Makefile `bench-preflight` target |
+| 2026-06-04 | `7cd54ef` | PLAN Phases 4–6 BENCHMARKS anchor fixes |
+| 2026-06-04 | `dcf1b9a` | `preflight-large-benchmark-all.sh` G3/G4/overlap bundle |
+| 2026-06-04 | `b6dcae1` | Archive PLAN: G3 BENCHMARKS anchor fix |
+| 2026-06-04 | `d4ac309` | Secrets + tpuf README BENCHMARKS anchor fixes |
+| 2026-06-04 | `20e9a41` | BENCHMARKS/COMPARISON double-hyphen anchor fixes |
+| 2026-06-04 | `13e0593` | PLAN + benchmarks README relative link fixes |
+| 2026-06-04 | `c160a4b` | `bench_cold` module docs ↔ large-dataset program |
+| 2026-06-04 | `d4a96f1` | Verify gate @ `8a56cbd` (post-tag) |
+| 2026-06-04 | `8a56cbd` | Record `large-dataset-harness-v1` tag in HANDOFF |
+| 2026-06-04 | `c7f66a3` | Pin jsonschema + turbopuffer in `benchmarks/requirements.txt` |
+| 2026-06-04 | `69199ab` | HANDOFF scope audit (no UI assets) |
+| 2026-06-04 | `49c3431` | Harness TODO sweep complete |
+| 2026-06-04 | `1dc58b2` | Session 2026-06-04 summary in CHANGELOG |
 | 2026-06-04 | `f7643e8` | Archive PLAN Phases 1–7; Phase 8 harness status table |
 | 2026-06-04 | `5dd8175` | Optional Prometheus scrape during `bench-large` (BENCHMARKS) |
 | 2026-06-04 | `38ca7c6` | `fill-comparison-from-report.sh` for COMPARISON L1 publish |
@@ -230,5 +308,6 @@ Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DA
 - [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md) — operator PR summary (iter 71)
 - [README.md](README.md) — directory layout, JSON commit policy, script index
 - [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) — EC2 live run one-pager
+- [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md) — post-live JSON validation and `@spec` activation (iter 108)
 - [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md) — `queries.json` contract (iter 65)
 - [workloads/EMBEDDINGS.md](workloads/EMBEDDINGS.md) — vector generation semantics (iter 70)
