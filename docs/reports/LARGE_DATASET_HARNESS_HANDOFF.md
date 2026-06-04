@@ -3,7 +3,8 @@
 **Date:** 2026-06-04  
 **Program:** [PLAN_LARGE_DATASET_BENCHMARK.md](../PLAN_LARGE_DATASET_BENCHMARK.md) — apples-to-apples openpuffer vs managed turbopuffer on a shared synthetic workload (L1 default: **100k × 128-dim** cosine).  
 **Status:** **Offline harness COMPLETE** · **Live G3–G5 PENDING** (credentials + EC2)  
-**Offline harness:** no remaining gaps
+**Offline harness:** no remaining gaps  
+**Harness TODO sweep:** complete @ `1dc58b2` (2026-06-04) — no offline PLAN `[ ]` items; PLAN/BENCHMARKS have no `TODO`/`FIXME`/`defer`; remaining checklist `[ ]` is live G3–G5 only.
 
 ---
 
@@ -11,10 +12,10 @@
 
 All PLAN [verification checklist](../PLAN_LARGE_DATASET_BENCHMARK.md#verification-checklist-program-complete) rows are `[x]` for **offline** work (A1–A6 harness, G2 MinIO/CI, G6 regression, schemas, operators, exemplar G5). Unchecked `[ ]` items are **live only** (G3/G4/3.3 measured JSON, G5 measured report, [COMPARISON.md](../COMPARISON.md) L1 rows) and require EC2 + real AWS S3 + `TURBOPUFFER_API_KEY`.
 
-Re-verified on this branch (final verify before 6am, 2026-06-04):
+Re-verified on this branch (harness TODO sweep, 2026-06-04):
 
 ```bash
-./scripts/verify-large-benchmark-program.sh   # exit 0 @ 7a38d7f (2026-06-04T02:54:51Z; G2 skipped — pass --with-g2 for MinIO Docker parity)
+./scripts/verify-large-benchmark-program.sh   # exit 0 @ 1dc58b2 (2026-06-04T03:03:15Z; G2 skipped — pass --with-g2 for MinIO Docker parity)
 ```
 
 No further offline harness implementation is planned before operator live G3–G5.
