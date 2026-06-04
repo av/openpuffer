@@ -856,9 +856,35 @@ Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**r
 
 **Measured @ 50k (MinIO testcontainers, release, 2026-06-03):** `storage_roundtrips` **2**, `recall_at_10` **1.0**, `index_object_count` **175**, `ann_version` **3** (strong cold, empty `--cache-dir`). Gates also require `candidates_ratio` < 0.20 and `storage_roundtrips` ≤ 4.
 
+## ingest-large sequential batch ingest
+
+[`scripts/ingest-large.sh`](../scripts/ingest-large.sh) (A2 / G3) posts **one** `batch-*.json` at a time, sleeps per workload `ingest_cadence`, then polls meta until `index_cursor == wal_commit_seq` and `preferred_ann_version == 3`. Parallel multi-batch upsert is **not** implemented.
+
+### Why sequential (not parallel client batches)
+
+| Reason | What breaks if batches run in parallel |
+|--------|----------------------------------------|
+| **WAL commit ordering** | Each batch is one durable WAL segment; the server enforces **~1 commit/s/namespace** via `min_commit_interval` ([ARCHITECTURE.md § limits](ARCHITECTURE.md#limits)). `wal_commit_seq` advances **monotonically** with commits. Overlapping upserts still serialize at the commit lock but add retry/CAS noise and do not increase sustainable throughput — they only obscure which batch advanced `wal_commit_seq`. |
+| **Indexer lag observability** | `index_cursor` trails `wal_commit_seq` while the background indexer drains WAL. Sequential ingest + manifest sleep keeps **batch N → commit N → (optional) lag N** aligned with `ingest_timing.batch_runs[]`, [`diagnose-index-lag.sh`](../scripts/diagnose-index-lag.sh), and **`OPENPUFFER_INGEST_START_BATCH`** resume (1-based batch index after a failed POST). Parallel ingest would mix lag across commits and make “upsert done, indexer behind” vs “batch 7 failed” indistinguishable without extra instrumentation. |
+| **Benchmark comparability** | Large-tier JSON records per-batch latency and `ingest_batches_per_sec` under the documented cadence. Changing client parallelism without server support would skew `ingest_elapsed_secs` vs tpuf without changing the WAL-limited story ([§ Phase 4 metrics](#phase-4--metrics-matrix)). |
+
+**Operational default:** generator order `batch-00001.json` … `batch-NNNNN.json`, **~1.1s** sleep between batches (manifest `ingest_cadence.sleep_seconds_between_batches`), same as [§ 1M ingest cadence](#1m-ingest-cadence).
+
+**Env guard:** `OPENPUFFER_INGEST_PARALLEL` must be **`0` or unset**. Any other value makes `ingest-large.sh` exit before upsert (parallel path is intentionally unimplemented until covered by integration tests and explicit plan sign-off).
+
+```bash
+# Default — sequential only
+./scripts/ingest-large.sh --tier l1
+
+# Rejected (not implemented)
+OPENPUFFER_INGEST_PARALLEL=4 ./scripts/ingest-large.sh --tier l1
+```
+
+**Related:** index-timeout recovery ([§ Index timeout exceeded](#index-timeout-exceeded-ingest-largesh)), upsert resume (`OPENPUFFER_INGEST_START_BATCH`), index-only re-poll (`OPENPUFFER_INGEST_SKIP_UPSERT=1`). Plan default: [PLAN § Unresolved assumptions — Ingest batch concurrency](PLAN_LARGE_DATASET_BENCHMARK.md#unresolved-assumptions).
+
 ## 1M ingest cadence
 
-Operational ingest for the manual AWS gate (from [PLAN risks](PLAN_SPFRESH_AND_COLD_1M.md#risks-and-mitigations): stay under the per-namespace WAL commit rate).
+Operational ingest for the manual AWS gate (from [PLAN risks](PLAN_SPFRESH_AND_COLD_1M.md#risks-and-mitigations): stay under the per-namespace WAL commit rate). [`ingest-large.sh`](../scripts/ingest-large.sh) implements this cadence automatically for synthetic-128 tiers ([§ ingest-large sequential batch ingest](#ingest-large-sequential-batch-ingest)).
 
 | Step | Setting | Notes |
 |------|---------|--------|

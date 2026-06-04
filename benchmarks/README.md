@@ -179,7 +179,7 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 
 | Script | Description |
 |--------|-------------|
-| [ingest-large.sh](../scripts/ingest-large.sh) | Generator-driven upsert batches (10k/batch) + retry/resume + index poll → `preferred_ann_version == 3` |
+| [ingest-large.sh](../scripts/ingest-large.sh) | Sequential upsert batches (10k/batch, ~1.1s cadence) + retry/resume + index poll → `preferred_ann_version == 3`; `OPENPUFFER_INGEST_PARALLEL` must be 0 |
 | [diagnose-index-lag.sh](../scripts/diagnose-index-lag.sh) | Poll namespace meta (`index_cursor` vs `wal_commit_seq`); use when ingest index wait times out |
 | [bench-large.sh](../scripts/bench-large.sh) | Cold/filter/hybrid/warm queries → `large-aws-{tier}.json` |
 | [render-report.sh](../scripts/render-report.sh) | Merge openpuffer + tpuf JSON → `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |

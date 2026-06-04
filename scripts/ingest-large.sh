@@ -18,7 +18,8 @@
 # After ingest completes, run cold bench:
 #   ./scripts/bench-large.sh --tier l1
 #
-# See docs/PLAN_LARGE_DATASET_BENCHMARK.md (A2) and docs/BENCHMARKS.md § 1M ingest cadence.
+# See docs/PLAN_LARGE_DATASET_BENCHMARK.md (A2) and docs/BENCHMARKS.md § ingest-large sequential batches.
+# Upsert batches are strictly sequential (OPENPUFFER_INGEST_PARALLEL must be 0 or unset).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,6 +52,18 @@ if [[ "$ANN_VERSION" != "3" ]]; then
   echo "warning: OPENPUFFER_ANN_VERSION=${ANN_VERSION} (large-tier program expects 3)" >&2
 fi
 export OPENPUFFER_ANN_VERSION="$ANN_VERSION"
+
+ingest_large_guard_sequential_only() {
+  local parallel="${OPENPUFFER_INGEST_PARALLEL:-0}"
+  if [[ "$parallel" != "0" ]]; then
+    echo "OPENPUFFER_INGEST_PARALLEL=${parallel}: parallel ingest is not implemented." >&2
+    echo "  Large-tier ingest uses one upsert batch at a time (WAL commit ordering + index lag observability)." >&2
+    echo "  Unset OPENPUFFER_INGEST_PARALLEL or set OPENPUFFER_INGEST_PARALLEL=0." >&2
+    echo "  See docs/BENCHMARKS.md § ingest-large sequential batch ingest." >&2
+    exit 1
+  fi
+}
+ingest_large_guard_sequential_only
 
 # Tier defaults (wired to synthetic-128 manifests per plan).
 case "$TIER" in
@@ -170,6 +183,7 @@ run_dry_run() {
   echo "  listen=${LISTEN} ann_version=${ANN_VERSION}"
   echo "  index_timeout=${INDEX_TIMEOUT_SEC}s delete_first=${DELETE_FIRST}"
   echo "  serve_ready_timeout=$(large_benchmark_serve_ready_timeout_sec)s poll=$(large_benchmark_serve_ready_poll_interval_sec)s"
+  echo "  ingest_parallel=0 (sequential batches only)"
   echo "  start_batch=${START_BATCH} retry_max=${OPENPUFFER_INGEST_RETRY_MAX:-6} retry_base_ms=${OPENPUFFER_INGEST_RETRY_BASE_MS:-500}"
   if [[ -n "$mf" ]]; then
     echo "  manifest=${mf}"
