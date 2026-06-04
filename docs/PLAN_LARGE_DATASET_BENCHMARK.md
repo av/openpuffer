@@ -518,13 +518,16 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 
 | Topic | Options / tension | **Recommended default** | Where enforced |
 |-------|-------------------|-------------------------|----------------|
-| **AWS region** | Any S3 region vs tpuf region list | `us-east-1` bucket + EC2; `TURBOPUFFER_REGION=aws-us-east-1` | `large-benchmark-preflight.sh` warns on mismatch |
+| **AWS region** | Any S3 region vs tpuf region list | `us-east-1` bucket + EC2; `TURBOPUFFER_REGION=aws-us-east-1` (map: `us-east-1` → `aws-us-east-1`) | `preflight-tpuf.sh` + `large_preflight_tpuf_regions_align` |
+| **tpuf region / RTT** | Cross-region cold p50 skew | Run G4 from **same EC2** as G3; `preflight-tpuf.sh` RTT to `{region}.turbopuffer.com` | `preflight-tpuf.sh` |
+| **tpuf test org** | Production key on bench host | **Dedicated test org** per [Testing](https://turbopuffer.com/docs/testing); key env-only | Operator + `preflight-tpuf.sh` |
 | **EC2 instance** | CPU vs cost for decode/rerank | **`m7i.xlarge`** in same AZ as bucket (`c7i.xlarge` / `c6i.large` for L1-only); label via `OPENPUFFER_BENCH_HOST_LABEL` | `preflight-aws-ec2.sh` + report |
 | **Client placement** | localhost `serve` vs remote client | **localhost on bench EC2** (`OPENPUFFER_BENCH_CLIENT_MODE=localhost`) | Report + JSON `notes` |
 | **S3 bucket naming** | Shared vs per-run | `openpuffer-bench-<account>-<region>` dedicated prefix | Operator env |
 | **Namespace isolation** | Date-stamped vs fixed | openpuffer: `bench-large-{num_docs}` (ingest-large); tpuf: `bench-tpuf-YYYY-MM-DD-{tier}` | Scripts / env override |
 | **Id format** | `doc-prefix` vs `u64` | **`doc-prefix`** (`doc-{i}`) — committed L1–L3 manifests | `manifest.json`; do not regenerate with `u64` mid-program |
-| **Recall billing (tpuf)** | `num=20` on 1M costly | L1/L2: `num=20, top_k=10` from `queries.json`; L3: consider `num=10` with note in report | `recall_defaults` in queries.json |
+| **Recall billing (tpuf)** | `num=20` on 1M costly | L1: ~20 billed recall queries; L2: ~100; L3: ~200 (`num × ⌈docs/100k⌉` per [recall billing](https://turbopuffer.com/docs/recall#billing)); L3 optional `num=10` | `recall_defaults`; `preflight-tpuf.sh --tier` cost line |
+| **tpuf namespace cleanup** | Storage billed until delete | `TURBOPUFFER_BENCH_DELETE_FIRST=1` before ingest; `delete_all` in driver `finally` unless `SKIP_DELETE` | `run_benchmark.py`; `preflight-tpuf.sh` |
 | **Warm path** | Optional secondary metrics | **Defer** in first L1 report; cold vector-only is mandatory gate | Phase 4.3 optional |
 | **Hybrid/filter in report** | Scope creep vs G2 coverage | **Defer** beyond recall + cold vector in v1 report; G2 already exercises hybrid on MinIO | Phase 4.4 |
 | **Indexer wait timeout** | Wall clock on large tiers | Poll `index_cursor == wal_commit_seq` + `preferred_ann_version == 3`; allow **≥30 min** L1, **≥2 h** L3 | ingest-large meta poll |
@@ -556,7 +559,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 |------|:----:|----------|
 | MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` |
 | MinIO G2 CI job | [x] | `.github/workflows/ci.yml` → `g2-minio-correctness`; `67c7050` |
-| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); EC2/S3 depth: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh` |
+| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); G3: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4--turbopuffer-operator-setup), `preflight-tpuf.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
 | A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6` |
 | A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |

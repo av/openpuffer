@@ -55,7 +55,7 @@ See [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-pr
 |------|-------|---------|--------|
 | 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
 | 0b | G3 preflight | [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) `--preflight-only` | G2 subset + AWS `head-bucket` + workload manifest |
-| 0c | G4 preflight | [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--preflight-only` | G2 subset + `TURBOPUFFER_API_KEY` / region + workload manifest |
+| 0c | G4 preflight | [`scripts/preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) `--tier l1` or `run-tpuf-large-benchmark.sh --preflight-only` | API key, region vs S3/EC2, RTT, cost estimate, workload manifest |
 | 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
 | 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
 | 3 | tpuf | [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
@@ -88,11 +88,14 @@ See [§ G3 — EC2 + AWS S3 operator setup](#g3--ec2--aws-s3-operator-setup) for
 ```bash
 export TURBOPUFFER_API_KEY=tpuf_...
 export TURBOPUFFER_REGION=aws-us-east-1   # match OPENPUFFER_S3_REGION / EC2
-# optional: export TURBOPUFFER_BENCH_NAMESPACE=bench-tpuf-2026-06-04-l1
+export TURBOPUFFER_BENCH_DELETE_FIRST=1   # clear namespace before ingest (re-runs)
 
+./scripts/preflight-tpuf.sh --tier l1
 ./scripts/run-tpuf-large-benchmark.sh --tier l1
 # preflight only: ./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1
 ```
+
+See [§ G4 — turbopuffer operator setup](#g4--turbopuffer-operator-setup) for test org, billing guardrails, and artifact redaction.
 
 Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh). `bench-large.sh` refuses to write `large-aws-*.json` from a MinIO endpoint unless `OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1` or the results path contains `minio` / `example` / `schema`.
 
@@ -212,7 +215,7 @@ Trust policy for EC2:
 | **Prefer instance profile** | IAM role on EC2; [`preflight-aws-ec2.sh`](../scripts/preflight-aws-ec2.sh) exports short-lived keys for `openpuffer serve` via `aws configure export-credentials` |
 | **SSH only** | No public `serve` ingress; bench client hits `127.0.0.1:8080` |
 | **CI** | A6 / nightly stay dry-run; live AWS stays operator-owned |
-| **Artifacts** | `render-report.sh` redacts `OPENPUFFER_S3_SECRET_KEY` in logs |
+| **Artifacts** | `render-report.sh` redacts keys in reports; [`preflight-tpuf.sh --check-results`](../scripts/preflight-tpuf.sh) scans `tpuf-*.json` before commit |
 
 `openpuffer serve` currently requires explicit `--s3-access-key` / `--s3-secret-key` (static credential pair). On EC2 with a role, run `./scripts/preflight-aws-ec2.sh` before ingest so session keys are populated — do not bake long-lived IAM user keys into AMIs.
 
@@ -228,8 +231,10 @@ Trust policy for EC2:
 | 6 | EC2 preflight | `./scripts/preflight-aws-ec2.sh` (IMDS, region match, head-bucket, host label) |
 | 7 | Program preflight | `./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1` |
 | 8 | L1 measured run | `./scripts/run-aws-large-benchmark.sh --tier l1` → `benchmarks/results/large-aws-l1.json` |
-| 9 | G4 tpuf (same region) | `export TURBOPUFFER_API_KEY=… TURBOPUFFER_REGION=aws-us-east-1`; `./scripts/run-tpuf-large-benchmark.sh --tier l1` |
-| 10 | Report | Commit JSON; `./scripts/render-report.sh --date $(date +%F)`; update [COMPARISON.md](COMPARISON.md) |
+| 9 | G4 tpuf preflight | `./scripts/preflight-tpuf.sh --tier l1` (key, region, RTT, cost estimate) |
+| 10 | G4 tpuf measured | `export TURBOPUFFER_API_KEY=…`; `./scripts/run-tpuf-large-benchmark.sh --tier l1` → `tpuf-l1.json` |
+| 11 | Artifact scan | `./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json` |
+| 12 | Report | Commit JSON; `./scripts/render-report.sh --date $(date +%F)`; update [COMPARISON.md](COMPARISON.md) |
 
 **Wall-clock hints (L1 @ 100k):** ingest upsert ~2–3 min (WAL ~1 commit/s) + index wait often **10–30 min** on `m7i.xlarge` (depends on CPU and S3 PUT rate). Plan **≥45 min** before `bench-large` for first run.
 
@@ -269,6 +274,110 @@ source <(./scripts/preflight-aws-ec2.sh --export-creds)   # manual shell bootstr
 ```
 
 [`run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) invokes this automatically before AWS env validation.
+
+### G4 — turbopuffer operator setup
+
+Live G4 comparison JSON (`tpuf-{tier}.json`) must come from **managed turbopuffer** in the **same region** as the openpuffer AWS bench host (typically the G3 EC2 instance). Do not use MinIO timings or a mismatched tpuf region when interpreting cold p50.
+
+#### Dedicated test org and namespace isolation
+
+Per [turbopuffer Testing](https://turbopuffer.com/docs/testing):
+
+| Rule | Detail |
+|------|--------|
+| **Separate org** | Create a **dedicated test organization** in the turbopuffer dashboard — not production. Issue one API key per operator host. |
+| **Key storage** | `export TURBOPUFFER_API_KEY=tpuf_…` on the bench host only; never commit, log, or paste into JSON artifacts. |
+| **Namespace pattern** | Default `bench-tpuf-YYYY-MM-DD-{tier}` (`run_benchmark.py`); override with `TURBOPUFFER_BENCH_NAMESPACE` for parallel runs. |
+| **Ephemeral** | Namespace create is cheap; **delete after each run** (`delete_all` in driver `finally`). |
+
+```bash
+export TURBOPUFFER_API_KEY=tpuf_...          # test org key — never commit
+export TURBOPUFFER_REGION=aws-us-east-1      # see region table below
+export TURBOPUFFER_BENCH_DELETE_FIRST=1      # delete namespace before ingest (re-runs)
+```
+
+#### Region alignment with AWS bench (required)
+
+| `OPENPUFFER_S3_REGION` (AWS) | `TURBOPUFFER_REGION` (tpuf) | API host |
+|------------------------------|----------------------------|----------|
+| `us-east-1` | `aws-us-east-1` | `aws-us-east-1.turbopuffer.com` |
+| `us-east-2` | `aws-us-east-2` | `aws-us-east-2.turbopuffer.com` |
+| `us-west-2` | `aws-us-west-2` | `aws-us-west-2.turbopuffer.com` |
+| `eu-west-1` | `aws-eu-west-1` | `aws-eu-west-1.turbopuffer.com` |
+| `eu-central-1` | `aws-eu-central-1` | `aws-eu-central-1.turbopuffer.com` |
+
+**Fairness:** run G4 from the **same EC2** (or same AZ/region) as G3. [`preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) compares `TURBOPUFFER_REGION` to `OPENPUFFER_S3_REGION` and EC2 IMDS placement, and probes `curl` connect time to `{region}.turbopuffer.com`. If connect RTT **> ~50 ms**, fix region before trusting latency ratios.
+
+[`preflight-aws-ec2.sh`](../scripts/preflight-aws-ec2.sh) + [`preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) should both pass on the bench host before live spend.
+
+#### Billing and cost guardrails (L1 / L2 / L3)
+
+Order-of-magnitude **API volume** for one full driver run (not USD — check the turbopuffer dashboard). Recall billing follows [Recall billing](https://turbopuffer.com/docs/recall#billing): billed queries ≈ `max(num, num × ⌈docs / 100k⌉)` when `avg_recall ≥ 0.9`.
+
+| Tier | Docs | Write batches (~10k) | Cold | Filter+hybrid | Recall billed (`num=20`) | Optional `--warm` |
+|------|------|----------------------|------|---------------|--------------------------|-------------------|
+| **L1** | 100k | ~10 | 7 | 10 | ~20 | +20 vector queries |
+| **L2** | 500k | ~50 | 7 | 10 | ~100 | +20 |
+| **L3** | 1M | ~100 | 7 | 10 | ~200 | +20 |
+
+**Operator guardrails:**
+
+| Guardrail | Env / action |
+|-----------|----------------|
+| Start at **L1** | Prove gates + report pipeline before L2/L3 spend |
+| **DELETE_FIRST** | `TURBOPUFFER_BENCH_DELETE_FIRST=1` (default in `run-tpuf-large-benchmark.sh`) — `delete_all` before ingest on re-runs |
+| **DELETE after** | Driver `finally` calls `delete_all` unless `TURBOPUFFER_BENCH_SKIP_DELETE=1` (debug only; leaves storage billed) |
+| **Recall cost** | L1/L2: `recall_defaults` `num=20`; L3: consider `num=10` with methodology note |
+| **No SKIP_DELETE in CI** | Never set `SKIP_DELETE` in automation |
+
+Print tier estimate: `./scripts/preflight-tpuf.sh --tier l1` (add `--warm` for warm-line estimate).
+
+#### API key redaction in artifacts
+
+| Surface | Redaction |
+|---------|-----------|
+| **Reports** | [`render-report.sh`](../scripts/render-report.sh) redacts `tpuf_*`, `TURBOPUFFER_API_KEY=`, and `OPENPUFFER_S3_SECRET_KEY=` in markdown |
+| **JSON results** | `tpuf-*.json` must **not** contain API keys (driver never writes them). Before `git add`: `./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json` |
+| **Shell history** | Prefer env exports on EC2; do not echo keys in `notes` fields |
+
+If a key was accidentally pasted into JSON, re-run the benchmark or scrub with the same patterns as `render-report.sh` before commit.
+
+#### First-time operator checklist (G4)
+
+| # | Step | Command / note |
+|---|------|----------------|
+| 1 | G2 green | `./scripts/run-minio-correctness-gates.sh` |
+| 2 | Test org + API key | Dashboard → dedicated org → API key in env only |
+| 3 | Region | `TURBOPUFFER_REGION` matches [table above](#region-alignment-with-aws-bench-required) and G3 `OPENPUFFER_S3_REGION` |
+| 4 | tpuf preflight | `./scripts/preflight-tpuf.sh --tier l1` |
+| 5 | Program preflight | `./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1` |
+| 6 | L1 measured | `./scripts/run-tpuf-large-benchmark.sh --tier l1` → `benchmarks/results/tpuf-l1.json` |
+| 7 | Artifact scan | `./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json` |
+| 8 | Overlap + report | After G3 JSON: `run-id-overlap-spotcheck.sh`; `render-report.sh` |
+
+**Wall-clock hints (L1 @ 100k):** ingest often **1–5 min** (10× 10k writes); index wait varies; cold+recall+secondary queries are minutes, not hours. L3 ingest+recall can be **tens of minutes** and **~200** billed recall queries — run only after L1 is green.
+
+#### turbopuffer preflight script
+
+[`scripts/preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) — validates:
+
+- `TURBOPUFFER_API_KEY` present (prints `tpuf_` prefix only)
+- `TURBOPUFFER_REGION` defaults from `OPENPUFFER_S3_REGION` when unset
+- EC2 placement region vs tpuf region (when on EC2)
+- Workload `manifest.json` / `queries.json` for tier
+- Python `turbopuffer` package
+- Cost estimate + DELETE_FIRST / SKIP_DELETE warnings
+- Optional RTT to `{region}.turbopuffer.com`
+
+```bash
+./scripts/preflight-tpuf.sh --tier l1
+./scripts/preflight-tpuf.sh --tier l3 --warm              # include warm query estimate
+./scripts/preflight-tpuf.sh --tier l1 --warn-only           # region mismatch → warning
+./scripts/preflight-tpuf.sh --skip-rtt                      # offline key/region/workload
+./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
+```
+
+[`run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) invokes this automatically before `run_benchmark.py` (unless dry-run).
 
 ### GitHub Actions — manual dry-run preflight (A6)
 

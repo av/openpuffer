@@ -62,6 +62,7 @@ def _l1_ctx(**overrides: object) -> rb.RunContext:
         enforce_gates=True,
         skip_ingest=False,
         skip_delete=False,
+        delete_first=True,
         warm_mode=False,
         warm_runs=20,
         warm_query_top_k=10,

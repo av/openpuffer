@@ -59,6 +59,7 @@ class RunContext:
     enforce_gates: bool
     skip_ingest: bool
     skip_delete: bool
+    delete_first: bool
     warm_mode: bool
     warm_runs: int
     warm_query_top_k: int
@@ -401,6 +402,7 @@ def build_context(args: argparse.Namespace) -> RunContext:
     enforce_gates = os.environ.get("TURBOPUFFER_BENCH_ENFORCE_GATES", "1") != "0"
     skip_ingest = bool(args.skip_ingest or os.environ.get("TURBOPUFFER_BENCH_SKIP_INGEST"))
     skip_delete = bool(args.skip_delete or os.environ.get("TURBOPUFFER_BENCH_SKIP_DELETE"))
+    delete_first = os.environ.get("TURBOPUFFER_BENCH_DELETE_FIRST", "1") not in ("0", "false", "no")
 
     return RunContext(
         tier=tier,
@@ -424,6 +426,7 @@ def build_context(args: argparse.Namespace) -> RunContext:
         enforce_gates=enforce_gates,
         skip_ingest=skip_ingest,
         skip_delete=skip_delete,
+        delete_first=delete_first,
         warm_mode=warm_mode,
         warm_runs=warm_runs,
         warm_query_top_k=warm_query_top_k,
@@ -539,7 +542,10 @@ def dry_run(ctx: RunContext) -> None:
     print(f"  region={ctx.region} results={ctx.results_path}")
     print(f"  cold_runs={ctx.cold_runs} primary_query={ctx.primary_query_name}")
     print(f"  recall_num={ctx.recall_num} index_timeout={ctx.index_timeout_sec}s")
-    print(f"  enforce_gates={ctx.enforce_gates} skip_ingest={ctx.skip_ingest} warm_mode={ctx.warm_mode}")
+    print(
+        f"  enforce_gates={ctx.enforce_gates} skip_ingest={ctx.skip_ingest} "
+        f"delete_first={ctx.delete_first} skip_delete={ctx.skip_delete} warm_mode={ctx.warm_mode}"
+    )
     print(f"  filter_queries={len(ctx.filter_specs)} hybrid_queries={len(ctx.hybrid_specs)}")
     if ctx.warm_mode:
         print(
@@ -597,6 +603,12 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
 
     try:
         if not ctx.skip_ingest:
+            if ctx.delete_first:
+                print(f"DELETE_FIRST: clearing namespace {ctx.namespace} before ingest…")
+                try:
+                    ns.delete_all()
+                except Exception as exc:  # noqa: BLE001 — namespace may not exist yet
+                    print(f"  delete_all (pre-ingest): {exc}", file=sys.stderr)
             print(
                 f"tpuf ingest: tier={ctx.tier} namespace={ctx.namespace} "
                 f"docs={ctx.num_docs} region={ctx.region}"

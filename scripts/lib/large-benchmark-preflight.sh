@@ -207,6 +207,94 @@ large_preflight_tpuf_python_deps() {
   return 1
 }
 
+# Map AWS S3 region (e.g. us-east-1) → turbopuffer region id (e.g. aws-us-east-1).
+large_preflight_tpuf_region_for_s3() {
+  local aws="${1,,}"
+  case "$aws" in
+    us-east-1) echo "aws-us-east-1" ;;
+    us-east-2) echo "aws-us-east-2" ;;
+    us-west-2) echo "aws-us-west-2" ;;
+    eu-west-1) echo "aws-eu-west-1" ;;
+    eu-west-2) echo "aws-eu-west-2" ;;
+    eu-central-1) echo "aws-eu-central-1" ;;
+    ap-southeast-2) echo "aws-ap-southeast-2" ;;
+    ap-south-1) echo "aws-ap-south-1" ;;
+    ca-central-1) echo "aws-ca-central-1" ;;
+    sa-east-1) echo "aws-sa-east-1" ;;
+    gcp-us-central1|gcp-*) echo "$aws" ;;
+    aws-*) echo "$aws" ;;
+    *)
+      echo "aws-${aws}"
+      ;;
+  esac
+}
+
+large_preflight_tpuf_regions_align() {
+  local s3_region="${OPENPUFFER_S3_REGION:-}"
+  local tpuf_region="${TURBOPUFFER_REGION:-}"
+  if [[ -z "$s3_region" || -z "$tpuf_region" ]]; then
+    return 0
+  fi
+  local expected
+  expected="$(large_preflight_tpuf_region_for_s3 "$s3_region")"
+  if [[ "${tpuf_region,,}" != "${expected,,}" ]]; then
+    echo "preflight-tpuf: TURBOPUFFER_REGION=${tpuf_region} != expected ${expected} for OPENPUFFER_S3_REGION=${s3_region}" >&2
+    return 1
+  fi
+  echo "preflight-tpuf: TURBOPUFFER_REGION aligns with OPENPUFFER_S3_REGION (${s3_region})"
+  return 0
+}
+
+# Estimated API volume before a live G4 run (recall billing per turbopuffer recall#billing).
+large_preflight_tpuf_cost_estimate() {
+  local tier="$1"
+  local warm="${2:-0}"
+  local docs batches recall_num recall_billed cold filter hybrid warm_runs total_queries
+  case "$tier" in
+    l1) docs=100000; batches=10 ;;
+    l2) docs=500000; batches=50 ;;
+    l3) docs=1000000; batches=100 ;;
+    *)
+      echo "preflight-tpuf: unknown tier ${tier} for cost estimate" >&2
+      return 1
+      ;;
+  esac
+  recall_num=20
+  recall_billed=$(( recall_num * ( (docs + 99999) / 100000 ) ))
+  [[ "$recall_billed" -lt "$recall_num" ]] && recall_billed=$recall_num
+  cold=7
+  filter=6
+  hybrid=4
+  warm_runs=0
+  [[ "$warm" == "1" ]] && warm_runs=20
+  total_queries=$(( cold + filter + hybrid + recall_billed + warm_runs + 1 ))
+  cat <<EOF
+preflight-tpuf cost estimate (tier=${tier}, docs=${docs}; not USD — see turbopuffer dashboard):
+  write batches (~10k rows): ~${batches} namespace.write calls
+  cold vector queries: ${cold}
+  filter + hybrid queries: $(( filter + hybrid )) (1× each, strong)
+  recall billed queries (num=${recall_num}): ~${recall_billed} (docs/100k × num, min num)
+  warm vector queries (optional --warm): ${warm_runs}
+  order-of-magnitude query calls (excl. ingest index polls): ~${total_queries}
+  guardrails: start L1; set TURBOPUFFER_BENCH_DELETE_FIRST=1; do not set TURBOPUFFER_BENCH_SKIP_DELETE unless debugging
+EOF
+}
+
+# Fail if benchmark JSON still contains secret-like substrings (before git commit).
+large_preflight_artifact_secret_scan() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    echo "preflight-tpuf: artifact not found: ${path}" >&2
+    return 1
+  fi
+  if grep -qE 'tpuf_[A-Za-z0-9_-]{8,}|TURBOPUFFER_API_KEY=|OPENPUFFER_S3_SECRET_KEY=' "$path" 2>/dev/null; then
+    echo "preflight-tpuf: possible API key/secret in ${path} — scrub before commit (render-report redact patterns)" >&2
+    return 1
+  fi
+  echo "preflight-tpuf: artifact secret scan OK (${path})"
+  return 0
+}
+
 large_preflight_print_tpuf_operator_env() {
   cat <<'EOF'
 Required for live G4 turbopuffer run (same region as openpuffer AWS bench host):
@@ -214,14 +302,19 @@ Required for live G4 turbopuffer run (same region as openpuffer AWS bench host):
   export TURBOPUFFER_REGION=aws-us-east-1    # align with OPENPUFFER_S3_REGION / EC2
   export TURBOPUFFER_BENCH_TIER=l1           # l1|l2|l3
 
+Recommended guardrails:
+  export TURBOPUFFER_BENCH_DELETE_FIRST=1    # delete namespace before ingest (re-runs)
+  ./scripts/preflight-tpuf.sh --tier l1      # region RTT + cost estimate + key check
+
 Optional:
   export TURBOPUFFER_BENCH_NAMESPACE=bench-tpuf-YYYY-MM-DD-l1
   export TURBOPUFFER_BENCH_RESULTS=benchmarks/results/tpuf-l1.json
   export TURBOPUFFER_BENCH_ENFORCE_GATES=1   # recall@10 >= 0.85 + index up-to-date
-  export TURBOPUFFER_BENCH_SKIP_DELETE=1     # keep namespace for debug
+  export TURBOPUFFER_BENCH_SKIP_DELETE=1     # keep namespace after run (debug only; $)
 
-After G3 large-aws JSON (or in parallel on a host with API access):
+After G3 large-aws JSON (or in parallel on same EC2 with API access):
   ./scripts/run-tpuf-large-benchmark.sh --tier l1
   ./scripts/run-tpuf-large-benchmark.sh --tier l1 --warm   # adds hint_cache_warm + eventual latencies
+  ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
 EOF
 }

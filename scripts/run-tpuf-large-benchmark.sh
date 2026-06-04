@@ -28,20 +28,25 @@ SKIP_G2=0
 SKIP_INGEST=0
 WARM_MODE=0
 
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run|-n) DRY_RUN=1 ;;
-    --preflight-only) PREFLIGHT_ONLY=1 ;;
-    --skip-g2) SKIP_G2=1 ;;
-    --skip-ingest) SKIP_INGEST=1 ;;
-    --warm) WARM_MODE=1 ;;
-    --tier=*) TIER="${arg#*=}" ;;
-    --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run|-n) DRY_RUN=1; shift ;;
+    --preflight-only) PREFLIGHT_ONLY=1; shift ;;
+    --skip-g2) SKIP_G2=1; shift ;;
+    --skip-ingest) SKIP_INGEST=1; shift ;;
+    --warm) WARM_MODE=1; shift ;;
+    --tier=*) TIER="${1#*=}"; shift ;;
+    --tier)
+      shift
+      TIER="${1:?--tier requires l1|l2|l3}"
+      shift
+      ;;
     -h|--help)
       sed -n '2,20p' "$0"
       large_preflight_print_tpuf_operator_env
       exit 0
       ;;
+    *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
@@ -85,8 +90,17 @@ if [[ "$SKIP_G2" != "1" ]]; then
   large_preflight_run_g2_subset "$ROOT"
 fi
 
-large_preflight_validate_tpuf_env
-large_preflight_tpuf_python_deps "$ROOT"
+if [[ -x "$ROOT/scripts/preflight-tpuf.sh" ]]; then
+  tpuf_preflight_args=(--tier "$TIER")
+  [[ "$WARM_MODE" == "1" ]] && tpuf_preflight_args+=(--warm)
+  "$ROOT/scripts/preflight-tpuf.sh" "${tpuf_preflight_args[@]}" || {
+    echo "preflight-tpuf failed (API key/region/RTT); fix or use --preflight-only after resolving" >&2
+    exit 1
+  }
+else
+  large_preflight_validate_tpuf_env
+  large_preflight_tpuf_python_deps "$ROOT"
+fi
 
 echo "run-tpuf-large-benchmark: tier=${TIER} region=${REGION} results=${RESULTS}"
 if [[ -n "${TURBOPUFFER_BENCH_NAMESPACE:-}" ]]; then
@@ -102,6 +116,7 @@ export TURBOPUFFER_BENCH_TIER="$TIER"
 export TURBOPUFFER_BENCH_RESULTS="$RESULTS"
 export TURBOPUFFER_REGION="$REGION"
 export TURBOPUFFER_BENCH_ENFORCE_GATES="${TURBOPUFFER_BENCH_ENFORCE_GATES:-1}"
+export TURBOPUFFER_BENCH_DELETE_FIRST="${TURBOPUFFER_BENCH_DELETE_FIRST:-1}"
 
 TPUF_ARGS=(--tier "$TIER")
 if [[ "$SKIP_INGEST" == "1" ]]; then
