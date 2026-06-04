@@ -143,10 +143,8 @@ jobs:
         with:
           shared-key: benchmark-large-live
 
-      - name: Python tooling (tpuf driver + pytest)
-        run: |
-          python3 -m pip install --upgrade pip
-          pip install -r benchmarks/tpuf_driver/requirements.txt pytest
+      - name: Python tooling (benchmark harness)
+        run: ./scripts/install-benchmark-python-deps.sh
 
       - name: Mask secrets
         run: |

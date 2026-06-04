@@ -245,7 +245,7 @@ large_preflight_tpuf_python_deps() {
     echo "preflight: turbopuffer Python package OK"
     return 0
   fi
-  local req="${1}/benchmarks/tpuf_driver/requirements.txt"
+  local req="${1}/benchmarks/requirements.txt"
   if [[ -f "$req" ]]; then
     echo "preflight: installing turbopuffer driver deps from ${req}…" >&2
     python3 -m pip install -q -r "$req"
@@ -256,7 +256,7 @@ large_preflight_tpuf_python_deps() {
     echo "preflight: turbopuffer Python package OK (installed)"
     return 0
   fi
-  echo "preflight: missing turbopuffer package; pip install -r benchmarks/tpuf_driver/requirements.txt" >&2
+  echo "preflight: missing turbopuffer package; ./scripts/install-benchmark-python-deps.sh" >&2
   return 1
 }
 

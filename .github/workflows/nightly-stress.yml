@@ -88,8 +88,8 @@ jobs:
       - name: Build openpuffer (release, integration + bench)
         run: cargo build --release --features integration,bench
 
-      - name: Python tooling (pytest)
-        run: python3 -m pip install --upgrade pip pytest
+      - name: Python tooling (benchmark harness)
+        run: ./scripts/install-benchmark-python-deps.sh
 
       - name: G2 MinIO correctness gates
         env:

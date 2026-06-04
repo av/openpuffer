@@ -7,6 +7,7 @@ Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and re
 ```
 benchmarks/
 ├── README.md                 ← this hub
+├── requirements.txt          # consolidated Python deps (all harness modules)
 ├── workloads/
 │   ├── generate_synthetic.py # deterministic manifest + queries + spot_check
 │   ├── test_generate_synthetic.py
@@ -17,7 +18,7 @@ benchmarks/
 ├── tpuf_driver/              # Python G4 driver (same workload as ingest/bench)
 │   ├── run_benchmark.py
 │   ├── test_run_benchmark.py
-│   └── requirements.txt
+│   └── requirements.txt      # compat shim → ../requirements.txt
 ├── cross_check/              # Phase 3.3 id overlap spot-check
 │   ├── id_overlap.py
 │   ├── run_spotcheck.py
@@ -39,6 +40,24 @@ benchmarks/
 | `.facts` | `@spec` facts tagged `bench-large`, `bench-tpuf` |
 
 Subdirectory docs: [workloads/synthetic-128/README.md](workloads/synthetic-128/README.md), [tpuf_driver/README.md](tpuf_driver/README.md), [cross_check/README.md](cross_check/README.md), [report/README.md](report/README.md).
+
+## Python dependencies
+
+All in-tree benchmark Python (workloads tests, tpuf driver, id-overlap, JSON Schema validation) shares one lockfile:
+
+| Package | Used by |
+|---------|---------|
+| `pytest` | `workloads/`, `tpuf_driver/`, `cross_check/` tests |
+| `jsonschema` | [`scripts/validate-benchmark-json.sh`](../scripts/validate-benchmark-json.sh) |
+| `turbopuffer` | G4 driver + live id-overlap |
+| `httpx` | tpuf driver offline tests |
+
+```bash
+./scripts/install-benchmark-python-deps.sh
+# or: pip install -r benchmarks/requirements.txt
+```
+
+[`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) and CI workflows call the install script (or equivalent `pip install -r`) before pytest and schema gates. Legacy path `benchmarks/tpuf_driver/requirements.txt` is a shim to `benchmarks/requirements.txt`.
 
 ## JSON artifacts — committed vs operator-only
 
@@ -94,6 +113,12 @@ git add -f benchmarks/results/tpuf-l1.json benchmarks/results/id-overlap-l1.json
 ## Operator quick-start
 
 Three steps: **verify locally** → **dry-run the program** → **live on EC2** (AWS + tpuf creds).
+
+### 0. Python deps (once per host)
+
+```bash
+./scripts/install-benchmark-python-deps.sh
+```
 
 ### 1. Verify harness (no cloud spend)
 

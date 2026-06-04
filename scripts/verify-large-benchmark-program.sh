@@ -17,6 +17,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/lib/benchmark-python-deps.sh
+source "$ROOT/scripts/lib/benchmark-python-deps.sh"
+
 SKIP_L2_L3=0
 WITH_G2=0
 SKIP_FACTS=0
@@ -43,15 +46,10 @@ step() {
   echo "==> $*"
 }
 
-ensure_pytest() {
-  if ! python3 -m pytest --version >/dev/null 2>&1; then
-    echo "installing pytest…" >&2
-    python3 -m pip install --quiet --upgrade pip pytest
-  fi
-}
+step "Python deps (benchmarks/requirements.txt)"
+ensure_benchmark_python_deps "$ROOT"
 
 step "pytest workloads (generate_synthetic)"
-ensure_pytest
 python3 -m pytest benchmarks/workloads/test_generate_synthetic.py -q
 
 step "pytest tpuf driver (offline)"

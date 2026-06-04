@@ -126,7 +126,7 @@ def run_live(
         from turbopuffer import Turbopuffer
     except ImportError as exc:
         raise SystemExit(
-            "pip install -r benchmarks/tpuf_driver/requirements.txt"
+            "pip install -r benchmarks/requirements.txt"
         ) from exc
 
     client = Turbopuffer(api_key=api_key, region=tpuf_region)

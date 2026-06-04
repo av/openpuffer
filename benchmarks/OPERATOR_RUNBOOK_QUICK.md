@@ -16,7 +16,8 @@ One-page checklist for **live** `large-aws-*.json` / `tpuf-*.json`. Full IAM, tr
 ```bash
 git clone <repo> && cd openpuffer
 cargo build --release --features integration   # or copy release binary
-dnf install -y jq curl python3 awscli          # or apt equivalent
+dnf install -y jq curl python3 python3-pip awscli   # or apt equivalent
+./scripts/install-benchmark-python-deps.sh          # pytest, jsonschema, turbopuffer, httpx
 
 # Clear dev MinIO — required for G3
 unset OPENPUFFER_S3_ENDPOINT OPENPUFFER_S3_ACCESS_KEY OPENPUFFER_S3_SECRET_KEY

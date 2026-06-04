@@ -358,7 +358,7 @@ sequenceDiagram
 
 - Rust **release** `openpuffer` with features `bench`, `integration` as needed.
 - `curl`, `jq`, `python3`, optional `aws` CLI.
-- Python: `turbopuffer` SDK (`pip install turbopuffer`), `pytest` for driver tests.
+- Python: `./scripts/install-benchmark-python-deps.sh` (`benchmarks/requirements.txt`: `turbopuffer`, `pytest`, `jsonschema`, `httpx`).
 - Docker: only for **MinIO** preflight (`./scripts/run-integration-s3.sh`), not for AWS comparison runs.
 
 ### Baseline inventory (already in repo)

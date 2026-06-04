@@ -24,6 +24,7 @@ Wrapper: `./scripts/run-id-overlap-spotcheck.sh --tier l1 [--dry-run|--mock]`
 ## Tests
 
 ```bash
+./scripts/install-benchmark-python-deps.sh   # once per host
 python3 -m pytest benchmarks/cross_check/test_id_overlap_spotcheck.py -q
 ```
 

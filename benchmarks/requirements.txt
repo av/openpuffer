@@ -1,0 +1,19 @@
+# Consolidated Python deps for the large-dataset benchmark harness.
+# Covers: workloads (pytest), tpuf_driver (turbopuffer, httpx), cross_check (pytest),
+#         validate-benchmark-json.sh (jsonschema).
+#
+# Install:
+#   ./scripts/install-benchmark-python-deps.sh
+#   pip install -r benchmarks/requirements.txt
+
+# G4 live driver + Phase 3.3 overlap (live mode)
+turbopuffer>=2.0,<3
+
+# tpuf driver offline tests (HTTP client surface)
+httpx>=0.27,<1
+
+# Offline harness: workloads + tpuf_driver + cross_check
+pytest>=8.0,<10
+
+# scripts/validate-benchmark-json.sh (JSON Schema)
+jsonschema>=4.23,<5

@@ -13,6 +13,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/lib/benchmark-python-deps.sh
+source "$ROOT/scripts/lib/benchmark-python-deps.sh"
+
 SCHEMA_DIR="$ROOT/benchmarks/report/schema"
 OP_SCHEMA="$SCHEMA_DIR/large-aws-l1.schema.json"
 TPUF_SCHEMA="$SCHEMA_DIR/tpuf-l1.schema.json"
@@ -20,10 +23,7 @@ INGEST_SCHEMA="$SCHEMA_DIR/ingest-large-l1.schema.json"
 OVERLAP_SCHEMA="$SCHEMA_DIR/id-overlap-l1.schema.json"
 
 ensure_jsonschema() {
-  if ! python3 -c "import jsonschema" >/dev/null 2>&1; then
-    echo "validate-benchmark-json: installing jsonschema…" >&2
-    python3 -m pip install --quiet --upgrade jsonschema
-  fi
+  ensure_benchmark_python_deps "$ROOT"
 }
 
 collect_default_paths() {

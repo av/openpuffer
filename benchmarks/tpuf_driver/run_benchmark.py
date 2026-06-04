@@ -862,7 +862,7 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
         from turbopuffer import Turbopuffer
     except ImportError as exc:
         raise SystemExit(
-            "install turbopuffer: pip install -r benchmarks/tpuf_driver/requirements.txt"
+            "install turbopuffer: pip install -r benchmarks/requirements.txt"
         ) from exc
 
     cfg = gen.WorkloadConfig(

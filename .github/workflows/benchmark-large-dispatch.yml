@@ -39,8 +39,8 @@ jobs:
         with:
           shared-key: benchmark-large-dispatch
 
-      - name: Python tooling (pytest)
-        run: python3 -m pip install --upgrade pip pytest
+      - name: Python tooling (benchmark harness)
+        run: ./scripts/install-benchmark-python-deps.sh
 
       - name: Install facts CLI
         run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh

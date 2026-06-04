@@ -8,7 +8,7 @@ Python harness that loads the **same synthetic-128 workload** as `scripts/ingest
 
 - `TURBOPUFFER_API_KEY` — dedicated test org per [Testing](https://turbopuffer.com/docs/testing)
 - `TURBOPUFFER_REGION` — same region as the openpuffer AWS bench host (default `aws-us-east-1`; map `us-east-1` → `aws-us-east-1`)
-- Python 3.9+ and `pip install -r benchmarks/tpuf_driver/requirements.txt`
+- Python 3.9+ and `./scripts/install-benchmark-python-deps.sh` (or `pip install -r benchmarks/requirements.txt`)
 - Preflight: [`scripts/preflight-tpuf.sh`](../../scripts/preflight-tpuf.sh) (region RTT, cost estimate, artifact scan)
 
 ## Usage
