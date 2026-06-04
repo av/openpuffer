@@ -64,6 +64,7 @@ python3 -m pytest benchmarks/cross_check/test_id_overlap_spotcheck.py -q
 step "render-report offline tests"
 ./scripts/test_render-report.sh
 ./scripts/test_render-report-measured.sh
+./scripts/test_render-report-partial.sh
 
 step "shellcheck benchmark + report/gates scripts"
 ./scripts/test-shellcheck-benchmark-scripts.sh

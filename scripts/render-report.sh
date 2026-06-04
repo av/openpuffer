@@ -6,6 +6,7 @@
 #   ./scripts/render-report.sh --tier l2
 #   ./scripts/render-report.sh --all-tiers        # l1,l2,l3 where JSON exists
 #   ./scripts/render-report.sh --dry-run          # fixtures, no required live artifacts
+#   ./scripts/render-report.sh --allow-partial    # warn + single-side tables when one JSON missing
 #   ./scripts/render-report.sh --date 2026-06-04 --output docs/reports/BENCHMARK_VS_TURBOPUFFER_2026-06-04.md
 #
 # Inputs (per tier):
@@ -225,6 +226,72 @@ print(f"render-report: schema OK tier={tier} op={op_path} tpuf={tpuf_path}", fil
 PY
 }
 
+validate_measured_json_single() {
+  local side="$1" tier="$2" path="$3"
+  python3 - "$side" "$tier" "$path" <<'PY'
+import json, sys
+from pathlib import Path
+
+side, tier, path = sys.argv[1:4]
+
+OP_REQUIRED = (
+    "benchmark", "tier", "environment", "workload_dir", "namespace",
+    "namespace_docs", "dimensions", "seed", "embedding_fn",
+    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
+    "index_cursor_eq_wal_commit_seq",
+)
+TPUF_REQUIRED = (
+    "benchmark", "tier", "environment", "workload_dir", "namespace",
+    "namespace_docs", "dimensions", "seed", "embedding_fn",
+    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
+    "index_up_to_date",
+)
+REQUIRED = OP_REQUIRED if side == "op" else TPUF_REQUIRED
+LABEL = "openpuffer" if side == "op" else "turbopuffer"
+
+p = Path(path)
+if not p.is_file():
+    raise SystemExit(f"render-report: missing JSON: {path}")
+try:
+    data = json.loads(p.read_text())
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"render-report: invalid JSON {path}: {exc}") from exc
+
+missing = [k for k in REQUIRED if k not in data or data[k] is None]
+if missing:
+    raise SystemExit(
+        f"render-report: {LABEL} schema missing fields in {path}: {', '.join(missing)}"
+    )
+if str(data.get("tier")) != tier:
+    raise SystemExit(
+        f"render-report: {LABEL} tier={data.get('tier')!r} does not match --tier {tier}"
+    )
+
+if side == "op" and "minio" in str(data.get("environment", "")).lower():
+    print(
+        f"render-report: warning openpuffer environment={data.get('environment')!r} "
+        "(not aws-s3; measured COMPARISON rows expect live AWS JSON)",
+        file=sys.stderr,
+    )
+
+print(f"render-report: schema OK tier={tier} {LABEL}={path} (partial, single side)", file=sys.stderr)
+PY
+}
+
+json_file_exists() {
+  [[ -n "${1:-}" && -f "$1" ]]
+}
+
+primary_json_file() {
+  if json_file_exists "$1"; then
+    echo "$1"
+  elif json_file_exists "$2"; then
+    echo "$2"
+  else
+    echo ""
+  fi
+}
+
 json_path_for_tier() {
   local side="$1" tier="$2"
   if [[ "$side" == "op" ]]; then
@@ -251,12 +318,30 @@ fixture_path_for_tier() {
   fi
 }
 
+explicit_json_requested() {
+  local side="$1" tier="$2"
+  if [[ "$tier" != "$TIER" || "$ALL_TIERS" == "1" ]]; then
+    return 1
+  fi
+  if [[ "$side" == "op" && -n "$OP_JSON" ]]; then
+    return 0
+  fi
+  if [[ "$side" == "tpuf" && -n "$TPUF_JSON" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 resolve_input_json() {
   local side="$1" tier="$2"
   local primary fallback
   primary="$(json_path_for_tier "$side" "$tier")"
   if [[ -f "$primary" ]]; then
     echo "$primary"
+    return 0
+  fi
+  if explicit_json_requested "$side" "$tier"; then
+    echo ""
     return 0
   fi
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -326,7 +411,32 @@ fmt_recall() {
 
 jq_field() {
   local file="$1" filter="$2"
+  if ! json_file_exists "$file"; then
+    echo "null"
+    return 0
+  fi
   jq -r "$filter // \"null\"" "$file" 2>/dev/null || echo "null"
+}
+
+render_partial_notice() {
+  local tier="$1" have_op="$2" have_tpuf="$3"
+  local missing_side missing_path present_side
+  if [[ "$have_op" == "1" && "$have_tpuf" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$have_op" == "1" ]]; then
+    present_side="openpuffer"
+    missing_side="turbopuffer"
+    missing_path="benchmarks/results/tpuf-${tier}.json"
+  else
+    present_side="turbopuffer"
+    missing_side="openpuffer"
+    missing_path="benchmarks/results/large-aws-${tier}.json"
+  fi
+  cat <<EOF
+> **PARTIAL REPORT (tier ${tier})** — only **${present_side}** benchmark JSON is present. Missing: \`${missing_path}\` (run the other engine or pass \`--openpuffer-json\` / \`--tpuf-json\`). Comparison ratios, auto-interpretation, and ${missing_side} columns show **—**. Do not publish partial rows to [COMPARISON.md](../COMPARISON.md) until both sides exist.
+
+EOF
 }
 
 ingest_field() {
@@ -358,8 +468,57 @@ validate_tier() {
   esac
 }
 
+render_executive_summary_partial() {
+  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
+  local have_op="$5" have_tpuf="$6"
+  local warm_line="" overlap_line="" status_line=""
+  local op_p50 tpuf_p50 op_recall tpuf_recall op_warm_p50 tpuf_warm_p50
+  local overlap_mean overlap_mode
+  primary="$(primary_json_file "$op_file" "$tpuf_file")"
+  op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
+  tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
+  op_recall="$(jq_field "$op_file" '.recall_at_10')"
+  tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
+  op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
+  tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
+  if [[ "$op_warm_p50" != "null" || "$tpuf_warm_p50" != "null" ]]; then
+    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio —; partial merge).
+"
+  fi
+  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
+    overlap_mean="$(jq_field "$overlap_file" '.summary.mean_overlap_at_k')"
+    overlap_mode="$(jq_field "$overlap_file" '.mode')"
+    overlap_line="- **Spot-check overlap@10 (mean):** $(fmt_recall "$overlap_mean") (10 vector queries, mode=${overlap_mode}; Phase 3.3 \`id-overlap-${tier}.json\`).
+"
+  fi
+  if [[ "$have_op" == "1" ]]; then
+    status_line="- **Merge status:** partial — turbopuffer JSON missing; ratios and interpretation omitted."
+  else
+    status_line="- **Merge status:** partial — openpuffer JSON missing; ratios and interpretation omitted."
+  fi
+
+  cat <<EOF
+## Executive summary
+
+- **Workload:** synthetic-128, tier **${tier}** ($(tier_docs_label "$tier") docs × 128-dim cosine, seed from manifest).
+${status_line}
+- **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio —).
+${warm_line}${overlap_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
+- **Self-host vs managed:** openpuffer exposes S3 cold-path metrics when present; turbopuffer is managed (those fields n/a).
+- _Partial merge:_ comparison interpretation skipped until both JSON files exist. [COMPARISON.md](../COMPARISON.md) § measured maturity.
+
+EOF
+}
+
 render_executive_summary() {
   local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
+  local have_op=0 have_tpuf=0
+  json_file_exists "$op_file" && have_op=1
+  json_file_exists "$tpuf_file" && have_tpuf=1
+  if [[ "$have_op" == "0" || "$have_tpuf" == "0" ]]; then
+    render_executive_summary_partial "$tier" "$op_file" "$tpuf_file" "$overlap_file" "$have_op" "$have_tpuf"
+    return 0
+  fi
   local op_p50 tpuf_p50 op_recall tpuf_recall ratio
   local op_warm_p50 tpuf_warm_p50 warm_line="" overlap_line=""
   local overlap_mean overlap_mode
@@ -516,14 +675,18 @@ PY
 render_methodology_skeleton() {
   local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
   local overlap_artifact=""
-  local docs dim seed emb op_env tpuf_env tpuf_region
-  docs="$(jq_field "$op_file" '.namespace_docs')"
-  dim="$(jq_field "$op_file" '.dimensions')"
-  seed="$(jq_field "$op_file" '.seed')"
-  emb="$(jq_field "$op_file" '.embedding_fn')"
+  local meta_file docs dim seed emb op_env tpuf_env tpuf_region
+  meta_file="$(primary_json_file "$op_file" "$tpuf_file")"
+  docs="$(jq_field "$meta_file" '.namespace_docs')"
+  dim="$(jq_field "$meta_file" '.dimensions')"
+  seed="$(jq_field "$meta_file" '.seed')"
+  emb="$(jq_field "$meta_file" '.embedding_fn')"
   op_env="$(jq_field "$op_file" '.environment')"
   tpuf_env="$(jq_field "$tpuf_file" '.environment')"
   tpuf_region="$(jq_field "$tpuf_file" '.tpuf_region // .environment')"
+  if [[ "$op_env" == "null" ]]; then op_env="_pending (large-aws-${tier}.json)_"; fi
+  if [[ "$tpuf_env" == "null" ]]; then tpuf_env="_pending (tpuf-${tier}.json)_"; fi
+  if [[ "$tpuf_region" == "null" ]]; then tpuf_region="_pending_"; fi
   if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
     overlap_artifact=", \`benchmarks/results/id-overlap-${tier}.json\`"
   fi
@@ -573,6 +736,8 @@ render_setup_summary() {
   local op_index_wait op_batches_ps op_docs_ps op_ingest_path
   op_ns="$(jq_field "$op_file" '.namespace' | redact_text)"
   tpuf_ns="$(jq_field "$tpuf_file" '.namespace' | redact_text)"
+  if [[ "$op_ns" == "null" ]]; then op_ns="_pending_"; fi
+  if [[ "$tpuf_ns" == "null" ]]; then tpuf_ns="_pending_"; fi
   op_caught="$(jq_field "$op_file" '.index_cursor_eq_wal_commit_seq')"
   tpuf_indexed="$(jq_field "$tpuf_file" '.index_up_to_date')"
   op_ingest="$(ingest_field "$op_file" 'ingest_elapsed_secs' 'ingest_timing.upsert_wall_sec')"
@@ -603,9 +768,10 @@ EOF
 
 render_results_table() {
   local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
-  local docs seed overlap_mean overlap_min overlap_mode overlap_row=""
-  docs="$(jq_field "$op_file" '.namespace_docs')"
-  seed="$(jq_field "$op_file" '.seed')"
+  local meta_file docs seed overlap_mean overlap_min overlap_mode overlap_row=""
+  meta_file="$(primary_json_file "$op_file" "$tpuf_file")"
+  docs="$(jq_field "$meta_file" '.namespace_docs')"
+  seed="$(jq_field "$meta_file" '.seed')"
 
   local op_p50 op_p95 tpuf_p50 tpuf_p95
   local op_warm_p50 op_warm_p95 tpuf_warm_p50 tpuf_warm_p95
@@ -685,9 +851,21 @@ ${overlap_row}| storage_roundtrips | $(fmt_num "$op_rt") | n/a | — |
 EOF
 }
 
+resolve_jq_input() {
+  local path="$1"
+  if json_file_exists "$path"; then
+    echo "$path"
+  else
+    echo "${EMPTY_JSON:?EMPTY_JSON unset}"
+  fi
+}
+
 render_secondary_query_table() {
   local tier="$1" op_file="$2" tpuf_file="$3"
+  local op_jq tpuf_jq
   local op_nf op_nh tpuf_nf tpuf_nh
+  op_jq="$(resolve_jq_input "$op_file")"
+  tpuf_jq="$(resolve_jq_input "$tpuf_file")"
   op_nf="$(jq_field "$op_file" '.filter_query_runs | length')"
   op_nh="$(jq_field "$op_file" '.hybrid_query_runs | length')"
   tpuf_nf="$(jq_field "$tpuf_file" '.filter_query_runs | length')"
@@ -728,7 +906,7 @@ EOF
            then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
            else "—" end)
         + " |"
-    ' "$op_file" "$tpuf_file"
+    ' "$op_jq" "$tpuf_jq"
     echo ""
   fi
 
@@ -755,7 +933,7 @@ EOF
            then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
            else "—" end)
         + " |"
-    ' "$op_file" "$tpuf_file"
+    ' "$op_jq" "$tpuf_jq"
     echo ""
   fi
 
@@ -838,26 +1016,47 @@ EOF
 
 render_appendix_row() {
   local tier="$1" op_path="$2" tpuf_path="$3"
-  printf "| %s | \`%s\` | \`%s\` |\n" "$tier" "${op_path#"$ROOT"/}" "${tpuf_path#"$ROOT"/}"
+  local op_cell tpuf_cell
+  if json_file_exists "$op_path"; then
+    op_cell="\`${op_path#"$ROOT"/}\`"
+  else
+    op_cell="_missing (large-aws-${tier}.json)_"
+  fi
+  if json_file_exists "$tpuf_path"; then
+    tpuf_cell="\`${tpuf_path#"$ROOT"/}\`"
+  else
+    tpuf_cell="_missing (tpuf-${tier}.json)_"
+  fi
+  printf "| %s | %s | %s |\n" "$tier" "$op_cell" "$tpuf_cell"
 }
 
 render_appendix_json_blocks() {
   local tier="$1" op_path="$2" tpuf_path="$3"
-  local op_blob tpuf_blob
-  op_blob="$(redact_json_file "$op_path")"
-  tpuf_blob="$(redact_json_file "$tpuf_path")"
+  local op_blob tpuf_blob have_op=0 have_tpuf=0
+  json_file_exists "$op_path" && have_op=1
+  json_file_exists "$tpuf_path" && have_tpuf=1
+  [[ "$have_op" == "1" || "$have_tpuf" == "1" ]] || return 0
 
   cat <<EOF
 ### Redacted JSON snapshot @ tier ${tier}
 
 Embedded copies for audit (secrets redacted; large \`cold_runs\` / \`warm_runs\` arrays omitted). Canonical files remain under \`benchmarks/results/\`.
 
+EOF
+  if [[ "$have_op" == "1" ]]; then
+    op_blob="$(redact_json_file "$op_path")"
+    cat <<EOF
 #### openpuffer — \`${op_path#"$ROOT"/}\`
 
 \`\`\`json
 ${op_blob}
 \`\`\`
 
+EOF
+  fi
+  if [[ "$have_tpuf" == "1" ]]; then
+    tpuf_blob="$(redact_json_file "$tpuf_path")"
+    cat <<EOF
 #### turbopuffer — \`${tpuf_path#"$ROOT"/}\`
 
 \`\`\`json
@@ -865,6 +1064,7 @@ ${tpuf_blob}
 \`\`\`
 
 EOF
+  fi
 }
 
 run_dry_run_banner() {
@@ -873,11 +1073,17 @@ run_dry_run_banner() {
 }
 
 main() {
-  local tiers tier op_path tpuf_path missing=0
+  local tiers tier op_path tpuf_path
+  local missing=0 partial=0 renderable=0
+  local have_op=0 have_tpuf=0
   tiers="$(collect_tiers)"
   for tier in $tiers; do
     validate_tier "$tier"
   done
+
+  EMPTY_JSON="$(mktemp)"
+  trap 'rm -f "${EMPTY_JSON:-}"' EXIT
+  echo '{}' >"$EMPTY_JSON"
 
   if [[ "$DRY_RUN" == "1" ]]; then
     run_dry_run_banner
@@ -887,30 +1093,70 @@ main() {
   for tier in $tiers; do
     op_path="$(resolve_input_json op "$tier")"
     tpuf_path="$(resolve_input_json tpuf "$tier")"
-    if [[ -z "$op_path" || ! -f "$op_path" ]]; then
-      echo "missing openpuffer JSON for tier ${tier} (expected large-aws-${tier}.json)" >&2
+    have_op=0
+    have_tpuf=0
+    json_file_exists "$op_path" && have_op=1
+    json_file_exists "$tpuf_path" && have_tpuf=1
+
+    if [[ "$have_op" == "0" && "$have_tpuf" == "0" ]]; then
+      echo "render-report: missing both JSON for tier ${tier} (large-aws-${tier}.json and tpuf-${tier}.json)" >&2
       missing=1
       continue
     fi
-    if [[ -z "$tpuf_path" || ! -f "$tpuf_path" ]]; then
-      echo "missing turbopuffer JSON for tier ${tier} (expected tpuf-${tier}.json)" >&2
+
+    if [[ "$have_op" == "1" && "$have_tpuf" == "1" ]]; then
+      if [[ "$DRY_RUN" == "0" ]]; then
+        validate_measured_json_pair "$tier" "$op_path" "$tpuf_path"
+        scan_artifact_secrets "$op_path" || exit 1
+        scan_artifact_secrets "$tpuf_path" || exit 1
+      fi
+      echo "  tier=${tier} op=${op_path} tpuf=${tpuf_path} (full)" >&2
+      renderable=1
+      continue
+    fi
+
+    if [[ "$ALLOW_PARTIAL" == "0" ]]; then
+      if [[ "$have_op" == "0" ]]; then
+        echo "render-report: missing openpuffer JSON for tier ${tier} (expected large-aws-${tier}.json)" >&2
+      fi
+      if [[ "$have_tpuf" == "0" ]]; then
+        echo "render-report: missing turbopuffer JSON for tier ${tier} (expected tpuf-${tier}.json)" >&2
+      fi
       missing=1
       continue
+    fi
+
+    partial=1
+    if [[ "$have_op" == "0" ]]; then
+      echo "render-report: warning tier=${tier} missing openpuffer JSON — partial report (turbopuffer only)" >&2
+    fi
+    if [[ "$have_tpuf" == "0" ]]; then
+      echo "render-report: warning tier=${tier} missing turbopuffer JSON — partial report (openpuffer only)" >&2
     fi
     if [[ "$DRY_RUN" == "0" ]]; then
-      validate_measured_json_pair "$tier" "$op_path" "$tpuf_path"
-      scan_artifact_secrets "$op_path" || exit 1
-      scan_artifact_secrets "$tpuf_path" || exit 1
+      if [[ "$have_op" == "1" ]]; then
+        validate_measured_json_single op "$tier" "$op_path"
+        scan_artifact_secrets "$op_path" || exit 1
+      fi
+      if [[ "$have_tpuf" == "1" ]]; then
+        validate_measured_json_single tpuf "$tier" "$tpuf_path"
+        scan_artifact_secrets "$tpuf_path" || exit 1
+      fi
     fi
-    echo "  tier=${tier} op=${op_path} tpuf=${tpuf_path}" >&2
+    echo "  tier=${tier} op=${op_path:-—} tpuf=${tpuf_path:-—} (partial)" >&2
+    renderable=1
   done
 
-  if [[ "$missing" == "1" && "$ALLOW_PARTIAL" == "0" ]]; then
-    echo "aborting: provide both JSON files per tier or use --dry-run / --allow-partial" >&2
+  if [[ "$renderable" == "0" ]]; then
+    echo "render-report: aborting — no tier had any JSON (use --dry-run or produce at least one side)" >&2
     exit 1
   fi
-  if [[ "$missing" == "1" && "$ALLOW_PARTIAL" == "1" ]]; then
-    echo "warning: partial tiers skipped" >&2
+  if [[ "$missing" == "1" && "$ALLOW_PARTIAL" == "0" ]]; then
+    echo "render-report: aborting — provide both JSON files per tier or use --dry-run / --allow-partial" >&2
+    exit 1
+  fi
+  if [[ "$partial" == "1" ]]; then
+    echo "render-report: warning — partial report (one side missing for some tiers)" >&2
   fi
 
   mkdir -p "$(dirname "$OUTPUT")"
@@ -930,14 +1176,21 @@ EOF
     for tier in $tiers; do
       op_path="$(resolve_input_json op "$tier")"
       tpuf_path="$(resolve_input_json tpuf "$tier")"
-      [[ -f "$op_path" && -f "$tpuf_path" ]] || continue
+      have_op=0
+      have_tpuf=0
+      json_file_exists "$op_path" && have_op=1
+      json_file_exists "$tpuf_path" && have_tpuf=1
+      [[ "$have_op" == "1" || "$have_tpuf" == "1" ]] || continue
+      if [[ "$have_op" == "0" || "$have_tpuf" == "0" ]]; then
+        render_partial_notice "$tier" "$have_op" "$have_tpuf"
+      fi
       overlap_path="$(resolve_overlap_json "$tier")"
       render_executive_summary "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       render_methodology_skeleton "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
       render_results_table "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       render_secondary_query_table "$tier" "$op_path" "$tpuf_path"
-      if [[ "$DRY_RUN" == "0" ]]; then
+      if [[ "$DRY_RUN" == "0" && "$have_op" == "1" && "$have_tpuf" == "1" ]]; then
         render_comparison_interpretation "$tier" "$op_path" "$tpuf_path"
         echo ""
       fi
@@ -948,14 +1201,22 @@ EOF
     for tier in $tiers; do
       op_path="$(resolve_input_json op "$tier")"
       tpuf_path="$(resolve_input_json tpuf "$tier")"
-      [[ -f "$op_path" && -f "$tpuf_path" ]] || continue
+      have_op=0
+      have_tpuf=0
+      json_file_exists "$op_path" && have_op=1
+      json_file_exists "$tpuf_path" && have_tpuf=1
+      [[ "$have_op" == "1" || "$have_tpuf" == "1" ]] || continue
       render_appendix_row "$tier" "$op_path" "$tpuf_path"
     done
     echo ""
     for tier in $tiers; do
       op_path="$(resolve_input_json op "$tier")"
       tpuf_path="$(resolve_input_json tpuf "$tier")"
-      [[ -f "$op_path" && -f "$tpuf_path" ]] || continue
+      have_op=0
+      have_tpuf=0
+      json_file_exists "$op_path" && have_op=1
+      json_file_exists "$tpuf_path" && have_tpuf=1
+      [[ "$have_op" == "1" || "$have_tpuf" == "1" ]] || continue
       render_appendix_json_blocks "$tier" "$op_path" "$tpuf_path"
     done
     echo "_End of report._"
@@ -964,6 +1225,8 @@ EOF
   echo "Wrote ${OUTPUT}"
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "Dry-run complete (fixtures allowed). Review skeleton sections marked TODO/_fill_."
+  elif [[ "$partial" == "1" ]]; then
+    echo "Partial report complete — merge remaining JSON before publishing to COMPARISON.md."
   fi
 }
 

@@ -18,8 +18,10 @@
 ./scripts/validate-benchmark-json.sh   # fixtures + *.example.json (all tiers where present)
 ./scripts/test_render-report.sh
 ./scripts/test_render-report-measured.sh   # schema + interpretation + appendix redaction
+./scripts/test_render-report-partial.sh    # --allow-partial when one side JSON missing
 ./scripts/render-report.sh --dry-run --tier l1
 ./scripts/render-report.sh --tier l1 --date YYYY-MM-DD   # measured (requires live JSON)
+./scripts/render-report.sh --allow-partial --tier l1     # warn + single-side tables if G3 or G4 pending
 ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l2.example.json
 ```
 
