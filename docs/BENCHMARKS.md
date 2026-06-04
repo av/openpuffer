@@ -1099,8 +1099,8 @@ Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests
 ```bash
 facts check --tags ann                 # Phase B @spec gates (7 facts, includes ignored 100k recall)
 facts check --tags "ann or cold"       # Phase A+B program gates (10 spec facts)
-facts check --tags bench-large         # large-dataset harness (32 @spec facts; PLAN_LARGE_DATASET_BENCHMARK)
-facts check --tags bench-tpuf          # turbopuffer driver + comparison merge (15 @spec facts; 12 overlap with bench-large)
+facts check --tags bench-large         # large-dataset harness (33 @spec facts; includes live large-aws-l1 pending/skipped)
+facts check --tags bench-tpuf          # turbopuffer driver + comparison merge (16 @spec facts; includes live tpuf-l1 pending/skipped)
 facts ll --tags spec          # list program spec facts
 ```
 

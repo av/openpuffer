@@ -176,7 +176,7 @@ jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq,environment}' benchmar
 jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq}' benchmarks/results/ingest-large-l1.json
 ```
 
-Pending live fact (add when `large-aws-l1.json` exists): `environment=aws-s3`, `preferred_ann_version == 3`, `storage_roundtrips ≤ 4` — see [Phase 0 fact sheet](#fact-sheet).
+Placeholder `@spec` for live `large-aws-l1.json` is in [`.facts`](../.facts) (`pending` / `skipped` until EC2 run) — see [Phase 0 fact sheet](#fact-sheet).
 
 **Recovery:** delete namespace + S3 prefix, re-ingest with v3 — do not flip `OPENPUFFER_ANN_VERSION` mid-namespace.
 
@@ -376,14 +376,21 @@ Record these commit SHAs in every report:
 
 ### Fact sheet
 
-`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` (32 facts) and `facts check --tags bench-tpuf` (15 facts, 12 overlap with bench-large) ([BENCHMARKS.md](BENCHMARKS.md#facts)).
+`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` (33 facts) and `facts check --tags bench-tpuf` (16 facts, 12 overlap with bench-large) ([BENCHMARKS.md](BENCHMARKS.md#facts)).
 
 **Covered by `@spec` + `@implemented` today:** A1–A5 scripts, G2 gates, G3 `run-aws-large-benchmark.sh` + `preflight-aws-ec2.sh`, G4 `run-tpuf-large-benchmark.sh` + `preflight-tpuf.sh`, `scripts/validate-benchmark-json.sh` (four L1 JSON schemas + fixtures/`*.example.json`), `verify-large-benchmark-program.sh` offline harness, MinIO schema example JSON, Phase 3.3 id-overlap (`id-overlap-l1.example.json`), A6 dispatch id-overlap + tpuf dry-run, report merge fixtures, exemplar `NOT MEASURED` report.
 
-**Pending manual facts** (add `@spec` when artifacts exist, then `@implemented` after commit):
+**Placeholder `@spec` (live JSON — `pending` + `skipped` tags, command passes until artifact exists):**
 
-- “L1 AWS cold bench JSON exists with `environment=aws-s3`, `storage_roundtrips ≤ 4`, `preferred_ann_version == 3`.” → `benchmarks/results/large-aws-l1.json`
-- “L1 tpuf bench JSON exists with `tpuf_region` set and `cold_query_runs == 7`.” → `benchmarks/results/tpuf-l1.json`
+| Artifact | `.facts` section | Operator after EC2 / tpuf run |
+|----------|------------------|-------------------------------|
+| `benchmarks/results/large-aws-l1.json` | `# bench-large live G3` (fact `8zb`) | `./scripts/preflight-aws-ec2.sh` → `./scripts/run-aws-large-benchmark.sh --tier l1` → `validate-benchmark-json.sh` + `check-benchmark-artifacts.sh` → `git add -f` large-aws + ingest sidecar → `facts at 8zb implemented --remove-tag pending --remove-tag skipped` |
+| `benchmarks/results/tpuf-l1.json` | `# bench-tpuf live G4` (fact `7ow`) | `export TURBOPUFFER_API_KEY` → `./scripts/preflight-tpuf.sh --tier l1` → `./scripts/run-tpuf-large-benchmark.sh --tier l1` → `preflight-tpuf.sh --check-results` → `git add -f` → `facts at 7ow implemented --remove-tag pending --remove-tag skipped` |
+
+While files are absent, `facts check --tags bench-large` / `bench-tpuf` still passes: the command prints `PENDING @spec (skipped): …` and exits 0. After commit, the same fact validates schema + gates (`environment=aws-s3`, `storage_roundtrips ≤ 4`, `preferred_ann_version == 3` for AWS; `tpuf_region` + `cold_query_runs == 7` for tpuf).
+
+**Still pending manual `@spec` (add when artifact exists):**
+
 - “Measured comparison report documents tpuf region and openpuffer S3 region (not NOT MEASURED).” → `docs/reports/BENCHMARK_VS_TURBOPUFFER_YYYY-MM-DD.md`
 - “Live id-overlap JSON from both indexed namespaces.” → `benchmarks/results/id-overlap-l1.json`
 

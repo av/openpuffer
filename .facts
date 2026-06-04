@@ -492,6 +492,12 @@
   command: test -x scripts/estimate-large-benchmark-cost.sh && test -f scripts/lib/estimate-large-benchmark-cost.sh && grep -q estimate-large-benchmark-cost.sh scripts/preflight-aws-ec2.sh && grep -q large_benchmark_cost_print scripts/run-aws-large-benchmark.sh && ./scripts/test_estimate-large-benchmark-cost.sh >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 
+# bench-large live G3 (PLAN Phase 0 — @spec pending/skipped until EC2 + aws-s3 JSON committed)
+
+- label: L1 AWS live cold bench JSON benchmarks/results/large-aws-l1.json environment aws-s3 preferred_ann_version 3 storage_roundtrips at most 4 cold_query_runs 7
+  command: if test -f benchmarks/results/large-aws-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/large-aws-l1.json && python3 -c "import json; d=json.load(open('benchmarks/results/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and d['environment']=='aws-s3' and d['preferred_ann_version']==3 and d['index_cursor_eq_wal_commit_seq'] and d['cold_query_runs']==7 and d['storage_roundtrips']<=4"; else echo 'PENDING @spec (skipped): benchmarks/results/large-aws-l1.json — EC2 unset MinIO endpoint; ./scripts/preflight-aws-ec2.sh; ./scripts/run-aws-large-benchmark.sh --tier l1; git add -f benchmarks/results/large-aws-l1.json benchmarks/results/ingest-large-l1.json; then facts at 8zb implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/large-aws-l1.json; fi
+  tags: [spec, bench-large, pending, skipped]
+
 # bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
 
 - label: G4 run-tpuf-large-benchmark.sh dry-run and tpuf env preflight in large-benchmark-preflight.sh
@@ -515,6 +521,12 @@
 - label: id-overlap-l1 JSON Schema validates example artifact and mock output matches production fields
   command: test -f benchmarks/report/schema/id-overlap-l1.schema.json && test -f benchmarks/results/id-overlap-l1.example.json && ./scripts/validate-benchmark-json.sh benchmarks/results/id-overlap-l1.example.json >/dev/null && python3 benchmarks/cross_check/run_spotcheck.py --tier l1 --mock --output /tmp/id-overlap-mock-schema-check.json >/dev/null && ./scripts/validate-benchmark-json.sh /tmp/id-overlap-mock-schema-check.json >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
+
+# bench-tpuf live G4 (PLAN Phase 0 — @spec pending/skipped until tpuf L1 JSON committed)
+
+- label: L1 tpuf live bench JSON benchmarks/results/tpuf-l1.json environment turbopuffer region tpuf_region set cold_query_runs 7
+  command: if test -f benchmarks/results/tpuf-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/tpuf-l1.json && ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/tpuf-l1.json && python3 -c "import json; d=json.load(open('benchmarks/results/tpuf-l1.json')); assert d['benchmark']=='cold_tpuf_l1' and d['tier']=='l1' and str(d['environment']).startswith('turbopuffer:') and d.get('tpuf_region') and d['cold_query_runs']==7"; else echo 'PENDING @spec (skipped): benchmarks/results/tpuf-l1.json — export TURBOPUFFER_API_KEY; ./scripts/preflight-tpuf.sh --tier l1; ./scripts/run-tpuf-large-benchmark.sh --tier l1; git add -f benchmarks/results/tpuf-l1.json; then facts at 7ow implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/tpuf-l1.json; fi
+  tags: [spec, bench-tpuf, pending, skipped]
 
 # index/ann
 
