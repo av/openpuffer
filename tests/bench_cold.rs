@@ -65,9 +65,58 @@ fn count_ann_index_objects(keys: &[String]) -> usize {
         .count()
 }
 
-fn p50_ms(samples: &mut [u64]) -> u64 {
+/// Nearest-rank percentile (matches `scripts/bench-large.sh` `percentile_ms`).
+fn percentile_ms(samples: &mut [u64], pct: u32) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
     samples.sort_unstable();
-    samples[samples.len() / 2]
+    let n = samples.len();
+    let mut idx = (n * pct as usize + 99) / 100;
+    if idx == 0 {
+        idx = 1;
+    }
+    idx -= 1;
+    if idx >= n {
+        idx = n - 1;
+    }
+    samples[idx]
+}
+
+fn latency_percentiles_ms(samples: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = samples.to_vec();
+    (
+        percentile_ms(&mut sorted.clone(), 50),
+        percentile_ms(&mut sorted.clone(), 90),
+        percentile_ms(&mut sorted, 99),
+    )
+}
+
+fn ann_version_from_env() -> Option<u8> {
+    std::env::var("OPENPUFFER_ANN_VERSION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&v| v == 2 || v == 3)
+}
+
+fn spawn_bench_serve(
+    fixture: &S3Fixture,
+    listen: &str,
+    cache_dir: Option<PathBuf>,
+    write_max_batch_ops: Option<usize>,
+    write_max_delay_ms: Option<u64>,
+) -> ServeHandle {
+    ServeHandle::spawn_with_limits_and_ann_version(
+        fixture,
+        listen,
+        cache_dir,
+        write_max_batch_ops,
+        write_max_delay_ms,
+        None,
+        None,
+        None,
+        ann_version_from_env(),
+    )
 }
 
 fn synthetic_embedding(doc_index: usize) -> Vec<f64> {
@@ -190,7 +239,7 @@ async fn cold_vector_query_ms(serve: &ServeHandle, namespace: &str) -> (u64, Val
 async fn bench_cold_10k_baseline() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());
-    let serve = ServeHandle::spawn_with_options(
+    let serve = spawn_bench_serve(
         &fixture,
         &listen,
         Some(PathBuf::from("")),
@@ -212,7 +261,8 @@ async fn bench_cold_10k_baseline() {
         latencies_ms.push(ms);
         last_body = body;
     }
-    let p50_query_latency_ms = p50_ms(&mut latencies_ms);
+    let (p50_query_latency_ms, p90_query_latency_ms, p99_query_latency_ms) =
+        latency_percentiles_ms(&latencies_ms);
 
     let perf = last_body["performance"].as_object().expect("performance");
     let storage_roundtrips = perf["storage_roundtrips"]
@@ -233,10 +283,12 @@ async fn bench_cold_10k_baseline() {
         .await
         .expect("stats json");
     let s3_get_count = stats["s3_get_count"].as_u64().expect("s3_get_count");
+    let ann_version = ann_version_from_env().unwrap_or(2);
 
     let report = json!({
         "benchmark": "cold_10k",
         "environment": "minio-testcontainers",
+        "ann_version": ann_version,
         "namespace_docs": DOCS,
         "dimensions": DIM,
         "cache_dir": "",
@@ -247,11 +299,14 @@ async fn bench_cold_10k_baseline() {
         "s3_get_count": s3_get_count,
         "s3_get_count_note": "segment cache counter; cold path uses s3_batch (see cold_s3_keys_fetched)",
         "p50_query_latency_ms": p50_query_latency_ms,
+        "p90_query_latency_ms": p90_query_latency_ms,
+        "p99_query_latency_ms": p99_query_latency_ms,
+        "query_latencies_ms": latencies_ms,
         "candidates_ratio": candidates_ratio,
         "index_object_count": index_object_count,
         "index_keys_total": index_keys.len(),
         "cold_query_runs": COLD_QUERY_RUNS,
-        "notes": "Post-Phase-A probed cold load (v2 index, 2026-06-03 MinIO). storage_roundtrips=2; cluster GETs bounded by probe plan (index_object_count on disk ≠ cold_s3_keys_fetched). s3_get_count=0 expected (cold uses s3_batch). Regenerate: OPENPUFFER_BENCH_WRITE_BASELINE=1 cargo test -F bench bench_cold_10k_baseline -- --nocapture"
+        "notes": "Probed cold load on MinIO. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_10k_baseline -- --nocapture"
     });
 
     println!("{}", serde_json::to_string(&report).expect("baseline json"));
@@ -287,7 +342,7 @@ async fn bench_cold_10k_baseline() {
 async fn bench_cold_10k_warm_vs_cold() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen_cold = format!("127.0.0.1:{}", free_port());
-    let serve_cold = ServeHandle::spawn_with_options(
+    let serve_cold = spawn_bench_serve(
         &fixture,
         &listen_cold,
         Some(PathBuf::from("")),
@@ -379,10 +434,12 @@ async fn bench_cold_10k_warm_vs_cold() {
     // Warm path: disk cache + warm pin — no cold S3 batch metrics, zero segment GETs.
     let cache_dir = tempfile::tempdir().expect("warm cache tempdir");
     let listen_warm = format!("127.0.0.1:{}", free_port());
-    let serve_warm = ServeHandle::spawn_with_cache(
+    let serve_warm = spawn_bench_serve(
         &fixture,
         &listen_warm,
         Some(cache_dir.path().to_path_buf()),
+        None,
+        None,
     );
     serve_warm.wait_ready().await;
 
@@ -430,15 +487,21 @@ async fn bench_cold_10k_warm_vs_cold() {
         warm_latencies_ms.push(t0.elapsed().as_millis() as u64);
         warm_body = warm_query.json().await.expect("warm query json");
     }
-    let p50_warm_query_latency_ms = p50_ms(&mut warm_latencies_ms);
+    let (p50_warm_query_latency_ms, p90_warm_query_latency_ms, p99_warm_query_latency_ms) =
+        latency_percentiles_ms(&warm_latencies_ms);
+    let ann_version = ann_version_from_env().unwrap_or(2);
     println!(
         "{}",
         serde_json::to_string(&json!({
             "benchmark": "warm_10k",
             "environment": "minio-testcontainers",
+            "ann_version": ann_version,
             "namespace_docs": DOCS,
             "dimensions": DIM,
             "p50_query_latency_ms": p50_warm_query_latency_ms,
+            "p90_query_latency_ms": p90_warm_query_latency_ms,
+            "p99_query_latency_ms": p99_warm_query_latency_ms,
+            "query_latencies_ms": warm_latencies_ms,
             "warm_query_runs": COLD_QUERY_RUNS,
             "notes": "POST /warm + eventual query with disk cache; from bench_cold_10k_warm_vs_cold"
         }))
@@ -597,7 +660,7 @@ async fn bench_cold_10k_storage_roundtrips_at_most_four() {
 async fn bench_cold_100k_nightly() {
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());
-    let serve = ServeHandle::spawn_with_options(
+    let serve = spawn_bench_serve(
         &fixture,
         &listen,
         Some(PathBuf::from("")),
@@ -628,7 +691,8 @@ async fn bench_cold_100k_nightly() {
         latencies_ms.push(ms);
         last_body = body;
     }
-    let p50_query_latency_ms = p50_ms(&mut latencies_ms);
+    let (p50_query_latency_ms, p90_query_latency_ms, p99_query_latency_ms) =
+        latency_percentiles_ms(&latencies_ms);
 
     let perf = last_body["performance"].as_object().expect("performance");
     let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
@@ -646,10 +710,12 @@ async fn bench_cold_100k_nightly() {
         .await
         .expect("stats json");
     let s3_get_count = stats["s3_get_count"].as_u64().expect("s3_get_count");
+    let ann_version = ann_version_from_env().unwrap_or(2);
 
     let report = json!({
         "benchmark": "cold_100k",
         "environment": "minio-testcontainers",
+        "ann_version": ann_version,
         "namespace_docs": DOCS_100K,
         "dimensions": DIM,
         "cache_dir": "",
@@ -658,12 +724,15 @@ async fn bench_cold_100k_nightly() {
         "storage_roundtrips": roundtrips,
         "s3_get_count": s3_get_count,
         "p50_query_latency_ms": p50_query_latency_ms,
+        "p90_query_latency_ms": p90_query_latency_ms,
+        "p99_query_latency_ms": p99_query_latency_ms,
+        "query_latencies_ms": latencies_ms,
         "candidates_ratio": ratio,
         "recall_at_10": recall,
         "index_object_count": index_object_count,
         "index_keys_total": index_keys.len(),
         "cold_query_runs": COLD_QUERY_RUNS,
-        "notes": "Nightly 100k gate. Regenerate: cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture"
+        "notes": "Nightly 100k gate. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_100k_nightly -- --ignored --nocapture"
     });
     println!("{}", serde_json::to_string(&report).expect("bench json"));
 

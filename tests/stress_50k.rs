@@ -69,9 +69,30 @@ fn synthetic_embedding(doc_index: usize) -> Vec<f64> {
         .collect()
 }
 
-fn p50_ms(samples: &mut [u64]) -> u64 {
+fn percentile_ms(samples: &mut [u64], pct: u32) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
     samples.sort_unstable();
-    samples[samples.len() / 2]
+    let n = samples.len();
+    let mut idx = (n * pct as usize + 99) / 100;
+    if idx == 0 {
+        idx = 1;
+    }
+    idx -= 1;
+    if idx >= n {
+        idx = n - 1;
+    }
+    samples[idx]
+}
+
+fn latency_percentiles_ms(samples: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = samples.to_vec();
+    (
+        percentile_ms(&mut sorted.clone(), 50),
+        percentile_ms(&mut sorted.clone(), 90),
+        percentile_ms(&mut sorted, 99),
+    )
 }
 
 fn count_ann_index_objects(keys: &[String]) -> usize {
@@ -325,7 +346,8 @@ async fn fifty_thousand_docs_v3_cold_probed_validation() {
         latencies_ms.push(ms);
         last_body = body;
     }
-    let p50_query_latency_ms = p50_ms(&mut latencies_ms);
+    let (p50_query_latency_ms, p90_query_latency_ms, p99_query_latency_ms) =
+        latency_percentiles_ms(&latencies_ms);
     let perf = last_body["performance"].as_object().expect("performance");
     let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
     let roundtrips = perf["storage_roundtrips"]
@@ -346,6 +368,9 @@ async fn fifty_thousand_docs_v3_cold_probed_validation() {
         "namespace_docs": STRESS_DOCS,
         "dimensions": STRESS_DIM,
         "p50_query_latency_ms": p50_query_latency_ms,
+        "p90_query_latency_ms": p90_query_latency_ms,
+        "p99_query_latency_ms": p99_query_latency_ms,
+        "query_latencies_ms": latencies_ms,
         "cold_query_runs": COLD_QUERY_RUNS,
         "storage_roundtrips": roundtrips,
         "cold_s3_keys_fetched": cold_keys,

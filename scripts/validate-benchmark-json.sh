@@ -21,6 +21,7 @@ OP_SCHEMA="$SCHEMA_DIR/large-aws-l1.schema.json"
 TPUF_SCHEMA="$SCHEMA_DIR/tpuf-l1.schema.json"
 INGEST_SCHEMA="$SCHEMA_DIR/ingest-large-l1.schema.json"
 OVERLAP_SCHEMA="$SCHEMA_DIR/id-overlap-l1.schema.json"
+OP_SCALING_SCHEMA="$SCHEMA_DIR/op-scaling.schema.json"
 
 ensure_jsonschema() {
   ensure_benchmark_python_deps "$ROOT"
@@ -67,7 +68,7 @@ run_validation() {
     done < <(collect_default_paths)
   fi
 
-  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "${json_paths[@]}" <<'PY'
+  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "$OP_SCALING_SCHEMA" "${json_paths[@]}" <<'PY'
 import json
 import re
 import sys
@@ -79,7 +80,8 @@ op_schema_path = Path(sys.argv[1])
 tpuf_schema_path = Path(sys.argv[2])
 ingest_schema_path = Path(sys.argv[3])
 overlap_schema_path = Path(sys.argv[4])
-paths = [Path(p) for p in sys.argv[5:]]
+op_scaling_schema_path = Path(sys.argv[5])
+paths = [Path(p) for p in sys.argv[6:]]
 
 sys.path.insert(0, str(op_schema_path.parent.parent))
 from utc_timestamps import validate_benchmark_timestamps
@@ -88,6 +90,7 @@ op_validator = Draft202012Validator(json.loads(op_schema_path.read_text()))
 tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
 overlap_validator = Draft202012Validator(json.loads(overlap_schema_path.read_text()))
+op_scaling_validator = Draft202012Validator(json.loads(op_scaling_schema_path.read_text()))
 
 SCHEMA_VERSION_PATH = Path(op_schema_path).parent / ".." / "LARGE_BENCHMARK_JSON_SCHEMA_VERSION"
 EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION_PATH.resolve().read_text(encoding="utf-8").strip()
@@ -116,6 +119,8 @@ TIER_META = {
 
 def classify(path: Path) -> str:
     s = str(path)
+    if "op-scaling" in s:
+        return "op-scaling"
     if "id-overlap" in s:
         return "id-overlap"
     if "ingest-large" in s:
@@ -317,6 +322,36 @@ def validate_ingest_cross_fields(path: Path, data: dict) -> None:
             raise SystemExit(f"{path}: batch_runs[0] missing batch/file/latency_ms")
 
 
+def validate_op_scaling_cross_fields(path: Path, data: dict) -> None:
+    if data.get("schema_version") != "op_scaling_v1":
+        raise SystemExit(
+            f"{path}: schema_version {data.get('schema_version')!r} != 'op_scaling_v1'"
+        )
+    if data.get("ann_version") != 3:
+        raise SystemExit(f"{path}: ann_version must be 3 for unified scaling runs")
+    if data.get("cargo_profile") != "release":
+        raise SystemExit(f"{path}: cargo_profile must be 'release'")
+    lat = data.get("query_latencies_ms") or []
+    if lat and len(lat) != 7:
+        raise SystemExit(f"{path}: query_latencies_ms must have 7 samples (got {len(lat)})")
+    if lat:
+        for pct, key in ((50, "p50_ms"), (90, "p90_ms"), (99, "p99_ms")):
+            sorted_lat = sorted(int(x) for x in lat)
+            n = len(sorted_lat)
+            idx = (n * pct + 99) // 100
+            if idx == 0:
+                idx = 1
+            idx -= 1
+            if idx >= n:
+                idx = n - 1
+            expected = sorted_lat[idx]
+            actual = int(data[key])
+            if actual != expected:
+                raise SystemExit(
+                    f"{path}: {key} {actual} != recomputed {expected} from query_latencies_ms"
+                )
+
+
 for path in paths:
     if not path.is_file():
         raise SystemExit(f"validate-benchmark-json: missing file {path}")
@@ -326,6 +361,12 @@ for path in paths:
         raise SystemExit(f"validate-benchmark-json: invalid JSON {path}: {exc}") from exc
 
     kind = classify(path)
+    if kind == "op-scaling":
+        schema_errors(op_scaling_validator, data, "op-scaling", path)
+        validate_op_scaling_cross_fields(path, data)
+        print(f"OK {path} ({kind}, docs={data.get('namespace_docs')}, path={data.get('path')})")
+        continue
+
     validate_schema_version(path, data)
     validate_utc_timestamps(path, data)
     if kind == "ingest":

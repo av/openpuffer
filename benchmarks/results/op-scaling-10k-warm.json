@@ -1,18 +1,28 @@
 {
   "schema_version": "op_scaling_v1",
-  "timestamp_utc": "2026-06-04T22:57:14Z",
-  "git_commit": "76875cb1cae795f55cc6f1dfc263ab8552f02520",
+  "timestamp_utc": "2026-06-04T23:07:07Z",
+  "git_commit": "256d46eeb1e9a4641f7f1278d45b4cbab1ac0fa2",
   "environment": "minio-testcontainers",
   "path": "warm",
   "namespace_docs": 10000,
   "dimensions": 128,
-  "p50_ms": 738,
-  "p90_ms": null,
-  "p99_ms": null,
+  "p50_ms": 88,
+  "p90_ms": 101,
+  "p99_ms": 101,
   "storage_roundtrips": null,
   "recall_at_10": null,
-  "warm_query_runs": 7,
-  "cargo_profile": "debug",
-  "harness": "cargo test -F bench bench_cold_10k_warm_vs_cold -- --nocapture",
-  "notes": "POST /warm + eventual query after disk pin; 7 runs. p50 not below cold on this run (717 ms cold) — MinIO localhost, debug build; not comparable to tpuf warm 14 ms."
+  "cold_query_runs": 7,
+  "ann_version": 3,
+  "cargo_profile": "release",
+  "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_10k_warm_vs_cold -- --nocapture",
+  "query_latencies_ms": [
+    97,
+    91,
+    85,
+    86,
+    101,
+    88,
+    87
+  ],
+  "notes": "POST /warm + eventual query with disk cache; from bench_cold_10k_warm_vs_cold"
 }

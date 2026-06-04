@@ -1,20 +1,28 @@
 {
   "schema_version": "op_scaling_v1",
-  "timestamp_utc": "2026-06-04T22:57:14Z",
-  "git_commit": "76875cb1cae795f55cc6f1dfc263ab8552f02520",
+  "timestamp_utc": "2026-06-04T23:03:32Z",
+  "git_commit": "256d46eeb1e9a4641f7f1278d45b4cbab1ac0fa2",
   "environment": "minio-testcontainers",
   "path": "cold",
   "namespace_docs": 100000,
   "dimensions": 128,
-  "p50_ms": 7174,
-  "p90_ms": null,
-  "p99_ms": null,
+  "p50_ms": 838,
+  "p90_ms": 884,
+  "p99_ms": 884,
   "storage_roundtrips": 3,
   "recall_at_10": 1.0,
   "cold_query_runs": 7,
-  "ann_version": 2,
-  "cargo_profile": "debug",
-  "harness": "cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture",
-  "source_artifact": "benchmarks/results/nightly-100k.json",
-  "notes": "Nightly 100k gate; ingest+index ~8 min on this host. v2 index, debug build."
+  "ann_version": 3,
+  "cargo_profile": "release",
+  "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_100k_nightly -- --ignored --nocapture",
+  "query_latencies_ms": [
+    843,
+    832,
+    829,
+    838,
+    843,
+    884,
+    814
+  ],
+  "notes": "Nightly 100k gate. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_100k_nightly -- --ignored --nocapture"
 }

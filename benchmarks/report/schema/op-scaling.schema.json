@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openpuffer.dev/benchmarks/report/schema/op-scaling.schema.json",
+  "title": "openpuffer MinIO scaling tier JSON",
+  "description": "Schema for benchmarks/results/op-scaling-*.json (scripts/run-op-scaling-benchmark.sh).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "timestamp_utc",
+    "git_commit",
+    "environment",
+    "path",
+    "namespace_docs",
+    "dimensions",
+    "p50_ms",
+    "p90_ms",
+    "p99_ms",
+    "cold_query_runs",
+    "ann_version",
+    "cargo_profile",
+    "harness"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "op_scaling_v1"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "git_commit": {
+      "type": "string",
+      "minLength": 7
+    },
+    "environment": {
+      "const": "minio-testcontainers"
+    },
+    "path": {
+      "enum": ["cold", "warm"]
+    },
+    "namespace_docs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dimensions": {
+      "const": 128
+    },
+    "p50_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "p90_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "p99_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "storage_roundtrips": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "recall_at_10": {
+      "type": ["number", "null"]
+    },
+    "cold_query_runs": {
+      "const": 7
+    },
+    "ann_version": {
+      "const": 3
+    },
+    "cargo_profile": {
+      "const": "release"
+    },
+    "harness": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_artifact": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "query_latencies_ms": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

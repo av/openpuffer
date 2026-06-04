@@ -78,6 +78,9 @@ step "no secret echo in benchmark harness (grep gate)"
 step "benchmark JSON schema (fixtures + *.example.json)"
 ./scripts/validate-benchmark-json.sh
 
+step "op-scaling JSON schema (committed MinIO tiers)"
+./scripts/test_validate-op-scaling-json.sh
+
 step "benchmark JSON normalize (--check)"
 ./scripts/test_normalize-benchmark-json.sh
 
