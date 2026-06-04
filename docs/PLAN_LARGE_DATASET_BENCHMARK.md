@@ -61,7 +61,7 @@ Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-
 2. **Unset MinIO dev endpoint** on the host; run `./scripts/preflight-aws-ec2.sh` then `./scripts/run-aws-large-benchmark.sh --tier l1`; commit `benchmarks/results/large-aws-l1.json` (+ ingest sidecar).
 3. **Export `TURBOPUFFER_API_KEY`** (test org) and `TURBOPUFFER_REGION=aws-us-east-1`; run `./scripts/preflight-tpuf.sh --tier l1` then `./scripts/run-tpuf-large-benchmark.sh --tier l1`; commit `benchmarks/results/tpuf-l1.json`.
 4. **Cross-check ids** after both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` → `id-overlap-l1.json`.
-5. **Publish measured comparison**: `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); update [COMPARISON.md](COMPARISON.md) L1 table; add `@spec` facts for live artifacts.
+5. **Publish measured comparison**: `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `./scripts/render-report.sh` without `--dry-run`); update [COMPARISON.md](COMPARISON.md) L1 table; add `@spec` facts for live artifacts.
 
 Operator table (same steps 1–5): [COMPARISON.md § Operator checklist](COMPARISON.md#operator-checklist-live-g3g5).
 
@@ -96,7 +96,7 @@ Before operator spend (G3–G5), run all offline gates in one command:
 | `--with-g2` | Also runs [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) (Docker MinIO; CI parity, slower) |
 | `--skip-facts` | Skip `facts check` (e.g. when facts CLI not installed) |
 
-**Included gates:** `pytest` workloads + tpuf driver + id-overlap; [`scripts/test_render-report.sh`](../scripts/test_render-report.sh) + [`test_render-report-measured.sh`](../scripts/test_render-report-measured.sh); [`scripts/validate-benchmark-json.sh`](../scripts/validate-benchmark-json.sh) (JSON Schema: `large-aws-l1`, `tpuf-l1`, `ingest-large-l1`, `id-overlap-l1` for fixtures + `*.example.json`); ingest/bench JSON schema tests; `cargo test --test synthetic_workload_gate`; L1 harness dry-run; [`scripts/test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh) (unless `--skip-l2-l3`); `facts check --tags bench-large` and `bench-tpuf`.
+**Included gates:** `pytest` workloads + tpuf driver + id-overlap; [`scripts/test_render-report.sh`](../scripts/test_render-report.sh) + [`scripts/test_render-report-measured.sh`](../scripts/test_render-report-measured.sh); [`scripts/validate-benchmark-json.sh`](../scripts/validate-benchmark-json.sh) (JSON Schema: `large-aws-l1`, `tpuf-l1`, `ingest-large-l1`, `id-overlap-l1` for fixtures + `*.example.json`); ingest/bench JSON schema tests; `cargo test --test synthetic_workload_gate`; L1 harness dry-run; [`scripts/test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh) (unless `--skip-l2-l3`); `facts check --tags bench-large` and `bench-tpuf`.
 
 **Operator E2E dry-run** (documents env, fixture report — subset of verify):
 
@@ -135,7 +135,7 @@ Before operator spend (G3–G5), run all offline gates in one command:
 | Tier | Documents | Vector dim | Primary use | openpuffer harness | turbopuffer harness |
 |------|-----------|------------|-------------|--------------------|---------------------|
 | **L1** | 100k | 128 f32 | **Primary comparison** — fits nightly MinIO + overnight AWS | `bench_cold_100k_nightly`, lib recall gates | Same ingest + recall + cold query suite |
-| **L2** | 250k–500k | 128 f32 | Stress indexer lag, object count, recall drift | Extend `bench-1m.sh` pattern (`OPENPUFFER_BENCH_DOCS`) | Same; watch billing on recall |
+| **L2** | 500k | 128 f32 | Stress indexer lag, object count, recall drift | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l2` | Same; watch billing on recall |
 | **L3** | 1M | 128 f32 | Cold latency SLO (existing program) | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | Optional; higher cost/time |
 
 **Default comparison tier: L1 (100k)** unless the report explicitly states L2/L3.
@@ -353,7 +353,7 @@ sequenceDiagram
 |------|------------|-------------|
 | Storage | AWS S3 bucket (dedicated `openpuffer-bench-*`) | Managed (per namespace) |
 | Credentials | `OPENPUFFER_S3_*` | `TURBOPUFFER_API_KEY` (env, never commit) |
-| Isolation | One namespace per run: `bench-op-<date>-<tier>` | `bench-tpuf-<date>-<tier>` per [Testing](https://turbopuffer.com/docs/testing) |
+| Isolation | One namespace per run: `bench-large-{num_docs}` (override `OPENPUFFER_INGEST_NAMESPACE`) | `bench-tpuf-YYYY-MM-DD-{tier}` per [Testing](https://turbopuffer.com/docs/testing) |
 | Cleanup | `DELETE /v1/namespaces/{name}` + empty prefix | `namespace.delete_all()` in driver `finally` |
 
 ### Toolchain
@@ -793,7 +793,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | **G2** correctness | Done (MinIO) | `scripts/run-minio-correctness-gates.sh`, `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_*`; CI `g2-minio-correctness`; commits `5972ab7`, `67c7050`, `ef4fa97` |
 | **G3** AWS scale proof | Harness only | `scripts/run-aws-large-benchmark.sh`, `bench-large.sh`; **no** `large-aws-l1.json` (live AWS); MinIO shape: `large-aws-l1-schema-minio.example.json` (`bd449b6`) |
 | **G4** tpuf baseline | Harness only | `scripts/run-tpuf-large-benchmark.sh`, `benchmarks/tpuf_driver/run_benchmark.py`; fact `eos`; **no** live `tpuf-l1.json` |
-| **G5** report | Skeleton + measured harness | `scripts/render-report.sh` (schema validation, interpretation, appendix redaction), `test_render-report-measured.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
+| **G5** report | Skeleton + measured harness | `scripts/render-report.sh` (schema validation, interpretation, appendix redaction), `scripts/test_render-report-measured.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
 | **G6** regression | Done (dry-run CI + nightly) | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh); `.github/workflows/benchmark-large-dispatch.yml` (manual A6); `.github/workflows/nightly-stress.yml` job `large-dataset-program` |
 | Phase 3.3 overlap | Harness only | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; mock fixture; live `id-overlap-l1.json` pending |
 | Phase 7 COMPARISON | Placeholders | `docs/COMPARISON.md` L1 table — explicit “pending live JSON” (`5ec9851`) |
@@ -808,7 +808,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | MinIO G2 (subset, integration+bench, CI) | [x] | [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `synthetic_workload_gate`, `integration_s3` `synthetic_128_g2_*`, `bench_cold_10k_*`; `./scripts/run-integration-s3.sh` + `cargo test -F bench`; CI `g2-minio-correctness`; `5972ab7`, `67c7050`, `ef4fa97` |
 | Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); G3: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4--turbopuffer-operator-setup), `preflight-tpuf.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
-| A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6`; production S3 retry/resume (`ingest-large-retry.sh`, `OPENPUFFER_INGEST_START_BATCH`) |
+| A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6`; production S3 retry/resume (`scripts/lib/ingest-large-retry.sh`, `OPENPUFFER_INGEST_START_BATCH`) |
 | A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |
 | A4 `tpuf_driver/run_benchmark.py` | [x] | fact `uod`; `08e66ce` |
 | A5 `render-report.sh` | [x] | fact `ved`; measured-mode hardening (schema, interpretation, appendix redaction) |
@@ -817,7 +817,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | A6 `benchmark-large-dispatch.yml` + optional `benchmark-large-live.yml` | [x] dry-run / [x] live skeleton | `1902c62` dispatch; live workflow + [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) (secrets preflight; `enable_live_run` default false) |
 | Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
 | MinIO schema example JSON (100k full + 10k CI fast path) | [x] | `run-minio-large-schema-example.sh` (`--warm` default; `--docs 10000` in CI); `large-aws-l1-schema-minio*.example.json`, `ingest-large-l1-schema-minio*.example.json`; facts `3np`, `ccb`; `833e1bc`, `33a14d1` |
-| G5 exemplar report (`NOT MEASURED`) | [x] skeleton / [ ] measured | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8`; live: `render-report.sh` without `--dry-run` + [COMPARISON.md](COMPARISON.md) L1 rows (`5ec9851` placeholder) |
+| G5 exemplar report (`NOT MEASURED`) | [x] skeleton / [ ] measured | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8`; live: `./scripts/render-report.sh` without `--dry-run` + [COMPARISON.md](COMPARISON.md) L1 rows (`5ec9851` placeholder) |
 | `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
 
 **Offline harness complete (operator handoff)** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`9670556`** (2026-06-04). Every checklist row is `[x]` except **live** G3/G4/3.3 and **measured** G5 (credentials + EC2). See [§ Harness audit](#harness-audit-operator-handoff).

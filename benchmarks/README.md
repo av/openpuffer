@@ -39,7 +39,7 @@ benchmarks/
 | `docs/reports/` | Generated `BENCHMARK_VS_TURBOPUFFER_<date>.md` |
 | `.facts` | `@spec` facts tagged `bench-large`, `bench-tpuf` |
 
-Subdirectory docs: [workloads/synthetic-128/README.md](workloads/synthetic-128/README.md), [tpuf_driver/README.md](tpuf_driver/README.md), [cross_check/README.md](cross_check/README.md), [report/README.md](report/README.md).
+Subdirectory docs: [workloads/synthetic-128/README.md](workloads/synthetic-128/README.md), [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md), [tpuf_driver/README.md](tpuf_driver/README.md), [cross_check/README.md](cross_check/README.md), [report/README.md](report/README.md).
 
 ## Python dependencies
 
@@ -172,7 +172,7 @@ make bench-dry-run
 
 `make bench-dry-run` runs L1 per-script dry-runs plus L2/L3 via [`test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh). No pytest, cargo tests, or facts — faster than `bench-verify`.
 
-Per-step dry-runs: `ingest-large.sh`, `bench-large.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-id-overlap-spotcheck.sh`, `render-report.sh --dry-run`.
+Per-step dry-runs: `./scripts/ingest-large.sh`, `./scripts/bench-large.sh`, `./scripts/run-aws-large-benchmark.sh`, `./scripts/run-tpuf-large-benchmark.sh`, `./scripts/run-id-overlap-spotcheck.sh`, `./scripts/render-report.sh --dry-run`.
 
 ### 3. Live comparison on EC2
 
@@ -190,7 +190,7 @@ export TURBOPUFFER_BENCH_DELETE_FIRST=1
 ./scripts/preflight-tpuf.sh --tier l1
 
 ./scripts/run-large-benchmark-program.sh --tier l1
-# or stepwise: run-aws-large-benchmark.sh → run-tpuf-large-benchmark.sh → run-id-overlap-spotcheck.sh
+# or stepwise: ./scripts/run-aws-large-benchmark.sh → ./scripts/run-tpuf-large-benchmark.sh → ./scripts/run-id-overlap-spotcheck.sh
 
 ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
 ./scripts/run-large-benchmark-program.sh --tier l1 --measured-report
@@ -252,8 +252,10 @@ Other harness scripts (`validate-benchmark-json.sh`, `normalize-benchmark-json.s
 
 | Script | Description |
 |--------|-------------|
+| [install-benchmark-python-deps.sh](../scripts/install-benchmark-python-deps.sh) | One-shot `pip install -r benchmarks/requirements.txt` (pytest, jsonschema, turbopuffer, httpx) |
 | [preflight-aws-ec2.sh](../scripts/preflight-aws-ec2.sh) | EC2 IMDS, region/AZ, instance profile, S3 `head-bucket` before G3 |
 | [preflight-tpuf.sh](../scripts/preflight-tpuf.sh) | API key, region vs AWS, RTT, cost estimate, results secret scan |
+| [estimate-large-benchmark-cost.sh](../scripts/estimate-large-benchmark-cost.sh) | Order-of-magnitude API volume before live G3/G4 (`--tier`, `--scope`, `--warm`) |
 | [lib/large-benchmark-preflight.sh](../scripts/lib/large-benchmark-preflight.sh) | Shared tier/workload/MinIO→AWS path guards |
 
 ### Tests & CI helpers

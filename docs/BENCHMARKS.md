@@ -108,7 +108,7 @@ See [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-pr
 |------|-------|---------|--------|
 | 0 | G2 | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | Block AWS/tpuf spend if red |
 | 0b | G3 preflight | [`scripts/run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) `--preflight-only` | G2 subset + AWS `head-bucket` + workload manifest |
-| 0c | G4 preflight | [`scripts/preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) `--tier l1` or `run-tpuf-large-benchmark.sh --preflight-only` | API key, region vs S3/EC2, RTT, cost estimate, workload manifest |
+| 0c | G4 preflight | [`scripts/preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) `--tier l1` or [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--preflight-only` | API key, region vs S3/EC2, RTT, cost estimate, workload manifest |
 | 1 | ingest | [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) `--tier l1` | Namespace on AWS S3, `preferred_ann_version == 3` |
 | 2 | bench | [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--tier l1` | `benchmarks/results/large-aws-l1.json` |
 | 3 | tpuf | [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--tier l1` | `benchmarks/results/tpuf-l1.json` |
@@ -497,7 +497,7 @@ If a key was accidentally pasted into JSON, re-run the benchmark or scrub with t
 | 5 | Program preflight | `./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1` |
 | 6 | L1 measured | `./scripts/run-tpuf-large-benchmark.sh --tier l1` → `benchmarks/results/tpuf-l1.json` |
 | 7 | Artifact scan | `./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json` |
-| 8 | Overlap + report | After G3 JSON: `run-id-overlap-spotcheck.sh`; `render-report.sh` |
+| 8 | Overlap + report | After G3 JSON: `./scripts/run-id-overlap-spotcheck.sh`; `./scripts/render-report.sh` |
 
 **Wall-clock hints (L1 @ 100k):** ingest often **1–5 min** (10× 10k writes); index wait varies; cold+recall+secondary queries are minutes, not hours. L3 ingest+recall can be **tens of minutes** and **~200** billed recall queries — run only after L1 is green.
 
@@ -1003,4 +1003,4 @@ facts check --tags bench-tpuf          # turbopuffer driver + comparison merge (
 facts ll --tags spec          # list program spec facts
 ```
 
-Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` (28) and `bench-tpuf` (13) cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `validate-benchmark-json.sh` (four L1 JSON schemas), `verify-large-benchmark-program.sh`, `preflight-aws-ec2.sh` / `preflight-tpuf.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, `id-overlap-l1.example.json`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
+Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` (32) and `bench-tpuf` (15) cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `validate-benchmark-json.sh` (four L1 JSON schemas), `verify-large-benchmark-program.sh`, `preflight-aws-ec2.sh` / `preflight-tpuf.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, `id-overlap-l1.example.json`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
