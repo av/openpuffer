@@ -358,7 +358,7 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 
 ```bash
 ./scripts/preflight-aws-ec2.sh
-source <(./scripts/preflight-aws-ec2.sh --export-creds)   # manual shell bootstrap
+source "$(./scripts/preflight-aws-ec2.sh --export-creds)"   # chmod-600 temp file; stdout is path only
 ./scripts/preflight-aws-ec2.sh --warn-only                # region mismatch → warning only
 ```
 
@@ -450,7 +450,7 @@ If a key was accidentally pasted into JSON, re-run the benchmark or scrub with t
 
 [`scripts/preflight-tpuf.sh`](../scripts/preflight-tpuf.sh) — validates:
 
-- `TURBOPUFFER_API_KEY` present (prints `tpuf_` prefix only)
+- `TURBOPUFFER_API_KEY` present (`TURBOPUFFER_API_KEY=set`; never prints key material)
 - `TURBOPUFFER_REGION` defaults from `OPENPUFFER_S3_REGION` when unset
 - EC2 placement region vs tpuf region (when on EC2)
 - Workload `manifest.json` / `queries.json` for tier

@@ -65,6 +65,9 @@ step "render-report offline tests"
 step "shellcheck benchmark + report/gates scripts"
 ./scripts/test-shellcheck-benchmark-scripts.sh
 
+step "no secret echo in benchmark harness (grep gate)"
+./scripts/test-no-secret-echo.sh
+
 step "benchmark JSON schema (fixtures + *.example.json)"
 ./scripts/validate-benchmark-json.sh
 

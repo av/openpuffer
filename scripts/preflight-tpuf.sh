@@ -100,12 +100,10 @@ preflight_tpuf_api_key() {
     echo "preflight-tpuf: TURBOPUFFER_API_KEY unset (create key in dedicated test org per https://turbopuffer.com/docs/testing)" >&2
     return 1
   fi
-  local key="${TURBOPUFFER_API_KEY}"
-  if [[ ! "$key" =~ ^tpuf_ ]]; then
+  if [[ ! "${TURBOPUFFER_API_KEY}" =~ ^tpuf_ ]]; then
     echo "preflight-tpuf: warning TURBOPUFFER_API_KEY does not start with tpuf_ (verify org/key type)" >&2
   fi
-  local prefix="${key:0:12}"
-  echo "preflight-tpuf: TURBOPUFFER_API_KEY present (${prefix}…)"
+  echo "preflight-tpuf: TURBOPUFFER_API_KEY=set"
 }
 
 preflight_tpuf_region() {

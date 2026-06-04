@@ -7,8 +7,8 @@
 #   ./scripts/preflight-aws-ec2.sh              # checks only (exit 0/1)
 #   ./scripts/preflight-aws-ec2.sh --tier l2    # cost estimate for tier
 #   ./scripts/preflight-aws-ec2.sh --dry-run    # cost estimate only (no S3/IMDS checks)
-#   ./scripts/preflight-aws-ec2.sh --export-creds  # print export lines for instance role (eval)
-#   source <(./scripts/preflight-aws-ec2.sh --export-creds)  # populate OPENPUFFER_S3_* keys
+#   ./scripts/preflight-aws-ec2.sh --export-creds  # write exports to a chmod-600 temp file; prints path only
+#   source "$(./scripts/preflight-aws-ec2.sh --export-creds)"  # populate OPENPUFFER_S3_* keys (no secrets on stdout)
 #
 # Environment (required for S3 checks unless --skip-s3):
 #   OPENPUFFER_S3_BUCKET, OPENPUFFER_S3_REGION (default us-east-1)
@@ -182,12 +182,19 @@ preflight_ec2_export_role_creds() {
     return 1
   fi
   if [[ "$EXPORT_CREDS" == "1" ]]; then
-    echo "export OPENPUFFER_S3_ACCESS_KEY='${ak}'"
-    echo "export OPENPUFFER_S3_SECRET_KEY='${sk}'"
-    if [[ -n "$tok" && "$tok" != "null" ]]; then
-      echo "export AWS_SESSION_TOKEN='${tok}'"
-      echo "# openpuffer serve uses static key pair; session token is for aws CLI only"
-    fi
+    local credfile
+    credfile="$(mktemp -t openpuffer-ec2-creds.XXXXXX)"
+    chmod 600 "$credfile"
+    {
+      printf "export OPENPUFFER_S3_ACCESS_KEY='%s'\n" "$ak"
+      printf "export OPENPUFFER_S3_SECRET_KEY='%s'\n" "$sk"
+      if [[ -n "$tok" && "$tok" != "null" ]]; then
+        printf "export AWS_SESSION_TOKEN='%s'\n" "$tok"
+        echo "# openpuffer serve uses static key pair; session token is for aws CLI only"
+      fi
+    } >"$credfile"
+    echo "preflight-ec2: instance-profile keys in ${credfile} (mode 600); rm after use" >&2
+    echo "$credfile"
     return 0
   fi
   export OPENPUFFER_S3_ACCESS_KEY="$ak"
