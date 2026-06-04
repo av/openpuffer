@@ -50,7 +50,7 @@ Follow [BENCHMARKS.md § 1M ingest cadence](../BENCHMARKS.md#1m-ingest-cadence) 
 | Step | Action |
 |------|--------|
 | 1 | Create S3 bucket in target region (e.g. `us-east-1`); enable versioning optional for forensics. |
-| 2 | Launch **EC2** in **same region** (e.g. **`m7i.xlarge`**; see [BENCHMARKS.md § G3 EC2](../BENCHMARKS.md#g3--ec2--aws-s3-operator-setup)); `./scripts/preflight-aws-ec2.sh`; install release binary or build on host. |
+| 2 | Launch **EC2** in **same region** (e.g. **`m7i.xlarge`**; see [BENCHMARKS.md § G3 EC2](../BENCHMARKS.md#g3-ec2-aws-s3-operator-setup)); `./scripts/preflight-aws-ec2.sh`; install release binary or build on host. |
 | 3 | Run `openpuffer serve` with: `--ann-version 3`, `--cache-dir ""` for cold runs, `OPENPUFFER_COLD_S3_CONCURRENCY=32` (tune 32→64 if RTT-bound). |
 | 4 | Optional warm runs: non-empty `--cache-dir` + `POST /v1/namespaces/{ns}/warm` before query phase. |
 | 5 | Enable metrics if comparing operator view: `cargo build --release --features metrics`, scrape `GET /metrics`. |
