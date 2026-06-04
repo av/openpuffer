@@ -1,5 +1,16 @@
 # Operator log: live G3/G4 attempt (2026-06-04)
 
+## Harness audit — operator handoff (2026-06-04)
+
+| Check | Result |
+|-------|--------|
+| `./scripts/verify-large-benchmark-program.sh` | **exit 0** @ `9670556` (full run, `facts check` included) |
+| `AWS_ACCESS_KEY_ID` / `TURBOPUFFER_API_KEY` | **unset** — live G3/G4 **not** re-attempted on this host |
+| PLAN checklist | All offline rows `[x]`; live `[ ]` = G3/G4/3.3/G5 measured only |
+| Next | EC2 + real S3 + tpuf key → [OPERATOR_RUNBOOK_QUICK.md](../OPERATOR_RUNBOOK_QUICK.md) |
+
+---
+
 ## G4 only — iteration 52 (2026-06-04)
 
 | Check | Result |
