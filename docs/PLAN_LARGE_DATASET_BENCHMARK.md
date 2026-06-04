@@ -8,7 +8,7 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 
 | Track | Status | Summary |
 |-------|--------|---------|
-| **Harness (offline)** | **COMPLETE — operator handoff** | Final audit: `./scripts/verify-large-benchmark-program.sh` **exit 0** @ `9670556` (2026-06-04); A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run — **PR-style summary:** [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md) |
+| **Harness (offline)** | **COMPLETE — operator handoff** | Final audit: `./scripts/verify-large-benchmark-program.sh` **exit 0** @ `9801897` (2026-06-04T02:54:51Z); A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run — **PR-style summary:** [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md) |
 | **Live measurement (G3–G5)** | **BLOCKED** | Needs EC2 in target region + real AWS S3 + `TURBOPUFFER_API_KEY` (test org); this dev host: MinIO endpoint + no tpuf key — **do not** re-run live G3/G4 here; see [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
 
 ### Harness audit (operator handoff)
@@ -18,7 +18,7 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 | Gate | Result |
 |------|--------|
 | `./scripts/verify-large-benchmark-program.sh` | **PASS** (full run, facts included) |
-| Git at verify | `9670556` |
+| Git at verify | `9801897` (final pre-6am verify; L2/L3 `render-report --dry-run` uses `*.example.json`) |
 | `AWS_ACCESS_KEY_ID` / `TURBOPUFFER_API_KEY` on audit host | **unset** — live G3/G4 **not** attempted |
 | Checklist `[ ]` remaining | **Live only:** G3 `large-aws-l1.json`, G4 `tpuf-l1.json`, Phase 3.3 `id-overlap-l1.json`, G5 measured report + [COMPARISON.md](COMPARISON.md) rows |
 
@@ -40,7 +40,7 @@ Full dated list (A1–A6, G2–G6, schemas, operators): [benchmarks/CHANGELOG_LA
 | MinIO JSON shape | `bd449b6`, `833e1bc`, `476a753` | `*-schema-minio*.example.json` (not comparison timings) |
 | G6 regression | `1902c62`, `433d2fd` | A6 dispatch dry-run; nightly `large-dataset-program` |
 
-Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-g2` for Docker MinIO parity). Last full audit: **2026-06-04**, commit **`9670556`**, exit **0**.
+Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-g2` for Docker MinIO parity). Last full audit: **2026-06-04T02:54:51Z**, commit **`9801897`**, exit **0**.
 
 ### Goals G1–G6
 
@@ -827,7 +827,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | G5 exemplar report (`NOT MEASURED`) | [x] skeleton / [ ] measured | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8`; live: `./scripts/render-report.sh` without `--dry-run` + [COMPARISON.md](COMPARISON.md) L1 rows (`5ec9851` placeholder) |
 | `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
 
-**Offline harness complete (operator handoff)** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`9670556`** (2026-06-04). Every checklist row is `[x]` except **live** G3/G4/3.3 and **measured** G5 (credentials + EC2). See [§ Harness audit](#harness-audit-operator-handoff).
+**Offline harness complete (operator handoff)** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`9801897`** (2026-06-04T02:54:51Z). Every checklist row is `[x]` except **live** G3/G4/3.3 and **measured** G5 (credentials + EC2). See [§ Harness audit](#harness-audit-operator-handoff).
 
 **Program complete** when G3, G4, Phase 3.3 live columns and G5 measured row above are checked; methodology must match [Unresolved assumptions](#unresolved-assumptions) defaults (or document overrides in the dated report).
 
