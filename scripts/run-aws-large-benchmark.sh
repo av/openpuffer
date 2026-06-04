@@ -129,6 +129,9 @@ if [[ "$SKIP_BENCH" != "1" ]]; then
   export OPENPUFFER_BENCH_RESULTS="$RESULTS"
   export OPENPUFFER_BENCH_ENFORCE_GATES="${OPENPUFFER_BENCH_ENFORCE_GATES:-1}"
   ./scripts/bench-large.sh --tier "$TIER"
+  echo "==> check-large-aws-gates ${RESULTS}"
+  export OPENPUFFER_BENCH_ENFORCE_GATES="${OPENPUFFER_BENCH_ENFORCE_GATES:-1}"
+  ./scripts/check-large-aws-gates.sh --tier "$TIER" "$RESULTS"
 fi
 
 echo "G3 complete: ${RESULTS}"

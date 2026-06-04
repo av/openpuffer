@@ -891,20 +891,7 @@ jq -n \
 echo "Wrote ${RESULTS}"
 jq . "$RESULTS"
 
-if [[ "$ENFORCE_GATES" == "1" && "$BENCH_ENVIRONMENT" == "aws-s3" ]]; then
-  jq -e \
-    --argjson recall_gate "$RECALL_GATE" \
-    '
-    (.preferred_ann_version | tonumber) == 3 and
-    .index_cursor_eq_wal_commit_seq == true and
-    (.storage_roundtrips | tonumber) <= 4 and
-    (.recall_at_10 | tonumber) >= ($recall_gate | tonumber) and
-    (.p50_query_latency_ms | tonumber) < 600
-  ' "$RESULTS" >/dev/null || {
-    echo "large-tier gates failed (need preferred_ann_version==3, index caught up, roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms). Set OPENPUFFER_BENCH_ENFORCE_GATES=0 to record only." >&2
-    exit 1
-  }
-  echo "All large-tier gates passed (tier=${TIER})."
-elif [[ "$ENFORCE_GATES" == "1" && "$BENCH_ENVIRONMENT" != "aws-s3" ]]; then
-  echo "Skipping AWS p50 SLO gates (environment=${BENCH_ENVIRONMENT}); set OPENPUFFER_BENCH_ENFORCE_GATES=0 to silence."
+if [[ "$ENFORCE_GATES" == "1" ]]; then
+  export OPENPUFFER_BENCH_ENFORCE_GATES=1
+  ./scripts/check-large-aws-gates.sh --tier "$TIER" "$RESULTS"
 fi

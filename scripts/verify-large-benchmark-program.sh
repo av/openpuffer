@@ -82,6 +82,10 @@ step "benchmark results git policy (tracked + staged)"
 ./scripts/check-benchmark-artifacts.sh
 ./scripts/test_check-benchmark-artifacts.sh
 
+step "large-aws SLO gate checker (fixture)"
+chmod +x ./scripts/check-large-aws-gates.sh
+./scripts/test_check-large-aws-gates.sh
+
 step "ingest/bench JSON schema tests"
 ./scripts/test_ingest-timing-schema.sh
 ./scripts/test_ingest-large-retry.sh
