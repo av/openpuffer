@@ -131,6 +131,12 @@ fi
 echo "==> tpuf run_benchmark.py ${TPUF_ARGS[*]}"
 python3 benchmarks/tpuf_driver/run_benchmark.py "${TPUF_ARGS[@]}"
 
+if [[ -f "$RESULTS" ]]; then
+  echo "==> check-tpuf-gates ${RESULTS}"
+  export TURBOPUFFER_BENCH_ENFORCE_GATES="${TURBOPUFFER_BENCH_ENFORCE_GATES:-1}"
+  ./scripts/check-tpuf-gates.sh --tier "$TIER" "$RESULTS"
+fi
+
 echo "G4 complete: ${RESULTS}"
 echo "Next: ./scripts/run-id-overlap-spotcheck.sh --tier ${TIER}  # Phase 3.3 (after G3 AWS JSON)"
 echo "      ./scripts/render-report.sh --date $(date +%F)"

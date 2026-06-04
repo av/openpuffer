@@ -28,6 +28,8 @@ for pattern in \
   scripts/run-minio-correctness-gates.sh \
   scripts/test_render-report*.sh \
   scripts/validate-benchmark-json.sh \
+  scripts/check-large-aws-gates.sh \
+  scripts/check-tpuf-gates.sh \
   benchmarks/tpuf_driver/*.py \
   benchmarks/cross_check/*.py \
   .github/workflows/benchmark-large*.yml; do

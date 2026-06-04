@@ -495,13 +495,16 @@
 # bench-large live G3 (PLAN Phase 0 — @spec pending/skipped until EC2 + aws-s3 JSON committed)
 
 - label: L1 AWS live cold bench JSON benchmarks/results/large-aws-l1.json environment aws-s3 preferred_ann_version 3 storage_roundtrips at most 4 cold_query_runs 7
-  command: if test -f benchmarks/results/large-aws-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/large-aws-l1.json && python3 -c "import json; d=json.load(open('benchmarks/results/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and d['environment']=='aws-s3' and d['preferred_ann_version']==3 and d['index_cursor_eq_wal_commit_seq'] and d['cold_query_runs']==7 and d['storage_roundtrips']<=4"; else echo 'PENDING @spec (skipped): benchmarks/results/large-aws-l1.json — EC2 unset MinIO endpoint; ./scripts/preflight-aws-ec2.sh; ./scripts/run-aws-large-benchmark.sh --tier l1; git add -f benchmarks/results/large-aws-l1.json benchmarks/results/ingest-large-l1.json; then facts at 8zb implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/large-aws-l1.json; fi
+  command: if test -f benchmarks/results/large-aws-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/large-aws-l1.json && ./scripts/check-large-aws-gates.sh benchmarks/results/large-aws-l1.json; else echo 'PENDING @spec (skipped): benchmarks/results/large-aws-l1.json — EC2 unset MinIO endpoint; ./scripts/preflight-aws-ec2.sh; ./scripts/run-aws-large-benchmark.sh --tier l1; git add -f benchmarks/results/large-aws-l1.json benchmarks/results/ingest-large-l1.json; then facts at 8zb implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/large-aws-l1.json; fi
   tags: [spec, bench-large, pending, skipped]
 
 # bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
 
 - label: G4 run-tpuf-large-benchmark.sh dry-run and tpuf env preflight in large-benchmark-preflight.sh
-  command: test -x scripts/run-tpuf-large-benchmark.sh && grep -q 'large_preflight_validate_tpuf_env' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-tpuf-large-benchmark.sh --dry-run --skip-g2 >/dev/null
+  command: test -x scripts/run-tpuf-large-benchmark.sh && grep -q 'large_preflight_validate_tpuf_env' scripts/lib/large-benchmark-preflight.sh && grep -q check-tpuf-gates.sh scripts/run-tpuf-large-benchmark.sh && ./scripts/run-tpuf-large-benchmark.sh --dry-run --skip-g2 >/dev/null
+  tags: [spec, bench-tpuf, implemented]
+- label: scripts/check-tpuf-gates.sh post-hoc tpuf SLO gate wired in verify and run-tpuf-large-benchmark
+  command: test -x scripts/check-tpuf-gates.sh && test -x scripts/test_check-tpuf-gates.sh && test -f scripts/lib/large-benchmark-tpuf-gates.sh && grep -q check-tpuf-gates.sh scripts/verify-large-benchmark-program.sh && ./scripts/test_check-tpuf-gates.sh >/dev/null
   tags: [spec, bench-tpuf, implemented]
 - label: benchmarks/tpuf_driver/run_benchmark.py unit tests pass and read workload queries.json recall_defaults
   command: test -f benchmarks/tpuf_driver/run_benchmark.py && grep -q 'recall_defaults' benchmarks/tpuf_driver/run_benchmark.py && grep -q 'TIER_INDEX_TIMEOUT_SEC' benchmarks/tpuf_driver/run_benchmark.py && grep -q 'TURBOPUFFER_INGEST_START_BATCH' benchmarks/tpuf_driver/run_benchmark.py && grep -q 'ingest_failures' benchmarks/tpuf_driver/run_benchmark.py && python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
@@ -528,7 +531,7 @@
 # bench-tpuf live G4 (PLAN Phase 0 — @spec pending/skipped until tpuf L1 JSON committed)
 
 - label: L1 tpuf live bench JSON benchmarks/results/tpuf-l1.json environment turbopuffer region tpuf_region set cold_query_runs 7
-  command: if test -f benchmarks/results/tpuf-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/tpuf-l1.json && ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/tpuf-l1.json && python3 -c "import json; d=json.load(open('benchmarks/results/tpuf-l1.json')); assert d['benchmark']=='cold_tpuf_l1' and d['tier']=='l1' and str(d['environment']).startswith('turbopuffer:') and d.get('tpuf_region') and d['cold_query_runs']==7"; else echo 'PENDING @spec (skipped): benchmarks/results/tpuf-l1.json — export TURBOPUFFER_API_KEY; ./scripts/preflight-tpuf.sh --tier l1; ./scripts/run-tpuf-large-benchmark.sh --tier l1; git add -f benchmarks/results/tpuf-l1.json; then facts at 7ow implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/tpuf-l1.json; fi
+  command: if test -f benchmarks/results/tpuf-l1.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/tpuf-l1.json && ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json && ./scripts/check-benchmark-artifacts.sh benchmarks/results/tpuf-l1.json && ./scripts/check-tpuf-gates.sh benchmarks/results/tpuf-l1.json; else echo 'PENDING @spec (skipped): benchmarks/results/tpuf-l1.json — export TURBOPUFFER_API_KEY; ./scripts/preflight-tpuf.sh --tier l1; ./scripts/run-tpuf-large-benchmark.sh --tier l1; git add -f benchmarks/results/tpuf-l1.json; then facts at 7ow implemented --remove-tag pending --remove-tag skipped'; ! test -f benchmarks/results/tpuf-l1.json; fi
   tags: [spec, bench-tpuf, pending, skipped]
 
 # index/ann

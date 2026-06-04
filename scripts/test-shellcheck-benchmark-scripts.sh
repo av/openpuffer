@@ -27,8 +27,14 @@ for pattern in \
   scripts/run-minio-correctness-gates.sh \
   scripts/test_render-report*.sh \
   scripts/validate-benchmark-json.sh \
+  scripts/check-large-aws-gates.sh \
+  scripts/check-tpuf-gates.sh \
+  scripts/lib/large-benchmark-aws-gates.sh \
+  scripts/lib/large-benchmark-tpuf-gates.sh \
   scripts/normalize-benchmark-json.sh \
-  scripts/test_normalize-benchmark-json.sh; do
+  scripts/test_normalize-benchmark-json.sh \
+  scripts/test_check-large-aws-gates.sh \
+  scripts/test_check-tpuf-gates.sh; do
   for f in $pattern; do
     [[ -f "$f" ]] || continue
     scripts+=("$f")

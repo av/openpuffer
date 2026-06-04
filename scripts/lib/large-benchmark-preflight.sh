@@ -348,5 +348,6 @@ After G3 large-aws JSON (or in parallel on same EC2 with API access):
   ./scripts/run-tpuf-large-benchmark.sh --tier l1
   ./scripts/run-tpuf-large-benchmark.sh --tier l1 --warm   # adds hint_cache_warm + eventual latencies
   ./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
+  ./scripts/check-tpuf-gates.sh benchmarks/results/tpuf-l1.json
 EOF
 }

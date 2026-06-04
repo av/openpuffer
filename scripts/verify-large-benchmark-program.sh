@@ -86,6 +86,10 @@ step "large-aws SLO gate checker (fixture)"
 chmod +x ./scripts/check-large-aws-gates.sh
 ./scripts/test_check-large-aws-gates.sh
 
+step "tpuf SLO gate checker (fixture)"
+chmod +x ./scripts/check-tpuf-gates.sh
+./scripts/test_check-tpuf-gates.sh
+
 step "ingest/bench JSON schema tests"
 ./scripts/test_ingest-timing-schema.sh
 ./scripts/test_ingest-large-retry.sh
