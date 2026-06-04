@@ -1,4 +1,4 @@
-# Nightly scale: 50k stress, 100k cold bench, 100k ANN lib gates (MinIO / in-memory).
+# Nightly scale: 50k stress, 100k cold bench, 100k ANN lib gates, large-dataset G2 + program dry-run (MinIO).
 name: Nightly large stress
 
 on:
@@ -68,6 +68,44 @@ jobs:
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
+
+  large-dataset-program:
+    name: large-dataset G2 + program dry-run (l1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: large-dataset-nightly
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build openpuffer (release, integration + bench)
+        run: cargo build --release --features integration,bench
+
+      - name: Python tooling (pytest)
+        run: python3 -m pip install --upgrade pip pytest
+
+      - name: G2 MinIO correctness gates
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: ./scripts/run-minio-correctness-gates.sh
+
+      - name: Large-dataset program dry-run (G3–G5 harness, no AWS/tpuf secrets)
+        run: ./scripts/run-large-benchmark-program.sh --tier l1 --dry-run --skip-g2
+
+      - name: Install facts CLI
+        run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
+
+      - name: facts check (bench-large, bench-tpuf)
+        run: |
+          facts check --tags bench-large
+          facts check --tags bench-tpuf
 
   facts-check:
     name: facts check (optional)

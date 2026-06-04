@@ -19,7 +19,7 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 | G3 | **openpuffer scale proof** — 100k+ on AWS S3 with committed JSON artifacts | `benchmarks/results/large-aws-*.json` in repo |
 | G4 | **turbopuffer baseline** — same workload on production API in a chosen region | `benchmarks/results/tpuf-*.json` + API key redacted in report |
 | G5 | **Comparison report** — structured markdown with methodology, raw numbers, interpretation | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
-| G6 | **Regression harness** — CI/nightly stays MinIO; AWS/tpuf runs are manual but scripted | Documented commands; optional future CI secret job |
+| G6 | **Regression harness** — CI/nightly stays MinIO; AWS/tpuf runs are manual but scripted | `ci.yml` `g2-minio-correctness`; `nightly-stress.yml` `large-dataset-program`; A6 dispatch dry-run; optional future CI secret job |
 
 ### Non-goals
 
@@ -544,7 +544,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | **G3** AWS scale proof | Harness only | `scripts/run-aws-large-benchmark.sh`, `bench-large.sh`; **no** `large-aws-l1.json` (live AWS); MinIO shape: `large-aws-l1-schema-minio.example.json` (`bd449b6`) |
 | **G4** tpuf baseline | Harness only | `scripts/run-tpuf-large-benchmark.sh`, `benchmarks/tpuf_driver/run_benchmark.py`; fact `eos`; **no** live `tpuf-l1.json` |
 | **G5** report | Skeleton only | `scripts/render-report.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
-| **G6** regression | Done (dry-run CI) | `.github/workflows/benchmark-large-dispatch.yml` (`1902c62`+); `facts check --tags bench-large,bench-tpuf` |
+| **G6** regression | Done (dry-run CI + nightly) | `.github/workflows/benchmark-large-dispatch.yml` (manual A6); `.github/workflows/nightly-stress.yml` job `large-dataset-program` (G2 MinIO + `run-large-benchmark-program.sh --dry-run`); `facts check --tags bench-large,bench-tpuf` |
 | Phase 3.3 overlap | Harness only | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; mock fixture; live `id-overlap-l1.json` pending |
 | Phase 7 COMPARISON | Placeholders | `docs/COMPARISON.md` L1 table — explicit “pending live JSON” (`5ec9851`) |
 

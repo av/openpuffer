@@ -133,6 +133,16 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
 
 Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml). Live ingest/bench on AWS and managed turbopuffer still run from an operator host with credentials (future: optional job inputs + secrets for one-click live runs).
 
+### GitHub Actions — nightly regression (G6)
+
+Scheduled with [`.github/workflows/nightly-stress.yml`](../.github/workflows/nightly-stress.yml) (**03:00 UTC**, same cron as 100k bench). Job **`large-dataset-program`** (no repository secrets):
+
+1. [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) — full G2 MinIO correctness (Docker testcontainers).
+2. [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) `--tier l1 --dry-run --skip-g2` — G3→G5 harness preflight (ingest/bench/tpuf/id-overlap/render-report fixtures only).
+3. `facts check --tags bench-large` and `facts check --tags bench-tpuf`.
+
+Does **not** run live AWS/tpuf ingest or [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) (100k MinIO schema example is operator-maintained; see committed `large-aws-l1-schema-minio.example.json`).
+
 ### Phase 4 — Metrics matrix
 
 Collect the same **logical** metrics on both sides where APIs allow. JSON field names align across [`bench-large.sh`](../scripts/bench-large.sh) and [`run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) for [`render-report.sh`](../scripts/render-report.sh).
