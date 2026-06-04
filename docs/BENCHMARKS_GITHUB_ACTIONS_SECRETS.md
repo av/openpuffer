@@ -14,7 +14,7 @@ This document describes **repository secrets** for a future **manual** live comp
 
 - [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml) — `workflow_dispatch` with `enable_live_run` default **`false`** (secrets preflight only until an operator explicitly enables a live run).
 
-Operator runbooks for EC2 (recommended) remain in [BENCHMARKS.md § G3/G4](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46). GitHub-hosted `ubuntu-latest` is **not** a fairness substitute for same-region EC2; use Actions live runs only when you accept RTT skew or attach a **self-hosted runner** in the bench region.
+Operator runbooks for EC2 (recommended) remain in [BENCHMARKS.md § G3/G4](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-4-6). GitHub-hosted `ubuntu-latest` is **not** a fairness substitute for same-region EC2; use Actions live runs only when you accept RTT skew or attach a **self-hosted runner** in the bench region.
 
 ---
 
@@ -57,7 +57,7 @@ Set these in the workflow `env:` block from secrets (do not store duplicate secr
 | Name | Default if unset | Notes |
 |------|------------------|-------|
 | `OPENPUFFER_S3_ENDPOINT` | Derived from region | Override for S3-compatible endpoints (not for production comparison) |
-| `TURBOPUFFER_REGION` | `aws-us-east-1` or mapped from `OPENPUFFER_S3_REGION` | Must match [region table](BENCHMARKS.md#g4--turbopuffer-operator-setup) |
+| `TURBOPUFFER_REGION` | `aws-us-east-1` or mapped from `OPENPUFFER_S3_REGION` | Must match [region table](BENCHMARKS.md#g4-turbopuffer-operator-setup) |
 | `OPENPUFFER_BENCH_HOST_LABEL` | `github-actions@ubuntu-latest` in live workflow | Record real host in measured JSON when using self-hosted EC2 |
 | `OPENPUFFER_BENCH_CLIENT_MODE` | `localhost` on self-hosted; `remote` on hosted runners | Document in report methodology |
 | `OPENPUFFER_BENCH_ENFORCE_GATES` | `1` for live | Set `0` only for debug |
@@ -78,7 +78,7 @@ Attach to the IAM principal behind `OPENPUFFER_S3_ACCESS_KEY` / `OPENPUFFER_S3_S
 - `s3:ListBucket`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on `arn:aws:s3:::openpuffer-bench-*` and `arn:aws:s3:::openpuffer-bench-*/*`
 - Deny public ACLs on the bench bucket; dedicated prefix per namespace under `openpuffer/`
 
-Full checklist: [BENCHMARKS.md § G3 — EC2 + AWS S3](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup).
+Full checklist: [BENCHMARKS.md § G3 — EC2 + AWS S3](BENCHMARKS.md#g3-ec2-aws-s3-operator-setup).
 
 ---
 
@@ -130,7 +130,7 @@ Artifacts (when live succeeds): upload `benchmarks/results/large-aws-{tier}.json
 
 ## Related docs
 
-- [BENCHMARKS.md — manual dry-run dispatch (A6)](BENCHMARKS.md#github-actions--manual-dry-run-preflight-a6)
-- [BENCHMARKS.md — live workflow dispatch](BENCHMARKS.md#github-actions--optional-live-dispatch)
+- [BENCHMARKS.md — manual dry-run dispatch (A6)](BENCHMARKS.md#github-actions-manual-dry-run-preflight-a6)
+- [BENCHMARKS.md — live workflow dispatch](BENCHMARKS.md#github-actions-optional-live-dispatch)
 - [PLAN_LARGE_DATASET_BENCHMARK.md § Phase 8 A6](PLAN_LARGE_DATASET_BENCHMARK.md#phase-8--automation-roadmap-implementation-backlog)
 - [COMPARISON.md](COMPARISON.md) — measured rows after live JSON exists

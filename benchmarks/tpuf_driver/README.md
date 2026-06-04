@@ -84,7 +84,7 @@ Use `TURBOPUFFER_BENCH_DELETE_FIRST=0` when resuming so prior rows are not wiped
 6. **Recall** — `namespace.recall(num=20, top_k=10)` (same defaults as workload `queries.json`)
 7. **Cleanup** — `delete_all` before ingest when `TURBOPUFFER_BENCH_DELETE_FIRST=1`; `delete_all` in `finally` unless `TURBOPUFFER_BENCH_SKIP_DELETE=1`
 
-Full operator runbook: [docs/BENCHMARKS.md § G4](../../docs/BENCHMARKS.md#g4--turbopuffer-operator-setup).
+Full operator runbook: [docs/BENCHMARKS.md § G4](../../docs/BENCHMARKS.md#g4-turbopuffer-operator-setup).
 
 Openpuffer-specific fields (`storage_roundtrips`, `s3_get_count`, `preferred_ann_version`) are
 `null` in the JSON so A5 can merge rows without special cases.
