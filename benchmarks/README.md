@@ -140,7 +140,7 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 
 | Script | Description |
 |--------|-------------|
-| [ingest-large.sh](../scripts/ingest-large.sh) | Generator-driven upsert batches + index poll → `preferred_ann_version == 3` |
+| [ingest-large.sh](../scripts/ingest-large.sh) | Generator-driven upsert batches (10k/batch) + retry/resume + index poll → `preferred_ann_version == 3` |
 | [bench-large.sh](../scripts/bench-large.sh) | Cold/filter/hybrid/warm queries → `large-aws-{tier}.json` |
 | [render-report.sh](../scripts/render-report.sh) | Merge openpuffer + tpuf JSON → `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
 

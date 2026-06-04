@@ -66,6 +66,7 @@ step "render-report offline tests"
 
 step "ingest/bench JSON schema tests"
 ./scripts/test_ingest-timing-schema.sh
+./scripts/test_ingest-large-retry.sh
 ./scripts/test_bench-large-secondary-schema.sh
 
 step "synthetic_workload_gate (fixture vectors + recall_defaults)"

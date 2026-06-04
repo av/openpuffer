@@ -291,6 +291,9 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 | Re-run ingest poll only | Namespace exists; upsert done | `./scripts/ingest-large.sh --tier l1` (skips if caught up) or `bench-large` index wait |
 | v2 index mistake | Meta `preferred_ann_version` | Must be **3**; `export OPENPUFFER_ANN_VERSION=3` before `serve`; delete namespace and re-ingest if v2 |
 | 503 SlowDown | S3 API errors in logs | Lower parallel index writes; retry; verify IAM not throttling |
+| Upsert batch failed mid-ingest | `ingest-large-*.json` → `ingest_failures`, `ingest_status` | Transient 5xx/429/connection reset retried automatically; on exhaustion set `OPENPUFFER_INGEST_START_BATCH=<n>` (1-based batch to run next) and re-run same tier |
+
+**Ingest resume / retry env (production S3):** `OPENPUFFER_INGEST_START_BATCH` (default `1`), `OPENPUFFER_INGEST_RETRY_MAX` (default `6`), `OPENPUFFER_INGEST_RETRY_BASE_MS` (default `500`), `OPENPUFFER_INGEST_RETRY_MAX_MS` (default `30000`). Batch size remains **10k** per workload `manifest.json` (`batch_size: 10000`).
 
 **Indexer not running:** `bench-large.sh` starts `openpuffer serve` unless `OPENPUFFER_BENCH_SKIP_SERVE=1`. If you run `serve` manually, keep one process per namespace during index catch-up.
 

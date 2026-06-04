@@ -9,6 +9,11 @@
 #   ./scripts/ingest-large.sh --tier l3          # 1M docs
 #   ./scripts/ingest-large.sh --dry-run          # validate env + print plan
 #   OPENPUFFER_INGEST_TIER=l1 ./scripts/ingest-large.sh
+#   OPENPUFFER_INGEST_START_BATCH=5 ./scripts/ingest-large.sh  # resume after batch 4 OK
+#
+# Production S3: transient upsert retries (5xx/429/connection reset) with exponential backoff.
+# Env: OPENPUFFER_INGEST_RETRY_MAX (default 6), OPENPUFFER_INGEST_RETRY_BASE_MS (500),
+#      OPENPUFFER_INGEST_RETRY_MAX_MS (30000). Failures recorded in ingest JSON sidecar.
 #
 # After ingest completes, run cold bench:
 #   ./scripts/bench-large.sh --tier l1
@@ -21,6 +26,8 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/ingest-large-retry.sh
+source "$ROOT/scripts/lib/ingest-large-retry.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -63,6 +70,8 @@ SKIP_SERVE="${OPENPUFFER_INGEST_SKIP_SERVE:-}"
 SKIP_UPSERT="${OPENPUFFER_INGEST_SKIP_UPSERT:-}"
 BATCH_DIR="${OPENPUFFER_INGEST_BATCH_DIR:-}"
 RESULTS="${OPENPUFFER_INGEST_RESULTS:-}"
+START_BATCH="${OPENPUFFER_INGEST_START_BATCH:-1}"
+INGEST_FAILURE_RECORDS=()
 GENERATOR="$ROOT/benchmarks/workloads/generate_synthetic.py"
 
 BASE_URL="http://${LISTEN}"
@@ -158,6 +167,7 @@ run_dry_run() {
   echo "  seed=${MANIFEST_SEED} embedding_fn=${MANIFEST_EMBEDDING_FN} id_scheme=${MANIFEST_ID_SCHEME}"
   echo "  listen=${LISTEN} ann_version=${ANN_VERSION}"
   echo "  index_timeout=${INDEX_TIMEOUT_SEC}s delete_first=${DELETE_FIRST}"
+  echo "  start_batch=${START_BATCH} retry_max=${OPENPUFFER_INGEST_RETRY_MAX:-6} retry_base_ms=${OPENPUFFER_INGEST_RETRY_BASE_MS:-500}"
   if [[ -n "$mf" ]]; then
     echo "  manifest=${mf}"
   else
@@ -269,6 +279,13 @@ ensure_batch_dir() {
   echo "$tmp"
 }
 
+validate_start_batch() {
+  if [[ ! "$START_BATCH" =~ ^[0-9]+$ ]] || [[ "$START_BATCH" -lt 1 ]]; then
+    echo "OPENPUFFER_INGEST_START_BATCH must be a positive integer (got: ${START_BATCH})" >&2
+    exit 1
+  fi
+}
+
 run_ingest_batches() {
   local batch_root="$1"
   local sleep_s="$2"
@@ -286,24 +303,49 @@ run_ingest_batches() {
     exit 1
   fi
 
+  validate_start_batch
+
   local total=${#files[@]}
+  INGEST_BATCH_TOTAL="$total"
+  if [[ "$START_BATCH" -gt "$total" ]]; then
+    echo "OPENPUFFER_INGEST_START_BATCH=${START_BATCH} exceeds batch count ${total}" >&2
+    exit 1
+  fi
+
   local i=0
   local t0 t1 batch_ms
   INGEST_BATCH_TIMES_MS=()
+  INGEST_BATCH_FILES=()
+  INGEST_SKIPPED_BATCHES=0
   t0=$(date +%s)
 
-  INGEST_BATCH_FILES=("${files[@]}")
   for f in "${files[@]}"; do
     i=$((i + 1))
-    local bt0 bt1
+    if [[ "$i" -lt "$START_BATCH" ]]; then
+      INGEST_SKIPPED_BATCHES=$((INGEST_SKIPPED_BATCHES + 1))
+      continue
+    fi
+
+    local bt0 bt1 name
+    name="$(basename "$f")"
     bt0=$(date +%s%3N)
-    curl -sf -X POST "${V2_NS_URL}" \
-      -H 'Content-Type: application/json' \
-      -d @"$f" >/dev/null
+    if ! ingest_large_upsert_batch_with_retry "${V2_NS_URL}" "$f" "$i"; then
+      local http="${INGEST_LAST_UPSERT_HTTP_CODE:-0}"
+      local cerr="${INGEST_LAST_UPSERT_CURL_EXIT:-1}"
+      local transient=false
+      ingest_large_is_transient_failure "$cerr" "$http" && transient=true
+      ingest_large_record_failure "$i" "$name" "${OPENPUFFER_INGEST_RETRY_MAX:-6}" "$http" "$cerr" "$transient" \
+        "upsert failed after retries (resume with OPENPUFFER_INGEST_START_BATCH=${i})"
+      echo "  batch ${i}/${total} ${name}: FAILED (curl=${cerr} http=${http})" >&2
+      echo "  resume: OPENPUFFER_INGEST_START_BATCH=${i} ./scripts/ingest-large.sh --tier ${TIER}" >&2
+      write_partial_results_on_failure
+      exit 1
+    fi
     bt1=$(date +%s%3N)
     batch_ms=$((bt1 - bt0))
     INGEST_BATCH_TIMES_MS+=("$batch_ms")
-    echo "  batch ${i}/${total} $(basename "$f") ${batch_ms}ms"
+    INGEST_BATCH_FILES+=("$f")
+    echo "  batch ${i}/${total} ${name} ${batch_ms}ms"
     if [[ "$i" -lt "$total" ]]; then
       sleep "$sleep_s"
     fi
@@ -311,7 +353,10 @@ run_ingest_batches() {
 
   t1=$(date +%s)
   INGEST_WALL_SEC=$((t1 - t0))
-  INGEST_BATCH_COUNT="$total"
+  INGEST_BATCH_COUNT="${#INGEST_BATCH_FILES[@]}"
+  if [[ "$START_BATCH" -gt 1 ]]; then
+    echo "  resumed from batch ${START_BATCH} (skipped ${INGEST_SKIPPED_BATCHES} prior batches)"
+  fi
 }
 
 build_ingest_batch_runs_json() {
@@ -343,8 +388,15 @@ print(vals[idx])
 "
 }
 
+write_partial_results_on_failure() {
+  local meta=""
+  meta="$(curl -sf "${V1_NS_URL}" 2>/dev/null || echo '{}')"
+  write_results_json "$meta" "failed"
+}
+
 write_results_json() {
   local meta="$1"
+  local ingest_status="${2:-ok}"
   local out="${RESULTS:-$ROOT/benchmarks/results/ingest-large-${NUM_DOCS}.json}"
   mkdir -p "$(dirname "$out")"
   local cursor commit pref_ann caught_up
@@ -378,6 +430,14 @@ write_results_json() {
   local env_note="${INGEST_ENVIRONMENT:-}"
   [[ -z "$env_note" ]] && env_note="$(large_preflight_detect_environment 2>/dev/null || echo "unknown")"
 
+  local failures_json resume_json
+  failures_json="$(ingest_large_failures_json)"
+  resume_json="$(jq -cn \
+    --argjson start_batch "${START_BATCH:-1}" \
+    --argjson skipped_batches "${INGEST_SKIPPED_BATCHES:-0}" \
+    --argjson total_batches "${INGEST_BATCH_TOTAL:-$batch_count}" \
+    '{start_batch:$start_batch, skipped_batches:$skipped_batches, total_batches:$total_batches}')"
+
   jq -n \
     --arg benchmark "ingest_large" \
     --arg environment "$env_note" \
@@ -409,6 +469,11 @@ write_results_json() {
     --argjson batch_min_ms "$batch_min" \
     --argjson batch_max_ms "$batch_max" \
     --argjson batch_runs "$batch_runs_json" \
+    --argjson ingest_failures "$failures_json" \
+    --argjson ingest_resume "$resume_json" \
+    --arg ingest_status "$ingest_status" \
+    --argjson retry_max "${OPENPUFFER_INGEST_RETRY_MAX:-6}" \
+    --argjson retry_base_ms "${OPENPUFFER_INGEST_RETRY_BASE_MS:-500}" \
     --arg notes "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3" \
     '{
       benchmark: $benchmark,
@@ -436,6 +501,13 @@ write_results_json() {
       index_cursor_eq_wal_commit_seq: $index_ready,
       index_timeout_sec: $index_timeout_sec,
       generator: $generator,
+      ingest_status: $ingest_status,
+      ingest_failures: $ingest_failures,
+      ingest_resume: $ingest_resume,
+      ingest_retry: {
+        max_attempts: $retry_max,
+        base_backoff_ms: $retry_base_ms
+      },
       ingest_timing: {
         upsert_wall_sec: $ingest_elapsed_secs,
         index_wait_sec: $index_wait_sec,
@@ -449,7 +521,8 @@ write_results_json() {
           min: $batch_min_ms,
           max: $batch_max_ms
         },
-        batch_runs: $batch_runs
+        batch_runs: $batch_runs,
+        ingest_failures: $ingest_failures
       },
       notes: $notes
     }' >"$out"
