@@ -432,6 +432,12 @@
 - label: MinIO L1 schema example bench and ingest JSON committed with environment minio preferred_ann_version 3 filter hybrid warm ingest_timing
   command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['preferred_ann_version']==3 and i['preferred_ann_version']==3 and b['index_cursor_eq_wal_commit_seq']; req=('filter_query_runs','hybrid_query_runs','ingest_timing','p50_warm_query_latency_ms','warm_filter_query_runs','warm_hybrid_query_runs'); assert all(k in b for k in req) and len(b['filter_query_runs'])>=1 and len(b['hybrid_query_runs'])>=1 and len(b['warm_filter_query_runs'])>=1; assert 'ingest_timing' in i and len(i['ingest_timing']['batch_runs'])>=1"
   tags: [spec, bench-large, implemented]
+- label: MinIO L1 schema 10k CI exemplar JSON committed with same keys as 100k example
+  command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio-10k.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio-10k.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['namespace_docs']==10000 and i['num_docs']==10000; req=('filter_query_runs','hybrid_query_runs','ingest_timing','p50_warm_query_latency_ms','warm_filter_query_runs','warm_hybrid_query_runs'); assert all(k in b for k in req) and len(b['filter_query_runs'])>=1"
+  tags: [spec, bench-large, implemented]
+- label: ci.yml g2-minio-correctness runs compose MinIO and run-minio-large-schema-example.sh --docs 10000
+  command: grep -q 'g2-minio-correctness' .github/workflows/ci.yml && grep -q 'ensure-compose-minio.sh' .github/workflows/ci.yml && grep -q 'run-minio-large-schema-example.sh --docs 10000' .github/workflows/ci.yml
+  tags: [spec, bench-large, implemented]
 - label: ingest-large JSON records per-batch timing breakdown ingest_timing batch_runs index_wait_sec and bench-large embeds ingest sidecar
   command: test -x scripts/test_ingest-timing-schema.sh && ./scripts/test_ingest-timing-schema.sh
   tags: [spec, bench-large, implemented]

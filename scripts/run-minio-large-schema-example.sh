@@ -63,7 +63,7 @@ export OPENPUFFER_ANN_VERSION=3
 export OPENPUFFER_BENCH_ENVIRONMENT=minio
 export OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1
 export OPENPUFFER_BENCH_ENFORCE_GATES=0
-# 10k fast path writes *-schema-minio-10k.example.json (not committed; same keys as 100k example).
+# 10k fast path writes *-schema-minio-10k.example.json (committed CI exemplar; same keys as 100k example).
 if [[ "$DOCS" == "10000" ]]; then
   SCHEMA_SUFFIX="-10k"
 else
@@ -89,8 +89,8 @@ echo "run-minio-large-schema-example: tier=${TIER} docs=${DOCS} endpoint=${ENDPO
 echo "  NOT for COMPARISON.md / tpuf tables — environment=minio schema validation only"
 
 export OPENPUFFER_INGEST_DELETE_FIRST="${OPENPUFFER_INGEST_DELETE_FIRST:-1}"
-# Full schema example must upsert batches (unset ambient SKIP_UPSERT from dev shells).
-unset OPENPUFFER_INGEST_SKIP_UPSERT || true
+# Full schema example must run serve + upsert (unset dev-shell shortcuts).
+unset OPENPUFFER_INGEST_SKIP_UPSERT OPENPUFFER_INGEST_SKIP_SERVE OPENPUFFER_BENCH_SKIP_SERVE || true
 
 if [[ "$SKIP_INGEST" != "1" ]]; then
   ./scripts/ingest-large.sh --tier "$TIER"

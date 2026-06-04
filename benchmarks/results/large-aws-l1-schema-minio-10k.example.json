@@ -1,0 +1,448 @@
+{
+  "benchmark": "cold_large_l1",
+  "environment": "minio",
+  "tier": "l1",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+  "namespace": "bench-large-100000",
+  "primary_query": "vector-q00",
+  "namespace_docs": 10000,
+  "dimensions": 128,
+  "seed": 42,
+  "embedding_fn": "bench_sin_v1",
+  "cache_dir": "",
+  "consistency": "strong",
+  "preferred_ann_version": 3,
+  "index_cursor_eq_wal_commit_seq": true,
+  "storage_roundtrips": 3,
+  "cold_s3_keys_fetched": 15,
+  "s3_get_count": 0,
+  "s3_get_count_note": "segment cache counter; cold path uses s3_batch (see cold_s3_keys_fetched)",
+  "p50_query_latency_ms": 929,
+  "p95_query_latency_ms": 2925,
+  "candidates_ratio": 0.0008,
+  "recall_at_10": 1.0,
+  "cold_query_runs": 7,
+  "cold_runs": [
+    {
+      "run": 1,
+      "query_name": "vector-q00",
+      "latency_ms": 2925,
+      "storage_roundtrips": 5,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 25
+    },
+    {
+      "run": 2,
+      "query_name": "vector-q00",
+      "latency_ms": 986,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 3,
+      "query_name": "vector-q00",
+      "latency_ms": 905,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 4,
+      "query_name": "vector-q00",
+      "latency_ms": 859,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 5,
+      "query_name": "vector-q00",
+      "latency_ms": 929,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 6,
+      "query_name": "vector-q00",
+      "latency_ms": 891,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    },
+    {
+      "run": 7,
+      "query_name": "vector-q00",
+      "latency_ms": 982,
+      "storage_roundtrips": 3,
+      "candidates_ratio": 0.0008,
+      "cold_s3_keys_fetched": 15
+    }
+  ],
+  "filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 892,
+      "candidates_ratio": 0.00035,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 890,
+      "candidates_ratio": 0.0004,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-category-eq-cat-3",
+      "query_kind": "filter",
+      "latency_ms": 1004,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-lte-10",
+      "query_kind": "filter",
+      "latency_ms": 886,
+      "candidates_ratio": 0.0001,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-category-ne-cat-6-7",
+      "query_kind": "filter",
+      "latency_ms": 853,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-between",
+      "query_kind": "filter",
+      "latency_ms": 890,
+      "candidates_ratio": 0.00009,
+      "storage_roundtrips": 3,
+      "result_rows": 9,
+      "phase": "cold"
+    }
+  ],
+  "hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 873,
+      "candidates_ratio": 0.0008,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 848,
+      "candidates_ratio": 0.00015,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-product-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 939,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-sum-priority-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 869,
+      "candidates_ratio": 0.00021,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    }
+  ],
+  "index_keys_total": null,
+  "index_object_count": null,
+  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Warm phase: cache-dir=/tmp/openpuffer-bench-warm-l1-bench-large-100000, POST /warm, 20× eventual. Secondary: 6 filter + 4 hybrid (1× each, strong). Warm secondary: filter+hybrid @ eventual. Regenerate: ./scripts/bench-large.sh --tier l1 --warm",
+  "ingest_summary_path": "benchmarks/results/ingest-large-l1-schema-minio-10k.example.json",
+  "ingest_elapsed_secs": 1,
+  "index_wait_sec": 2,
+  "ingest_total_wall_sec": 3,
+  "ingest_docs_per_sec": 10000.0,
+  "ingest_batches_per_sec": 1.0,
+  "ingest_timing": {
+    "upsert_wall_sec": 1,
+    "index_wait_sec": 2,
+    "total_wall_sec": 3,
+    "batch_count": 1,
+    "batches_per_sec": 1.0,
+    "docs_per_sec": 10000.0,
+    "batch_latency_ms": {
+      "p50": 613,
+      "p95": 613,
+      "min": 613,
+      "max": 613
+    },
+    "batch_runs": [
+      {
+        "batch": 1,
+        "file": "batch-00000.json",
+        "latency_ms": 613
+      }
+    ]
+  },
+  "p50_warm_query_latency_ms": 853,
+  "p95_warm_query_latency_ms": 982,
+  "warm_query_runs": 20,
+  "warm_consistency": "eventual",
+  "warm_cache_dir": "/tmp/openpuffer-bench-warm-l1-bench-large-100000",
+  "warm_runs": [
+    {
+      "run": 1,
+      "query_name": "vector-q00",
+      "latency_ms": 997,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 2,
+      "query_name": "vector-q00",
+      "latency_ms": 903,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 3,
+      "query_name": "vector-q00",
+      "latency_ms": 982,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 4,
+      "query_name": "vector-q00",
+      "latency_ms": 943,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 5,
+      "query_name": "vector-q00",
+      "latency_ms": 894,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 6,
+      "query_name": "vector-q00",
+      "latency_ms": 858,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 7,
+      "query_name": "vector-q00",
+      "latency_ms": 899,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 8,
+      "query_name": "vector-q00",
+      "latency_ms": 860,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 9,
+      "query_name": "vector-q00",
+      "latency_ms": 827,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 10,
+      "query_name": "vector-q00",
+      "latency_ms": 848,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 11,
+      "query_name": "vector-q00",
+      "latency_ms": 853,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 12,
+      "query_name": "vector-q00",
+      "latency_ms": 841,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 13,
+      "query_name": "vector-q00",
+      "latency_ms": 836,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 14,
+      "query_name": "vector-q00",
+      "latency_ms": 875,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 15,
+      "query_name": "vector-q00",
+      "latency_ms": 856,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 16,
+      "query_name": "vector-q00",
+      "latency_ms": 835,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 17,
+      "query_name": "vector-q00",
+      "latency_ms": 826,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 18,
+      "query_name": "vector-q00",
+      "latency_ms": 840,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 19,
+      "query_name": "vector-q00",
+      "latency_ms": 831,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 20,
+      "query_name": "vector-q00",
+      "latency_ms": 853,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    }
+  ],
+  "warm_filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 861,
+      "candidates_ratio": 0.00035,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 869,
+      "candidates_ratio": 0.0004,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-category-eq-cat-3",
+      "query_kind": "filter",
+      "latency_ms": 851,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-lte-10",
+      "query_kind": "filter",
+      "latency_ms": 868,
+      "candidates_ratio": 0.0001,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-category-ne-cat-6-7",
+      "query_kind": "filter",
+      "latency_ms": 915,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-between",
+      "query_kind": "filter",
+      "latency_ms": 818,
+      "candidates_ratio": 0.00009,
+      "storage_roundtrips": null,
+      "result_rows": 9,
+      "phase": "warm"
+    }
+  ],
+  "warm_hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 817,
+      "candidates_ratio": 0.0008,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 913,
+      "candidates_ratio": 0.00015,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-product-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 890,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-sum-priority-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 878,
+      "candidates_ratio": 0.00021,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    }
+  ]
+}

@@ -18,7 +18,7 @@ Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN
 ./scripts/run-minio-correctness-gates.sh
 ```
 
-**CI:** On every push/PR, job `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the same script (requires Docker for MinIO testcontainers).
+**CI:** On every push/PR, job `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the same script (Docker testcontainers), then compose MinIO + [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) `--docs 10000` (schema fast path, 25m step timeout).
 
 **Full MinIO preflight** (plan §2.3 — longer):
 
@@ -99,7 +99,7 @@ Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.s
 # → large-aws-l1-schema-minio.example.json + ingest-large-l1-schema-minio.example.json
 #   (environment=minio; ingest timing; filter/hybrid; warm by default; --skip-warm optional)
 
-# CI / quick schema validation (~2–5 min; does not update committed 100k artifacts):
+# CI / quick schema validation (~2–5 min; committed 10k exemplars, not the 100k artifacts):
 ./scripts/run-minio-large-schema-example.sh --docs 10000
 # → large-aws-l1-schema-minio-10k.example.json + ingest-large-l1-schema-minio-10k.example.json
 ```

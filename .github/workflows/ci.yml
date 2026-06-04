@@ -62,7 +62,7 @@ jobs:
   g2-minio-correctness:
     name: G2 MinIO correctness gates
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +82,15 @@ jobs:
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: ./scripts/run-minio-correctness-gates.sh
+
+      - name: Start MinIO (compose, schema ingest)
+        run: ./scripts/ensure-compose-minio.sh
+
+      - name: MinIO L1 schema example @ 10k (CI fast path)
+        timeout-minutes: 25
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: ./scripts/run-minio-large-schema-example.sh --docs 10000
 
   bench-10k:
     name: bench 10k (MinIO cold gates)
