@@ -612,7 +612,7 @@ else
 fi
 
 echo "Waiting for indexer (timeout ${INDEX_TIMEOUT_SEC}s)…"
-wait_until_indexed
+wait_until_indexed || large_benchmark_exit_index_timeout "ingest-large: index wait timed out (see diagnose-index-lag.sh)"
 
 NS_META="$(verify_namespace_meta)"
 write_results_json "$NS_META"

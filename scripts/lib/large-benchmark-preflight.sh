@@ -4,6 +4,9 @@
 # run-tpuf-large-benchmark.sh — do not execute directly.
 # See docs/BENCHMARKS.md § large-dataset runbook and docs/PLAN_LARGE_DATASET_BENCHMARK.md G3/G4.
 
+# shellcheck source=scripts/lib/large-benchmark-exit-codes.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/large-benchmark-exit-codes.sh"
+
 large_preflight_root() {
   if [[ -n "${LARGE_PREFLIGHT_ROOT:-}" ]]; then
     echo "$LARGE_PREFLIGHT_ROOT"

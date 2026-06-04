@@ -668,7 +668,7 @@ fi
 
 if [[ -z "$SKIP_INDEX_WAIT" ]]; then
   echo "Waiting for ${DOCS}-doc namespace ${NAMESPACE} (index_cursor==wal_commit_seq, preferred_ann_version==3, timeout ${INDEX_TIMEOUT_SEC}s)…"
-  wait_until_indexed
+  wait_until_indexed || large_benchmark_exit_index_timeout "bench-large: index wait timed out"
 else
   echo "Skipping index wait (OPENPUFFER_BENCH_SKIP_INDEX_WAIT=1); verifying meta…"
   verify_namespace_meta >/dev/null

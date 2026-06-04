@@ -96,10 +96,8 @@ fi
 if [[ -x "$ROOT/scripts/preflight-tpuf.sh" ]]; then
   tpuf_preflight_args=(--tier "$TIER")
   [[ "$WARM_MODE" == "1" ]] && tpuf_preflight_args+=(--warm)
-  "$ROOT/scripts/preflight-tpuf.sh" "${tpuf_preflight_args[@]}" || {
-    echo "preflight-tpuf failed (API key/region/RTT); fix or use --preflight-only after resolving" >&2
-    exit 1
-  }
+  "$ROOT/scripts/preflight-tpuf.sh" "${tpuf_preflight_args[@]}" || \
+    large_benchmark_exit_preflight "preflight-tpuf failed (API key/region/RTT); fix before live G4"
 else
   large_preflight_validate_tpuf_env
   large_preflight_tpuf_python_deps "$ROOT"

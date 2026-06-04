@@ -116,6 +116,15 @@ grep -q 'serve_ready_timeout' scripts/ingest-large.sh \
 grep -q 'serve_ready_timeout' scripts/bench-large.sh \
   || fail 'bench-large dry-run should mention serve_ready_timeout'
 
+# Exit code 2 when serve readiness times out (large-benchmark-exit-codes.sh).
+serve_exit=0
+(
+  BASE_URL="http://127.0.0.1:${DEAD_PORT}"
+  SERVE_PID=""
+  OPENPUFFER_SERVE_READY_TIMEOUT_SEC=1 wait_for_health
+) 2>/dev/null || serve_exit=$?
+[[ "$serve_exit" == 2 ]] || fail "wait_for_health expected exit 2 on timeout, got ${serve_exit}"
+
 ./scripts/ingest-large.sh --dry-run >/dev/null
 ./scripts/bench-large.sh --dry-run >/dev/null
 

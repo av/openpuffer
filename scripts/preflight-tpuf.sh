@@ -52,15 +52,14 @@ while [[ $# -gt 0 ]]; do
       large_preflight_print_tpuf_operator_env
       exit 0
       ;;
-    *) echo "preflight-tpuf: unknown argument: $1" >&2; exit 1 ;;
+    *) large_benchmark_exit_usage "preflight-tpuf: unknown argument: $1" ;;
   esac
 done
 
 case "$TIER" in
   l1|l2|l3) ;;
   *)
-    echo "preflight-tpuf: unknown tier ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
+    large_benchmark_exit_preflight "preflight-tpuf: unknown tier ${TIER} (use l1, l2, or l3)"
     ;;
 esac
 
@@ -182,8 +181,8 @@ main() {
 
   large_preflight_toolchain
   preflight_tpuf_ec2_region
-  preflight_tpuf_api_key || exit 1
-  preflight_tpuf_region || exit 1
+  preflight_tpuf_api_key || large_benchmark_exit_preflight "preflight-tpuf: API key check failed"
+  preflight_tpuf_region || large_benchmark_exit_preflight "preflight-tpuf: region alignment failed"
   large_preflight_validate_tier_workload "$TIER" "$ROOT"
   large_preflight_tpuf_python_deps "$ROOT"
   preflight_tpuf_testing_org

@@ -90,19 +90,19 @@ if [[ "$SKIP_G2" != "1" ]]; then
 fi
 
 if [[ -x "$ROOT/scripts/preflight-aws-ec2.sh" ]]; then
-  "$ROOT/scripts/preflight-aws-ec2.sh" || {
-    echo "preflight-aws-ec2 failed (region/metadata/S3); fix or use --skip-g2 only after resolving" >&2
-    exit 1
-  }
+  "$ROOT/scripts/preflight-aws-ec2.sh" || \
+    large_benchmark_exit_preflight "preflight-aws-ec2 failed (region/metadata/S3); fix before live G3"
 fi
 
 large_preflight_validate_s3_env
 ENV_DETECTED="$(large_preflight_detect_environment)"
 if [[ "$ENV_DETECTED" != "aws-s3" ]]; then
-  echo "preflight: OPENPUFFER_S3_ENDPOINT does not look like AWS (${ENV_DETECTED})" >&2
-  echo "  G3 comparison artifacts require aws-s3. For MinIO schema validation use:" >&2
-  echo "    ./scripts/run-minio-large-schema-example.sh --tier ${TIER}" >&2
-  exit 1
+  {
+    echo "preflight: OPENPUFFER_S3_ENDPOINT does not look like AWS (${ENV_DETECTED})" >&2
+    echo "  G3 comparison artifacts require aws-s3. For MinIO schema validation use:" >&2
+    echo "    ./scripts/run-minio-large-schema-example.sh --tier ${TIER}" >&2
+  }
+  large_benchmark_exit_preflight
 fi
 export OPENPUFFER_BENCH_ENVIRONMENT=aws-s3
 

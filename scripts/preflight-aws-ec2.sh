@@ -4,7 +4,7 @@
 # and S3 head-bucket before ingest/bench spend.
 #
 # Usage:
-#   ./scripts/preflight-aws-ec2.sh              # checks only (exit 0/1)
+#   ./scripts/preflight-aws-ec2.sh              # checks only (exit codes: benchmarks/README.md)
 #   ./scripts/preflight-aws-ec2.sh --tier l2    # cost estimate for tier
 #   ./scripts/preflight-aws-ec2.sh --dry-run    # cost estimate only (no S3/IMDS checks)
 #   ./scripts/preflight-aws-ec2.sh --export-creds  # write exports to a chmod-600 temp file; prints path only
@@ -46,15 +46,14 @@ while [[ $# -gt 0 ]]; do
       sed -n '2,18p' "$0"
       exit 0
       ;;
-    *) echo "preflight-aws-ec2: unknown argument: $1" >&2; exit 1 ;;
+    *) large_benchmark_exit_usage "preflight-aws-ec2: unknown argument: $1" ;;
   esac
 done
 
 case "$TIER" in
   l1|l2|l3) ;;
   *)
-    echo "preflight-aws-ec2: unknown tier ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
+    large_benchmark_exit_preflight "preflight-aws-ec2: unknown tier ${TIER} (use l1, l2, or l3)"
     ;;
 esac
 
@@ -224,15 +223,15 @@ main() {
   large_preflight_need_cmd jq
   preflight_ec2_detect
   preflight_ec2_recommend_instance
-  preflight_ec2_region_match || exit 1
+  preflight_ec2_region_match || large_benchmark_exit_preflight "preflight-aws-ec2: EC2/S3 region mismatch"
   preflight_ec2_host_label
   preflight_ec2_client_mode
   if [[ "$EXPORT_CREDS" == "1" ]]; then
-    preflight_ec2_export_role_creds || exit 1
+    preflight_ec2_export_role_creds || large_benchmark_exit_preflight "preflight-aws-ec2: could not export instance-profile credentials"
     exit 0
   fi
   preflight_ec2_export_role_creds || true
-  preflight_ec2_s3 || exit 1
+  preflight_ec2_s3 || large_benchmark_exit_preflight "preflight-aws-ec2: S3 head-bucket or bucket env failed"
   preflight_ec2_cost_estimate
   echo "preflight-ec2: OK (tier=${TIER})"
 }
