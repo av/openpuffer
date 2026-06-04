@@ -21,10 +21,7 @@ python3 benchmarks/workloads/generate_synthetic.py --num-docs 1000000 --output-d
 
 ## Embedding function
 
-| `embedding_fn` | Formula | Use when |
-|----------------|---------|----------|
-| **`bench_sin_v1`** (default) | `sin((doc_index × dim + d) × 0.001)` | Matching `bench_cold.rs`, `integration_s3` stress, existing recall gates |
-| `xorshift_f32` | xorshift64 stream from `seed ⊕ doc_index` | Fresh PRNG corpus; document `seed` in report |
+Committed tiers use **`bench_sin_v1`** (default). Full formulas, Rust/Python parity table, and when to use **`xorshift_f32`** for cross-system runs: **[`../EMBEDDINGS.md`](../EMBEDDINGS.md)**.
 
 ## Artifacts
 

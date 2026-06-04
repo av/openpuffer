@@ -143,7 +143,7 @@ Before operator spend (G3–G5), run all offline gates in one command:
 Use **synthetic, deterministic** data so runs are diffable without storing 100k×128 floats in git:
 
 - **Ids:** `doc-{i}` via `id_scheme: doc-prefix` in committed manifests (generator also supports `u64`; **do not mix** across a comparison run). See `benchmarks/workloads/synthetic-128/*/manifest.json`.
-- **Vectors:** seeded PRNG per id (same seed in generator for openpuffer and tpuf).
+- **Vectors:** deterministic per `embedding_fn` in manifest (committed tiers: **`bench_sin_v1`**, seed **42** for labeling only). See [`benchmarks/workloads/EMBEDDINGS.md`](../benchmarks/workloads/EMBEDDINGS.md) for `bench_sin_v1` vs `xorshift_f32`, Rust gate parity, and cross-system rules.
 - **Attributes (optional but recommended for hybrid/filter tests):**
   - `category`: one of 8 values (filter `In` tests).
   - `title`: short string (FTS smoke).
@@ -395,7 +395,7 @@ Record these commit SHAs in every report:
 
 Implement `benchmarks/workloads/generate_synthetic.py` (or Rust binary) that:
 
-1. Writes `manifest.json`: `seed`, `num_docs`, `dim`, `batch_size`, `id_scheme`, attribute definitions.
+1. Writes `manifest.json`: `seed`, `num_docs`, `dim`, `batch_size`, `id_scheme`, `embedding_fn`, attribute definitions (see [`benchmarks/workloads/EMBEDDINGS.md`](../benchmarks/workloads/EMBEDDINGS.md)).
 2. Streams **upsert batches** compatible with:
    - openpuffer: `POST /v2/namespaces/{ns}` with `upsert_columns` (10k rows/batch).
    - turbopuffer: `namespace.write(upsert_columns=...)` or `upsert_rows` with same column names.
