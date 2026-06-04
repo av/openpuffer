@@ -2,7 +2,22 @@
 
 **Date:** 2026-06-04  
 **Program:** [PLAN_LARGE_DATASET_BENCHMARK.md](../PLAN_LARGE_DATASET_BENCHMARK.md) — apples-to-apples openpuffer vs managed turbopuffer on a shared synthetic workload (L1 default: **100k × 128-dim** cosine).  
-**Status:** **Offline harness COMPLETE** · **Live G3–G5 PENDING** (credentials + EC2)
+**Status:** **Offline harness COMPLETE** · **Live G3–G5 PENDING** (credentials + EC2)  
+**Offline harness:** no remaining gaps
+
+---
+
+## Offline harness closure (2026-06-04)
+
+All PLAN [verification checklist](../PLAN_LARGE_DATASET_BENCHMARK.md#verification-checklist-program-complete) rows are `[x]` for **offline** work (A1–A6 harness, G2 MinIO/CI, G6 regression, schemas, operators, exemplar G5). Unchecked `[ ]` items are **live only** (G3/G4/3.3 measured JSON, G5 measured report, [COMPARISON.md](../COMPARISON.md) L1 rows) and require EC2 + real AWS S3 + `TURBOPUFFER_API_KEY`.
+
+Re-verified on this branch:
+
+```bash
+./scripts/verify-large-benchmark-program.sh   # exit 0 @ 8ca2eb4
+```
+
+No further offline harness implementation is planned before operator live G3–G5.
 
 ---
 
@@ -12,7 +27,7 @@ This PR-equivalent handoff documents a **timeboxed implementation** (~60 harness
 
 | Track | State |
 |-------|--------|
-| Harness (A1–A6, G2, G6, schemas, operators) | **Done** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ `9670556` |
+| Harness (A1–A6, G2, G6, schemas, operators) | **Done** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ `8ca2eb4` (prior audit `9670556`) |
 | Live measurement (G3 `large-aws-l1.json`, G4 `tpuf-l1.json`, 3.3 overlap, G5 measured) | **Blocked** — see [§ Blocked on credentials](#blocked-on-credentials) |
 
 **One command before any cloud spend:**
@@ -147,7 +162,7 @@ Detailed diagram and script names: [PLAN § Architecture](../PLAN_LARGE_DATASET_
 
 **Included gates (non-exhaustive):** pytest (workloads, tpuf driver, id-overlap); `test_render-report*.sh`; `validate-benchmark-json.sh`; `cargo test --test synthetic_workload_gate`; L1/L2/L3 harness dry-runs; `facts check --tags bench-large` / `bench-tpuf`; shellcheck; `check-benchmark-artifacts.sh`.
 
-**Last full audit:** 2026-06-04, git **`9670556`**, exit **0**.
+**Last full audit:** 2026-06-04, git **`8ca2eb4`**, exit **0** (offline harness: no remaining gaps).
 
 ### 2. Operator E2E dry-run (no cloud credentials)
 
