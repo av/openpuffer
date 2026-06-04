@@ -28,7 +28,7 @@ Committed tiers use **`bench_sin_v1`** (default). Full formulas, Rust/Python par
 | File | Purpose |
 |------|---------|
 | `manifest.json` | `seed`, `num_docs`, `dim`, `batch_size`, id/attribute definitions, ingest cadence |
-| `queries.json` | 50 vector + 6 filter + 4 hybrid query specs; `spot_check` (10 ANN queries for Phase 3.3 id overlap) |
+| `queries.json` | 50 vector + 6 filter + 4 hybrid query specs; `spot_check` (10 ANN queries for Phase 3.3 id overlap). Full schema: **[`../QUERY_SPEC.md`](../QUERY_SPEC.md)** |
 | `batches/batch-*.json` | Optional; `upsert_columns` bodies for curl/SDK ingest |
 
 ## Ingest (openpuffer)

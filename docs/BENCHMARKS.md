@@ -16,6 +16,8 @@ For the **large-dataset turbopuffer comparison program** ([PLAN_LARGE_DATASET_BE
 
 Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md) Phase 2–3), prove API semantics on the **shared synthetic-128 fixture** (`benchmarks/workloads/synthetic-128/l1-100k/`).
 
+**Query spec:** [`benchmarks/workloads/QUERY_SPEC.md`](../benchmarks/workloads/QUERY_SPEC.md) — `vector_queries`, `filter_queries`, `hybrid_queries`, `spot_check`, `recall_defaults`, `cold_query_protocol`, `warm_query_protocol`.
+
 | Gate | Command | What it checks |
 |------|---------|----------------|
 | Fixture vectors | `cargo test --test synthetic_workload_gate` | `queries.json` vectors match `bench_sin_v1`; `recall_defaults` num=20, top_k=10 |
@@ -206,7 +208,7 @@ Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only
 
 **GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs [`verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (full offline harness). Optional live dispatch (secrets, **disabled by default**): [benchmark-large-live.yml](../.github/workflows/benchmark-large-live.yml) — secret names and IAM notes in [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md).
 
-**Spot-check ids:** `queries.json` `spot_check` uses the first 10 `vector_queries`; doc indices scale with tier (`num_docs / 50` stride), e.g. L2 → 0, 10k, …, 90k; L3 → 0, 20k, …, 180k.
+**Spot-check ids:** [`queries.json` `spot_check`](../benchmarks/workloads/QUERY_SPEC.md#spot_check) uses the first 10 `vector_queries`; doc indices scale with tier (`num_docs / 50` stride), e.g. L2 → 0, 10k, …, 90k; L3 → 0, 20k, …, 180k.
 
 ### G3 — EC2 + AWS S3 operator setup
 
@@ -574,11 +576,11 @@ Collect the same **logical** metrics on both sides where APIs allow. JSON field 
 | Batch upsert p50 | ms | `ingest_timing.batch_latency_ms.p50` | — | Per-batch POST latency |
 | Per-run cold detail | JSON array | `cold_runs[]` | `cold_runs[]` | Latency + performance per run |
 
-**Recall billing (tpuf):** use `queries.json` `recall_defaults` (`num=20`, `top_k=10`) — same as openpuffer bench. Lower `num` on L2/L3 if cost-sensitive.
+**Recall billing (tpuf):** use [`queries.json` `recall_defaults`](../benchmarks/workloads/QUERY_SPEC.md#recall_defaults) (`num=20`, `top_k=10`) — same as openpuffer bench. Lower `num` on L2/L3 if cost-sensitive.
 
 ### Phase 4 — Cold query protocol (mandatory)
 
-Shared definition in workload [`queries.json`](../benchmarks/workloads/synthetic-128/l1-100k/queries.json) → `cold_query_protocol`:
+Shared definition: [`benchmarks/workloads/QUERY_SPEC.md`](../benchmarks/workloads/QUERY_SPEC.md) (`cold_query_protocol`, `warm_query_protocol`, `vector_queries`, `filter_queries`, `hybrid_queries`). Committed L1 file: [`l1-100k/queries.json`](../benchmarks/workloads/synthetic-128/l1-100k/queries.json).
 
 | Parameter | Default | Override env |
 |-----------|---------|--------------|
@@ -623,7 +625,7 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
 
 **Warm queries (secondary):** `./scripts/bench-large.sh --warm` (openpuffer) or `./scripts/run-tpuf-large-benchmark.sh --warm` / `run_benchmark.py --warm` (tpuf `hint_cache_warm` + 20× eventual from `warm_query_protocol`). JSON fields `p50_warm_query_latency_ms` / `p95_warm_query_latency_ms`; `render-report.sh` shows warm rows when present.
 
-**Hybrid / filter (secondary):** `bench-large.sh` and `run_benchmark.py` run all `filter_queries` / `hybrid_queries` from `queries.json` (1× each, strong) after cold vector runs; JSON fields `filter_query_runs` / `hybrid_query_runs` (openpuffer hybrid resets cache each). With `--warm`, openpuffer also records `warm_filter_query_runs` / `warm_hybrid_query_runs` @ eventual. G2 integration gates assert correctness on MinIO; `storage_roundtrips ≤ 4` on hybrid.
+**Hybrid / filter (secondary):** `bench-large.sh` and `run_benchmark.py` run all [`filter_queries` / `hybrid_queries`](../benchmarks/workloads/QUERY_SPEC.md) (1× each, strong) after cold vector runs; JSON fields `filter_query_runs` / `hybrid_query_runs` (openpuffer hybrid resets cache each). With `--warm`, openpuffer also records `warm_filter_query_runs` / `warm_hybrid_query_runs` @ eventual. G2 integration gates assert correctness on MinIO; `storage_roundtrips ≤ 4` on hybrid.
 
 ### Phase 5 — Debugging playbook
 
