@@ -13,6 +13,8 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 
 ### Harness evidence (representative commits)
 
+Full dated list (A1–A6, G2–G6, schemas, operators): [benchmarks/CHANGELOG_LARGE_DATASET.md](../benchmarks/CHANGELOG_LARGE_DATASET.md).
+
 | Area | Commits | Artifact / gate |
 |------|---------|-----------------|
 | Workload A1 | `6186190`, `76ff071` | `benchmarks/workloads/generate_synthetic.py`, L1–L3 manifests |

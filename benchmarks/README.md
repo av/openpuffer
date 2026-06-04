@@ -1,6 +1,6 @@
 # Benchmarks hub
 
-Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and result JSON. Operator procedures and SLO tables live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md); program goals and phase checklist in [docs/PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md). **EC2 live run (one page):** [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md).
+Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and result JSON. Operator procedures and SLO tables live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md); program goals and phase checklist in [docs/PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md). **Harness commit history:** [CHANGELOG_LARGE_DATASET.md](CHANGELOG_LARGE_DATASET.md). **EC2 live run (one page):** [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md).
 
 ## Directory layout
 
@@ -192,6 +192,7 @@ facts check --tags bench-tpuf
 
 ## Further reading
 
+- [CHANGELOG_LARGE_DATASET.md](CHANGELOG_LARGE_DATASET.md) — harness program commits (A1–A6, G2–G6) by date
 - [docs/BENCHMARKS.md](../docs/BENCHMARKS.md) — SLOs, G2/G3/G4 runbooks, L2/L3 expectations
 - [docs/COMPARISON.md](../docs/COMPARISON.md) — product comparison + measured L1 table (after live JSON)
 - [docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md](../docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md) — report layout (`NOT MEASURED`)
