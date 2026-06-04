@@ -428,6 +428,9 @@
 - label: ingest-large production S3 retry resume and test_ingest-large-retry.sh
   command: test -x scripts/test_ingest-large-retry.sh && test -f scripts/lib/ingest-large-retry.sh && ./scripts/test_ingest-large-retry.sh
   tags: [spec, bench-large, implemented]
+- label: scripts/diagnose-index-lag.sh polls namespace meta index_cursor wal_commit_seq with tier defaults and --once
+  command: test -x scripts/diagnose-index-lag.sh && grep -q 'index_cursor' scripts/diagnose-index-lag.sh && grep -q 'wal_commit_seq' scripts/diagnose-index-lag.sh && grep -q 'large_preflight_tier_index_timeout_sec' scripts/diagnose-index-lag.sh && grep -q 'OPENPUFFER_INGEST_SKIP_UPSERT' scripts/diagnose-index-lag.sh && ./scripts/diagnose-index-lag.sh --help >/dev/null && ./scripts/diagnose-index-lag.sh --tier l2 --once >/dev/null 2>&1 || test $? -eq 1
+  tags: [spec, bench-large, implemented]
 - label: scripts/bench-large.sh tiered AWS bench dry-run reads queries.json recall_defaults filter_query_runs hybrid_query_runs and targets benchmarks/results/large-aws-{tier}.json
   command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && grep -q 'warm_query_protocol' scripts/bench-large.sh && grep -q 'filter_query_runs' scripts/bench-large.sh && grep -q 'run_filter_hybrid_queries' scripts/bench-large.sh && test -x scripts/test_bench-large-secondary-schema.sh && ./scripts/test_bench-large-secondary-schema.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null && ./scripts/bench-large.sh --warm --dry-run >/dev/null
   tags: [spec, bench-large, implemented]

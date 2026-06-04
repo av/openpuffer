@@ -325,7 +325,7 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 
 | Check | Command | Interpretation |
 |-------|---------|----------------|
-| Meta lag | `curl -s "http://127.0.0.1:8080/v1/namespaces/${NAMESPACE}" \| jq '{index_cursor,wal_commit_seq,unindexed_bytes,preferred_ann_version}'` | `index_cursor < wal_commit_seq` → indexer still draining WAL |
+| Meta lag | `./scripts/diagnose-index-lag.sh --namespace "${NAMESPACE}" --once` or `curl … \| jq '{index_cursor,wal_commit_seq,…}'` | `index_cursor < wal_commit_seq` → indexer still draining WAL; see [§ Index timeout exceeded](#index-timeout-exceeded-ingest-largesh) |
 | S3 index growth | `aws s3 ls "s3://${OPENPUFFER_S3_BUCKET}/openpuffer/${NAMESPACE}/index/" \| wc -l` | Stuck count → indexer not committing; check `serve` logs |
 | CPU | `top` / `htop` on EC2 | 100% CPU + burstable instance → switch to `m7i.xlarge` |
 | Region | `./scripts/preflight-aws-ec2.sh` | EC2 region ≠ bucket region multiplies round-trips |
@@ -345,6 +345,59 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 **Serve not ready before upsert/query:** `ingest-large.sh` / `bench-large.sh` poll `GET /health` or `GET /v1/ready` (either HTTP 2xx) via [`scripts/lib/large-benchmark-serve-ready.sh`](../scripts/lib/large-benchmark-serve-ready.sh). Defaults: `OPENPUFFER_SERVE_READY_TIMEOUT_SEC=120`, `OPENPUFFER_SERVE_READY_POLL_SEC=0.5`. On timeout the error includes last probe status and whether the background `serve` PID is still alive.
 
 **After catch-up:** confirm `index_cursor_eq_wal_commit_seq: true` in `ingest-large-l1.json` / `large-aws-l1.json` before trusting cold p50.
+
+#### Index timeout exceeded (`ingest-large.sh`)
+
+Symptom (stderr from [`ingest-large.sh`](../scripts/ingest-large.sh)):
+
+```text
+timeout waiting for index_cursor == wal_commit_seq and preferred_ann_version==3 on bench-large-100000
+```
+
+This is **not** an upsert failure — WAL commits finished (or were skipped) but the background indexer did not catch up before `OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC` (tier default from [`large_preflight_tier_index_timeout_sec`](../scripts/lib/large-benchmark-preflight.sh): **7200s** L1, **10800s** L2, **14400s** L3).
+
+**Read `index_cursor` vs `wal_commit_seq`:**
+
+| Field | Meaning |
+|-------|---------|
+| `wal_commit_seq` | Highest WAL segment committed by upsert (monotonic with batches) |
+| `index_cursor` | Highest WAL segment fully reflected in ANN index objects on S3 |
+| **Lag** | `wal_commit_seq - index_cursor` when `index_cursor < wal_commit_seq` (also `index_status: catching_up`, `unindexed_bytes > 0`) |
+| **Ready** | `index_cursor == wal_commit_seq` **and** `preferred_ann_version == 3` **and** `wal_commit_seq > 0` |
+
+```bash
+# Live poll (human-readable; exits 0 when caught up)
+./scripts/diagnose-index-lag.sh --tier l1
+./scripts/diagnose-index-lag.sh --namespace bench-large-100000 --once
+
+# One-shot JSON (same fields ingest-large polls)
+curl -s "http://127.0.0.1:8080/v1/namespaces/bench-large-100000" \
+  | jq '{index_cursor,wal_commit_seq,lag:((.wal_commit_seq//0)-(.index_cursor//0)),
+         index_status,unindexed_bytes,preferred_ann_version}'
+```
+
+**Recovery — pick the path that matches meta:**
+
+| Situation | Evidence | Action |
+|-----------|----------|--------|
+| Upsert still running / batch failed | `ingest-large-*.json` → `ingest_status: failed`, `ingest_failures` | Fix S3/network; resume **`OPENPUFFER_INGEST_START_BATCH=<n>`** (1-based batch to run next; script prints `n` on failure). Do **not** set `START_BATCH` for index-timeout-only — upsert already completed. |
+| Upsert complete, indexer lagging | `wal_commit_seq > 0`, `index_cursor < wal_commit_seq`, ingest JSON has full `batch_count` | Keep **one** `serve` alive; poll with `diagnose-index-lag.sh`; re-run index wait only: `OPENPUFFER_INGEST_SKIP_UPSERT=1 ./scripts/ingest-large.sh --tier l1` (same namespace/tier). |
+| Timeout too short for host/tier | Lag decreasing in diagnose output but ingest-large exits at tier default | `export OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC=14400` (or higher); combine with `SKIP_UPSERT=1` above. Bench path: `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC`. |
+| Wrong ANN version | `preferred_ann_version != 3` while cursors match | `export OPENPUFFER_ANN_VERSION=3`; restart `serve`; delete namespace + full re-ingest if index was built with v2. |
+| No indexer / serve died | `diagnose-index-lag.sh` cannot reach API; lag stuck for many minutes | Restart `serve` (or re-run ingest without `OPENPUFFER_INGEST_SKIP_SERVE`); check CPU (avoid `t3` burst) and S3 `503 SlowDown` in logs. |
+
+**`OPENPUFFER_INGEST_START_BATCH` vs index timeout:**
+
+- **`START_BATCH`** — only when a **specific upsert batch** failed after retries (`ingest_failures` in sidecar). Example: batches 1–4 OK, batch 5 failed → `OPENPUFFER_INGEST_START_BATCH=5 ./scripts/ingest-large.sh --tier l1`.
+- **Index timeout** — all batches committed; do **not** bump `START_BATCH`. Use **`OPENPUFFER_INGEST_SKIP_UPSERT=1`** so ingest-large skips generator/upsert and only runs `wait_until_indexed` + writes `ingest-large-*.json`.
+
+**When to raise `OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC`:**
+
+- L2/L3 on smaller instances, cross-region S3, or heavy parallel load: set **before** re-run (ingest does not extend timeout mid-poll).
+- Rule of thumb: if `diagnose-index-lag.sh` shows lag dropping steadily, prefer **SKIP_UPSERT + same or +50% timeout** over deleting the namespace.
+- If lag is **flat for >30 min** with CPU pegged or S3 errors, fix infrastructure first; raising timeout alone will not help.
+
+Partial sidecar on index timeout: `ingest-large-*.json` may show `ingest_status: failed` or incomplete `index_wait_sec` with `index_cursor < wal_commit_seq` — safe to overwrite after a successful `SKIP_UPSERT` re-run.
 
 #### EC2 preflight script
 
