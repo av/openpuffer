@@ -17,8 +17,8 @@
   "cold_s3_keys_fetched": 15,
   "s3_get_count": 0,
   "s3_get_count_note": "segment cache counter; cold path uses s3_batch (see cold_s3_keys_fetched)",
-  "p50_query_latency_ms": 1205,
-  "p95_query_latency_ms": 3301,
+  "p50_query_latency_ms": 946,
+  "p95_query_latency_ms": 2974,
   "candidates_ratio": 0.0008,
   "recall_at_10": 1.0,
   "cold_query_runs": 7,
@@ -26,7 +26,7 @@
     {
       "run": 1,
       "query_name": "vector-q00",
-      "latency_ms": 3301,
+      "latency_ms": 2974,
       "storage_roundtrips": 5,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 25
@@ -34,7 +34,7 @@
     {
       "run": 2,
       "query_name": "vector-q00",
-      "latency_ms": 1156,
+      "latency_ms": 855,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
@@ -42,7 +42,7 @@
     {
       "run": 3,
       "query_name": "vector-q00",
-      "latency_ms": 2144,
+      "latency_ms": 869,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
@@ -50,7 +50,7 @@
     {
       "run": 4,
       "query_name": "vector-q00",
-      "latency_ms": 1164,
+      "latency_ms": 992,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
@@ -58,7 +58,7 @@
     {
       "run": 5,
       "query_name": "vector-q00",
-      "latency_ms": 959,
+      "latency_ms": 946,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
@@ -66,7 +66,7 @@
     {
       "run": 6,
       "query_name": "vector-q00",
-      "latency_ms": 1205,
+      "latency_ms": 969,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
@@ -74,34 +74,420 @@
     {
       "run": 7,
       "query_name": "vector-q00",
-      "latency_ms": 1301,
+      "latency_ms": 888,
       "storage_roundtrips": 3,
       "candidates_ratio": 0.0008,
       "cold_s3_keys_fetched": 15
     }
   ],
+  "filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 954,
+      "candidates_ratio": 0.00035,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 1024,
+      "candidates_ratio": 0.0004,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-category-eq-cat-3",
+      "query_kind": "filter",
+      "latency_ms": 991,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-lte-10",
+      "query_kind": "filter",
+      "latency_ms": 867,
+      "candidates_ratio": 0.0001,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-category-ne-cat-6-7",
+      "query_kind": "filter",
+      "latency_ms": 900,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "filter-priority-between",
+      "query_kind": "filter",
+      "latency_ms": 826,
+      "candidates_ratio": 0.00009,
+      "storage_roundtrips": 3,
+      "result_rows": 9,
+      "phase": "cold"
+    }
+  ],
+  "hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 841,
+      "candidates_ratio": 0.0008,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 867,
+      "candidates_ratio": 0.00015,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-product-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 842,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": 3,
+      "result_rows": 0,
+      "phase": "cold"
+    },
+    {
+      "query_name": "hybrid-sum-priority-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 834,
+      "candidates_ratio": 0.00021,
+      "storage_roundtrips": 3,
+      "result_rows": 10,
+      "phase": "cold"
+    }
+  ],
   "index_keys_total": null,
   "index_object_count": null,
+  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Warm phase: cache-dir=/tmp/openpuffer-bench-warm-l1-bench-large-100000, POST /warm, 20× eventual. Secondary: 6 filter + 4 hybrid (1× each, strong). Warm secondary: filter+hybrid @ eventual. Regenerate: ./scripts/bench-large.sh --tier l1 --warm",
   "ingest_summary_path": "benchmarks/results/ingest-large-l1-schema-minio.example.json",
-  "ingest_elapsed_secs": 27,
-  "index_wait_sec": 4,
-  "ingest_total_wall_sec": 31,
-  "ingest_docs_per_sec": 3703.7,
-  "ingest_batches_per_sec": 0.3704,
+  "ingest_elapsed_secs": 21,
+  "index_wait_sec": 12,
+  "ingest_total_wall_sec": 33,
+  "ingest_docs_per_sec": 4761.9,
+  "ingest_batches_per_sec": 0.4762,
   "ingest_timing": {
-    "upsert_wall_sec": 27,
-    "index_wait_sec": 4,
-    "total_wall_sec": 31,
+    "upsert_wall_sec": 21,
+    "index_wait_sec": 12,
+    "total_wall_sec": 33,
     "batch_count": 10,
-    "batches_per_sec": 0.3704,
-    "docs_per_sec": 3703.7,
+    "batches_per_sec": 0.4762,
+    "docs_per_sec": 4761.9,
     "batch_latency_ms": {
-      "p50": 142,
-      "p95": 218,
-      "min": 98,
-      "max": 241
+      "p50": 458,
+      "p95": 4294,
+      "min": 433,
+      "max": 4294
     },
-    "batch_runs": []
+    "batch_runs": [
+      {
+        "batch": 1,
+        "file": "batch-00000.json",
+        "latency_ms": 523
+      },
+      {
+        "batch": 2,
+        "file": "batch-00001.json",
+        "latency_ms": 485
+      },
+      {
+        "batch": 3,
+        "file": "batch-00002.json",
+        "latency_ms": 444
+      },
+      {
+        "batch": 4,
+        "file": "batch-00003.json",
+        "latency_ms": 1112
+      },
+      {
+        "batch": 5,
+        "file": "batch-00004.json",
+        "latency_ms": 433
+      },
+      {
+        "batch": 6,
+        "file": "batch-00005.json",
+        "latency_ms": 2426
+      },
+      {
+        "batch": 7,
+        "file": "batch-00006.json",
+        "latency_ms": 439
+      },
+      {
+        "batch": 8,
+        "file": "batch-00007.json",
+        "latency_ms": 4294
+      },
+      {
+        "batch": 9,
+        "file": "batch-00008.json",
+        "latency_ms": 458
+      },
+      {
+        "batch": 10,
+        "file": "batch-00009.json",
+        "latency_ms": 447
+      }
+    ]
   },
-  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Regenerate: ./scripts/bench-large.sh --tier l1"
+  "p50_warm_query_latency_ms": 860,
+  "p95_warm_query_latency_ms": 975,
+  "warm_query_runs": 20,
+  "warm_consistency": "eventual",
+  "warm_cache_dir": "/tmp/openpuffer-bench-warm-l1-bench-large-100000",
+  "warm_runs": [
+    {
+      "run": 1,
+      "query_name": "vector-q00",
+      "latency_ms": 975,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 2,
+      "query_name": "vector-q00",
+      "latency_ms": 858,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 3,
+      "query_name": "vector-q00",
+      "latency_ms": 1013,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 4,
+      "query_name": "vector-q00",
+      "latency_ms": 836,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 5,
+      "query_name": "vector-q00",
+      "latency_ms": 964,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 6,
+      "query_name": "vector-q00",
+      "latency_ms": 886,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 7,
+      "query_name": "vector-q00",
+      "latency_ms": 868,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 8,
+      "query_name": "vector-q00",
+      "latency_ms": 850,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 9,
+      "query_name": "vector-q00",
+      "latency_ms": 869,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 10,
+      "query_name": "vector-q00",
+      "latency_ms": 842,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 11,
+      "query_name": "vector-q00",
+      "latency_ms": 866,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 12,
+      "query_name": "vector-q00",
+      "latency_ms": 876,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 13,
+      "query_name": "vector-q00",
+      "latency_ms": 842,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 14,
+      "query_name": "vector-q00",
+      "latency_ms": 841,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 15,
+      "query_name": "vector-q00",
+      "latency_ms": 852,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 16,
+      "query_name": "vector-q00",
+      "latency_ms": 856,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 17,
+      "query_name": "vector-q00",
+      "latency_ms": 876,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 18,
+      "query_name": "vector-q00",
+      "latency_ms": 865,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 19,
+      "query_name": "vector-q00",
+      "latency_ms": 860,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    },
+    {
+      "run": 20,
+      "query_name": "vector-q00",
+      "latency_ms": 855,
+      "candidates_ratio": 0.0008,
+      "consistency": "eventual"
+    }
+  ],
+  "warm_filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 852,
+      "candidates_ratio": 0.00035,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 859,
+      "candidates_ratio": 0.0004,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-category-eq-cat-3",
+      "query_kind": "filter",
+      "latency_ms": 865,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-lte-10",
+      "query_kind": "filter",
+      "latency_ms": 852,
+      "candidates_ratio": 0.0001,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-category-ne-cat-6-7",
+      "query_kind": "filter",
+      "latency_ms": 889,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "filter-priority-between",
+      "query_kind": "filter",
+      "latency_ms": 874,
+      "candidates_ratio": 0.00009,
+      "storage_roundtrips": null,
+      "result_rows": 9,
+      "phase": "warm"
+    }
+  ],
+  "warm_hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 808,
+      "candidates_ratio": 0.0008,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 876,
+      "candidates_ratio": 0.00015,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-product-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 855,
+      "candidates_ratio": 0.0,
+      "storage_roundtrips": null,
+      "result_rows": 0,
+      "phase": "warm"
+    },
+    {
+      "query_name": "hybrid-sum-priority-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 869,
+      "candidates_ratio": 0.00021,
+      "storage_roundtrips": null,
+      "result_rows": 10,
+      "phase": "warm"
+    }
+  ]
 }

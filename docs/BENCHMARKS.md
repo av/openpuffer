@@ -96,7 +96,8 @@ Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.s
 
 ```bash
 ./scripts/run-minio-large-schema-example.sh
-# → benchmarks/results/large-aws-l1-schema-minio.example.json (environment=minio)
+# → large-aws-l1-schema-minio.example.json + ingest-large-l1-schema-minio.example.json
+#   (environment=minio; ingest timing; filter/hybrid; warm by default; --skip-warm optional)
 ```
 
 **Dry-run** (no credentials):

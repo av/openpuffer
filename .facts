@@ -426,11 +426,11 @@
 - label: run-large-benchmark-program.sh chains G2 G3 G4 id-overlap render-report dry-run with tier and warm flags
   command: test -x scripts/run-large-benchmark-program.sh && grep -q 'run-aws-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-tpuf-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-id-overlap-spotcheck.sh' scripts/run-large-benchmark-program.sh && grep -q 'render-report.sh' scripts/run-large-benchmark-program.sh && ./scripts/run-large-benchmark-program.sh --dry-run --tier l1 --skip-g2 >/dev/null
   tags: [spec, bench-large, implemented]
-- label: run-minio-large-schema-example.sh targets schema example JSON with environment minio not large-aws-l1.json
-  command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh
+- label: run-minio-large-schema-example.sh targets schema example JSON with environment minio warm and secondary query fields
+  command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh && grep -qE '(--warm|WARM_MODE)' scripts/run-minio-large-schema-example.sh && grep -q 'filter_query_runs' scripts/run-minio-large-schema-example.sh
   tags: [spec, bench-large, implemented]
-- label: MinIO L1 schema example bench and ingest JSON committed with environment minio and preferred_ann_version 3
-  command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['preferred_ann_version']==3 and i['preferred_ann_version']==3 and b['index_cursor_eq_wal_commit_seq']"
+- label: MinIO L1 schema example bench and ingest JSON committed with environment minio preferred_ann_version 3 filter hybrid warm ingest_timing
+  command: python3 -c "import json; b=json.load(open('benchmarks/results/large-aws-l1-schema-minio.example.json')); i=json.load(open('benchmarks/results/ingest-large-l1-schema-minio.example.json')); assert b['environment']=='minio' and i['environment']=='minio' and b['preferred_ann_version']==3 and i['preferred_ann_version']==3 and b['index_cursor_eq_wal_commit_seq']; req=('filter_query_runs','hybrid_query_runs','ingest_timing','p50_warm_query_latency_ms','warm_filter_query_runs','warm_hybrid_query_runs'); assert all(k in b for k in req) and len(b['filter_query_runs'])>=1 and len(b['hybrid_query_runs'])>=1 and len(b['warm_filter_query_runs'])>=1; assert 'ingest_timing' in i and len(i['ingest_timing']['batch_runs'])>=1"
   tags: [spec, bench-large, implemented]
 - label: ingest-large JSON records per-batch timing breakdown ingest_timing batch_runs index_wait_sec and bench-large embeds ingest sidecar
   command: test -x scripts/test_ingest-timing-schema.sh && ./scripts/test_ingest-timing-schema.sh

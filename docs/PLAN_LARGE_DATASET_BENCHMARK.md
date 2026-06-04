@@ -567,7 +567,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | A6 `benchmark-large-dispatch.yml` | [x] | `1902c62`; dry-run ingest/bench/tpuf/id-overlap + `facts check`; run-aws dry-run in workflow |
 | Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
 | MinIO integration + bench green | [x] | `./scripts/run-integration-s3.sh` + `cargo test -F bench`; `ef4fa97` (2026-06-04) |
-| MinIO schema example JSON | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; facts `3np`, `ccb`; `bd449b6` |
+| MinIO schema example JSON (full: ingest timing, filter/hybrid, warm) | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; `./scripts/run-minio-large-schema-example.sh` (`--warm` default); facts `3np`, `ccb` |
 | G5 exemplar report (`NOT MEASURED`) | [x] skeleton | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8` |
 | Live `large-aws-{tier}.json` (AWS) | [ ] | Requires `OPENPUFFER_S3_*` on EC2; `run-aws-large-benchmark.sh --tier l1` |
 | Live `tpuf-{tier}.json` | [ ] | Requires `TURBOPUFFER_API_KEY`; `run-tpuf-large-benchmark.sh --tier l1` |

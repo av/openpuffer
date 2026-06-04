@@ -276,11 +276,11 @@ def _filter_query_specs(cfg: WorkloadConfig, count: int) -> list[dict[str, Any]]
             },
         },
         {
-            "name": "filter-category-not-in-67",
-            "filters": ["category", "NotIn", ["cat-6", "cat-7"]],
+            "name": "filter-category-ne-cat-6-7",
+            "filters": ["And", [["category", "Ne", "cat-6"], ["category", "Ne", "cat-7"]]],
             "openpuffer_query": {
                 "rank_by": ["vector", "ANN", "embedding", "$vector"],
-                "filters": ["category", "NotIn", ["cat-6", "cat-7"]],
+                "filters": ["And", [["category", "Ne", "cat-6"], ["category", "Ne", "cat-7"]]],
                 "top_k": 10,
                 "consistency": "strong",
             },

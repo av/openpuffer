@@ -8,12 +8,12 @@
   "dim": 128,
   "batch_size": 10000,
   "batch_count": 10,
-  "ingest_elapsed_secs": 27,
-  "ingest_wall_sec": 27,
-  "index_wait_sec": 4,
-  "ingest_total_wall_sec": 31,
-  "ingest_batches_per_sec": 0.3704,
-  "ingest_docs_per_sec": 3703.7,
+  "ingest_elapsed_secs": 21,
+  "ingest_wall_sec": 21,
+  "index_wait_sec": 12,
+  "ingest_total_wall_sec": 33,
+  "ingest_batches_per_sec": 0.4762,
+  "ingest_docs_per_sec": 4761.9,
   "batch_sleep_sec": 1.1,
   "seed": 42,
   "embedding_fn": "bench_sin_v1",
@@ -25,30 +25,70 @@
   "index_timeout_sec": 7200,
   "generator": "/home/everlier/code/openpuffer/benchmarks/workloads/generate_synthetic.py",
   "ingest_timing": {
-    "upsert_wall_sec": 27,
-    "index_wait_sec": 4,
-    "total_wall_sec": 31,
+    "upsert_wall_sec": 21,
+    "index_wait_sec": 12,
+    "total_wall_sec": 33,
     "batch_count": 10,
-    "batches_per_sec": 0.3704,
-    "docs_per_sec": 3703.7,
+    "batches_per_sec": 0.4762,
+    "docs_per_sec": 4761.9,
     "batch_latency_ms": {
-      "p50": 142,
-      "p95": 218,
-      "min": 98,
-      "max": 241
+      "p50": 458,
+      "p95": 4294,
+      "min": 433,
+      "max": 4294
     },
     "batch_runs": [
-      {"batch": 1, "file": "batch-000000.json", "latency_ms": 118},
-      {"batch": 2, "file": "batch-000001.json", "latency_ms": 132},
-      {"batch": 3, "file": "batch-000002.json", "latency_ms": 98},
-      {"batch": 4, "file": "batch-000003.json", "latency_ms": 241},
-      {"batch": 5, "file": "batch-000004.json", "latency_ms": 142},
-      {"batch": 6, "file": "batch-000005.json", "latency_ms": 156},
-      {"batch": 7, "file": "batch-000006.json", "latency_ms": 128},
-      {"batch": 8, "file": "batch-000007.json", "latency_ms": 218},
-      {"batch": 9, "file": "batch-000008.json", "latency_ms": 135},
-      {"batch": 10, "file": "batch-000009.json", "latency_ms": 149}
+      {
+        "batch": 1,
+        "file": "batch-00000.json",
+        "latency_ms": 523
+      },
+      {
+        "batch": 2,
+        "file": "batch-00001.json",
+        "latency_ms": 485
+      },
+      {
+        "batch": 3,
+        "file": "batch-00002.json",
+        "latency_ms": 444
+      },
+      {
+        "batch": 4,
+        "file": "batch-00003.json",
+        "latency_ms": 1112
+      },
+      {
+        "batch": 5,
+        "file": "batch-00004.json",
+        "latency_ms": 433
+      },
+      {
+        "batch": 6,
+        "file": "batch-00005.json",
+        "latency_ms": 2426
+      },
+      {
+        "batch": 7,
+        "file": "batch-00006.json",
+        "latency_ms": 439
+      },
+      {
+        "batch": 8,
+        "file": "batch-00007.json",
+        "latency_ms": 4294
+      },
+      {
+        "batch": 9,
+        "file": "batch-00008.json",
+        "latency_ms": 458
+      },
+      {
+        "batch": 10,
+        "file": "batch-00009.json",
+        "latency_ms": 447
+      }
     ]
   },
-  "notes": "MinIO schema example @ L1; ingest from run-minio-large-schema-example.sh (2026-06-04); not for COMPARISON.md"
+  "notes": "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3"
 }

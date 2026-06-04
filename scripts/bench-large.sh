@@ -539,7 +539,9 @@ run_warm_phase() {
       '{run:$run, query_name:$query_name, latency_ms:$latency_ms, candidates_ratio:$candidates_ratio, consistency:$consistency}')")
   done
 
+  local _warm_ifs="$IFS"
   IFS=$'\n' warm_sorted=($(printf '%s\n' "${warm_latencies[@]}" | sort -n))
+  IFS="$_warm_ifs"
   warm_p50="$(percentile_ms 50 "${warm_sorted[@]}")"
   warm_p95="$(percentile_ms 95 "${warm_sorted[@]}")"
   warm_runs_json="$(printf '%s\n' "${warm_run_lines[@]}" | jq -s '.')"
@@ -707,7 +709,9 @@ for _ in $(seq 1 "$COLD_RUNS"); do
   LAST_COLD_KEYS="$cold_keys"
 done
 
+_old_ifs="$IFS"
 IFS=$'\n' sorted=($(printf '%s\n' "${LATENCIES[@]}" | sort -n))
+IFS="$_old_ifs"
 P50_MS="$(percentile_ms 50 "${sorted[@]}")"
 P95_MS="$(percentile_ms 95 "${sorted[@]}")"
 
@@ -768,6 +772,33 @@ if [[ "$WARM_MODE" == "1" && "$(echo "$WARM_FILTER_QUERY_RUNS_JSON" | jq 'length
   SECONDARY_NOTE="${SECONDARY_NOTE} Warm secondary: filter+hybrid @ eventual."
 fi
 
+validate_argjson_var() {
+  local label="$1" value="$2"
+  if ! printf '%s\n' "$value" | jq . >/dev/null 2>&1; then
+    echo "bench-large: invalid JSON for ${label} (len=${#value}, first 120 chars): ${value:0:120}" >&2
+    printf '%s' "$value" >"/tmp/bench-large-invalid-${label}.json" 2>/dev/null || true
+    exit 1
+  fi
+}
+validate_argjson_var COLD_RUNS_JSON "$COLD_RUNS_JSON"
+validate_argjson_var FILTER_QUERY_RUNS_JSON "$FILTER_QUERY_RUNS_JSON"
+validate_argjson_var HYBRID_QUERY_RUNS_JSON "$HYBRID_QUERY_RUNS_JSON"
+validate_argjson_var WARM_RUNS_JSON "$WARM_RUNS_JSON"
+validate_argjson_var WARM_FILTER_QUERY_RUNS_JSON "$WARM_FILTER_QUERY_RUNS_JSON"
+validate_argjson_var WARM_HYBRID_QUERY_RUNS_JSON "$WARM_HYBRID_QUERY_RUNS_JSON"
+INGEST_SUMMARY_ARGJSON="${INGEST_SUMMARY_JSON}"
+[[ -z "$INGEST_SUMMARY_ARGJSON" ]] && INGEST_SUMMARY_ARGJSON='{}'
+validate_argjson_var INGEST_SUMMARY_JSON "$INGEST_SUMMARY_ARGJSON"
+for label in P50_MS P95_MS LAST_ROUNDTRIPS LAST_COLD_KEYS S3_GET_COUNT LAST_RATIO RECALL_AT_10 \
+  PREFERRED_ANN COLD_RUNS WARM_MODE WARM_P50_MS WARM_P95_MS WARM_RUNS; do
+  v="${!label}"
+  [[ -z "$v" ]] && continue
+  validate_argjson_var "$label" "$v"
+done
+[[ -n "$INDEX_CAUGHT_UP" ]] && validate_argjson_var INDEX_CAUGHT_UP "$INDEX_CAUGHT_UP"
+[[ -n "${INDEX_KEYS_TOTAL:-}" && "${INDEX_KEYS_TOTAL}" != "null" ]] && validate_argjson_var INDEX_KEYS_TOTAL "${INDEX_KEYS_TOTAL}"
+[[ -n "${INDEX_OBJECT_COUNT:-}" && "${INDEX_OBJECT_COUNT}" != "null" ]] && validate_argjson_var INDEX_OBJECT_COUNT "${INDEX_OBJECT_COUNT}"
+
 jq -n \
   --arg benchmark "$BENCHMARK_NAME" \
   --arg environment "$BENCH_ENVIRONMENT" \
@@ -806,7 +837,7 @@ jq -n \
   --arg notes "A3 bench-large.sh tier=${TIER}; environment=${BENCH_ENVIRONMENT}; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥${RECALL_GATE}, p50<600ms.${HOST_NOTE}${WARM_NOTE}${SECONDARY_NOTE} Regenerate: ./scripts/bench-large.sh --tier ${TIER}$([[ "$WARM_MODE" == "1" ]] && echo ' --warm')" \
   --argjson index_keys_total "${INDEX_KEYS_TOTAL:-null}" \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
-  --argjson ingest_summary "${INGEST_SUMMARY_JSON:-{}}" \
+  --argjson ingest_summary "$INGEST_SUMMARY_ARGJSON" \
   '{
     benchmark: $benchmark,
     environment: $environment,

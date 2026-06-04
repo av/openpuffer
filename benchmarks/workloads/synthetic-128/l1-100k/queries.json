@@ -7832,13 +7832,20 @@
       ]
     },
     {
-      "name": "filter-category-not-in-67",
+      "name": "filter-category-ne-cat-6-7",
       "filters": [
-        "category",
-        "NotIn",
+        "And",
         [
-          "cat-6",
-          "cat-7"
+          [
+            "category",
+            "Ne",
+            "cat-6"
+          ],
+          [
+            "category",
+            "Ne",
+            "cat-7"
+          ]
         ]
       ],
       "openpuffer_query": {
@@ -7849,11 +7856,18 @@
           "$vector"
         ],
         "filters": [
-          "category",
-          "NotIn",
+          "And",
           [
-            "cat-6",
-            "cat-7"
+            [
+              "category",
+              "Ne",
+              "cat-6"
+            ],
+            [
+              "category",
+              "Ne",
+              "cat-7"
+            ]
           ]
         ],
         "top_k": 10,
