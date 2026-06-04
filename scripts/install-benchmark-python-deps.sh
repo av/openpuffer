@@ -12,6 +12,8 @@ cd "$ROOT"
 # shellcheck source=scripts/lib/benchmark-python-deps.sh
 source "$ROOT/scripts/lib/benchmark-python-deps.sh"
 
+ensure_benchmark_python_version
+
 req="$(benchmark_python_req_file "$ROOT")"
 [[ -f "$req" ]] || {
   echo "install-benchmark-python-deps: missing ${req}" >&2

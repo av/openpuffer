@@ -85,6 +85,12 @@ jobs:
           shared-key: large-dataset-nightly
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: benchmarks/requirements.txt
+
       - name: Build openpuffer (release, integration + bench)
         run: cargo build --release --features integration,bench
 

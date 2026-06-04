@@ -52,12 +52,14 @@ All in-tree benchmark Python (workloads tests, tpuf driver, id-overlap, JSON Sch
 | `turbopuffer` | G4 driver + live id-overlap |
 | `httpx` | tpuf driver offline tests |
 
+**Python 3.11+** (checked by `ensure_benchmark_python_version` in [`scripts/lib/benchmark-python-deps.sh`](../scripts/lib/benchmark-python-deps.sh)). CI benchmark workflows pin **3.11** via `actions/setup-python`.
+
 ```bash
 ./scripts/install-benchmark-python-deps.sh
 # or: pip install -r benchmarks/requirements.txt
 ```
 
-[`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) and CI workflows call the install script (or equivalent `pip install -r`) before pytest and schema gates. Legacy path `benchmarks/tpuf_driver/requirements.txt` is a shim to `benchmarks/requirements.txt`.
+[`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) and CI workflows call the install script before pytest and schema gates. Legacy path `benchmarks/tpuf_driver/requirements.txt` is a shim to `benchmarks/requirements.txt`.
 
 ## JSON artifacts — committed vs operator-only
 
@@ -195,6 +197,32 @@ export TURBOPUFFER_BENCH_DELETE_FIRST=1
 ```
 
 GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](../docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) + [benchmark-large-live.yml](../.github/workflows/benchmark-large-live.yml) (`enable_live_run` default **false**).
+
+## Exit codes
+
+Large-dataset **operator** shell scripts share constants in [`scripts/lib/large-benchmark-exit-codes.sh`](../scripts/lib/large-benchmark-exit-codes.sh). Use `echo $?` after a failed step to branch automation (retry preflight vs fix serve vs wait longer for index).
+
+| Code | Name | When |
+|------|------|------|
+| **0** | OK | Dry-run plan printed, preflight passed, ingest/bench completed, verify gate green |
+| **1** | Preflight | Missing/invalid env (S3 bucket, keys, tpuf API key), region/AZ mismatch, workload manifest missing, MinIO endpoint on G3 AWS path, G2 subset failed, artifact policy/secret scan |
+| **2** | Serve timeout | `ingest-large` / `bench-large` could not get HTTP 2xx from `GET /v1/ready` or `GET /health` within `OPENPUFFER_SERVE_READY_TIMEOUT_SEC` (default 120s) |
+| **3** | Index timeout | Ingest (or bench re-index wait) timed out waiting for `index_cursor == wal_commit_seq` and `preferred_ann_version == 3`; see [`diagnose-index-lag.sh`](../scripts/diagnose-index-lag.sh) |
+| **64** | Usage | Unknown CLI flag on `preflight-aws-ec2.sh` / `preflight-tpuf.sh` only |
+
+**Scripts that emit the table above**
+
+| Script | Typical non-zero codes |
+|--------|-------------------------|
+| `preflight-aws-ec2.sh` | 1 (S3/region/creds), 64 (usage) |
+| `preflight-tpuf.sh` | 1 (key/region/workload/deps), 64 (usage) |
+| `run-aws-large-benchmark.sh` | 1 (non-`aws-s3` endpoint, preflight-aws-ec2, G2), propagates 2/3 from ingest/bench |
+| `run-tpuf-large-benchmark.sh` | 1 (preflight-tpuf, G2) |
+| `ingest-large.sh` | 1 (tier/workload/upsert resume), **2** (serve), **3** (index) |
+| `bench-large.sh` | 1 (gates/env), **2** (serve), **3** (index wait when used) |
+| `verify-large-benchmark-program.sh` | 1 (any nested gate failed; child may use other codes) |
+
+Other harness scripts (`validate-benchmark-json.sh`, `normalize-benchmark-json.sh --check`, `check-benchmark-artifacts.sh`) still use **0/1** only. Python drivers (`run_benchmark.py`, `run_spotcheck.py`) follow their own `sys.exit` conventions unless wrapped by the shell operators above.
 
 ## Scripts (one line each)
 

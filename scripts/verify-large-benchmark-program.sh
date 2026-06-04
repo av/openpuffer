@@ -46,6 +46,9 @@ step() {
   echo "==> $*"
 }
 
+step "Python 3.11+ (benchmark harness)"
+ensure_benchmark_python_version
+
 step "Python deps (benchmarks/requirements.txt)"
 ensure_benchmark_python_deps "$ROOT"
 

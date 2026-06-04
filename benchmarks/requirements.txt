@@ -1,4 +1,5 @@
 # Consolidated Python deps for the large-dataset benchmark harness.
+# Requires Python 3.11+ (enforced by scripts/lib/benchmark-python-deps.sh and CI setup-python).
 # Covers: workloads (pytest), tpuf_driver (turbopuffer, httpx), cross_check (pytest),
 #         validate-benchmark-json.sh (jsonschema).
 #
