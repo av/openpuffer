@@ -184,7 +184,7 @@ make bench-compare-tpuf        # print extrapolation vs tpuf-official-reference.
 git add benchmarks/results/op-scaling-*.json
 ```
 
-Report: [docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). Skip scaling inside full verify: `VERIFY_FLAGS="--skip-op-scaling"`.
+Report: [docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](../docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md) (charts + methodology); iteration log: [OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). **5-command quickstart:** [SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md). Operator verdict: `./scripts/print-scaling-verdict.sh`. Skip scaling inside full verify: `VERIFY_FLAGS="--skip-op-scaling"`.
 
 ### 2. Program dry-run (no credentials)
 

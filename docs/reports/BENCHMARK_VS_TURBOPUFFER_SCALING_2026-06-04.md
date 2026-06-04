@@ -59,6 +59,65 @@
 
 **Scaling read (10k → 100k):** **~7.3×** latency for **10×** docs → power-law **β ≈ 0.91**; per-doc p50 **~0.008 ms/doc** at 100k.
 
+---
+
+## Visual summary (doc count vs cold p50)
+
+X-axis uses **log₁₀(document count)** so 10k / 50k / 100k / 10M are evenly spaced; Y is cold **p50 (ms)**. openpuffer **10M** point is **log_linear extrapolation** (unmeasured). turbopuffer has **one** official cold point @ 10M ([`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json)).
+
+### Mermaid — scaling curve (log₁₀ N)
+
+```mermaid
+xychart-beta
+    title "Cold p50 (ms) vs log₁₀ doc count"
+    x-axis ["4.0 · 10k", "4.7 · 50k", "5.0 · 100k", "7.0 · 10M"]
+    y-axis "p50 (ms)" 0 --> 2200
+    line "openpuffer (measured + extrap)" [111, 525, 813, 2160]
+```
+
+### Mermaid — @ 10M only (extrap vs official)
+
+```mermaid
+xychart-beta
+    title "10M cold p50 — openpuffer extrap vs turbopuffer official"
+    x-axis ["openpuffer extrap 10M×128", "tpuf official 10M×1024"]
+    y-axis "p50 (ms)" 0 --> 2500
+    bar [2160, 874]
+```
+
+### ASCII (terminal / plain-text)
+
+```
+Cold p50 (ms) vs document count — log₁₀(N) on horizontal axis
+(● measured openpuffer  ○ extrap  ■ turbopuffer official @ 10M only)
+
+p50
+(ms)
+ 2200 ┤                                                      ○ op extrap 2160
+ 2000 ┤
+ 1800 ┤
+ 1600 ┤
+ 1400 ┤
+ 1200 ┤
+ 1000 ┤                                              ■ tpuf 874
+  800 ┤                                    ● op 813
+  600 ┤
+  525 ┤                       ● op 525
+  400 ┤
+  200 ┤          ● op 111
+    0 ┼──────────┬──────────┬──────────┬──────────────────────
+      log₁₀(N)=4.0      4.7       5.0                    7.0
+           10k        50k      100k                    10M
+
+Legend: ● 111 / 525 / 813 ms (MinIO, 128-d, committed JSON @ da45441)
+        ○ 2160 ms = log_linear extrap @ 10M×128 (~2.5× tpuf on doc count alone)
+        ■ 874 ms = turbopuffer homepage calculator (10M×1024, GCP, 8 QPS×30m)
+```
+
+**Operator one-liner:** `./scripts/print-scaling-verdict.sh` (paragraph verdict from committed JSON).
+
+---
+
 ### 100k tier stability (2026-06-05)
 
 Three `run-op-scaling-benchmark.sh 100k` runs (release, same harness):
@@ -197,6 +256,8 @@ Until then, treat this report as **MinIO scaling shape + official tpuf reference
 
 ## Commands to reproduce
 
+**Five-command quickstart:** [`benchmarks/SCALING_VS_TPUF_QUICKSTART.md`](../../benchmarks/SCALING_VS_TPUF_QUICKSTART.md).
+
 ```bash
 # Regenerate op-scaling JSON (requires Docker for MinIO testcontainers; slow at 50k/100k)
 make bench-op-scaling
@@ -213,6 +274,9 @@ make bench-compare-tpuf
 
 # CI gate (committed artifacts only)
 ./scripts/verify-op-scaling-comparison.sh
+
+# One-paragraph operator verdict
+./scripts/print-scaling-verdict.sh
 ```
 
 **Key files:** `benchmarks/results/op-scaling-*.json`, `benchmarks/results/tpuf-official-reference.json`, `benchmarks/report/compare_op_scaling_to_tpuf.py`, `scripts/compare-op-scaling-to-tpuf.sh`.

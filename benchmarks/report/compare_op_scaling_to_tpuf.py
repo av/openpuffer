@@ -9,7 +9,9 @@ for tpuf cold p50, and prints a markdown appendix snippet.
 
 Usage:
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py
+  python3 benchmarks/report/compare_op_scaling_to_tpuf.py --verdict-only
   ./scripts/compare-op-scaling-to-tpuf.sh
+  ./scripts/print-scaling-verdict.sh
 """
 
 from __future__ import annotations
@@ -324,6 +326,58 @@ def fmt_n(n: float) -> str:
     return f"{n:.0f}"
 
 
+@dataclass(frozen=True)
+class ComparisonSnapshot:
+    tpuf_p50: int
+    measured_tiers: list[tuple[int, float]]  # (N, p50_ms) primary tiers only
+    extrap_10m_128: float
+    extrap_10m_sqrt: float
+    best_model: str
+    power_beta: float
+
+
+def compute_comparison() -> ComparisonSnapshot:
+    """Load committed JSON, fit models, return summary for verdict/charts."""
+    tpuf_p50 = load_tpuf_cold_p50()
+    points = load_op_scaling_points()
+    collapsed = collapse_by_n(points)
+    models = [
+        fit_power_law(collapsed),
+        fit_linear(collapsed),
+        fit_log_linear(collapsed),
+    ]
+    best = pick_best_model(models)
+    power = next(m for m in models if m.name == "power_law")
+    primary = [(n, ms) for n, ms in collapsed if n in (10_000, 50_000, 100_000)]
+    primary.sort(key=lambda t: t[0])
+    return ComparisonSnapshot(
+        tpuf_p50=tpuf_p50,
+        measured_tiers=primary,
+        extrap_10m_128=best.predict(N_REF),
+        extrap_10m_sqrt=dim_scale_sqrt(best.predict(N_REF)),
+        best_model=best.name,
+        power_beta=power.params["b"],
+    )
+
+
+def operator_verdict_paragraph(snap: ComparisonSnapshot | None = None) -> str:
+    """Single paragraph for operators (stdout from --verdict-only)."""
+    s = snap or compute_comparison()
+    tier_str = " / ".join(f"{fmt_n(n)}={ms:.0f}ms" for n, ms in s.measured_tiers)
+    ratio_128 = s.extrap_10m_128 / s.tpuf_p50
+    ratio_sqrt = s.extrap_10m_sqrt / s.tpuf_p50
+    ballpark = ballpark_verdict(s.extrap_10m_sqrt, s.tpuf_p50)
+    return (
+        f"openpuffer MinIO cold p50 tiers ({tier_str}) grow with doc count "
+        f"(power-law β≈{s.power_beta:.2f}); {s.best_model} extrapolation gives "
+        f"~{s.extrap_10m_128:.0f} ms @ 10M×128 (~{ratio_128:.1f}× turbopuffer's official "
+        f"{s.tpuf_p50} ms @ 10M×1024 on GCP) and ~{s.extrap_10m_sqrt:.0f} ms with a √dim "
+        f"heuristic (~{ratio_sqrt:.0f}×). {ballpark}. "
+        "Treat as scaling-shape signal only—MinIO vs GCP, 128-d synthetic vs 1024-d embeddings, "
+        "sequential cold probes vs 8 QPS×30m; 10M openpuffer is unmeasured."
+    )
+
+
 def ballpark_verdict(op_equiv_ms: float, tpuf_ms: int) -> str:
     ratio = op_equiv_ms / tpuf_ms
     if ratio < 0.5:
@@ -440,6 +494,10 @@ def markdown_appendix(
 
 
 def main() -> int:
+    if "--verdict-only" in sys.argv:
+        print(operator_verdict_paragraph())
+        return 0
+
     tpuf_p50 = load_tpuf_cold_p50()
     points = load_op_scaling_points()
     collapsed = collapse_by_n(points)
