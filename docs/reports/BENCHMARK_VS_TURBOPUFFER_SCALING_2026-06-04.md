@@ -8,9 +8,9 @@
 
 ## Executive summary
 
-**openpuffer cold p50 on MinIO is still slower than turbopuffer’s published 10M GCP number**, but a fresh **2026-06-05** tier sweep (git `da45441`) shows **sub-linear tail at 100k** (813 ms measured vs ~1054 ms from a 10k+50k linear hold-out) and a **log-linear** four-point fit extrapolates **~2.2 s** cold p50 @ **10M × 128** vs turbopuffer **874 ms** @ **10M × 1024** (~**2.5×** on doc count alone; **~7×** with √dim heuristic to 1024-d). That extrapolation is **illustrative**—only three doc-count tiers exist, 10k/50k moved **+29% / +31%** vs the prior committed run, and environment/dimensionality/fleet differ.
+**openpuffer cold p50 on MinIO is still slower than turbopuffer’s published 10M GCP number.** A **2026-06-05** refresh @ git `7f7c0f5` (p90/p99 + ingest in `op-scaling-*.json`) measures **96 / 412 / 880 ms** @ 10k / 50k / 100k. A **linear** four-point fit extrapolates **~87 s** cold p50 @ **10M × 128** vs turbopuffer **874 ms** @ **10M × 1024** (~**100×**; **~283×** with √dim heuristic to 1024-d). Prior **log-linear ~2.2 s** narrative used an older **111 / 525 / 813** sweep—**superseded** by this commit set. Extrapolation remains **illustrative** (MinIO vs GCP, 128-d vs 1024-d).
 
-**One-sentence answer:** Measured tiers **111 / 525 / 813 ms** (10k / 50k / 100k) grow roughly with doc count (β ≈ 0.91); extrapolated 10M×128 is **~2.2 s** on this harness vs tpuf **874 ms** (~**2.5×**, not **~70×**)—still **not** parity on AWS/1024-d/10M measured terms, with **100k faster than a naive linear bridge from 10k+50k** (index objects 72 → 236 → 269; see § scaling tail).
+**One-sentence answer:** Measured tiers **96 / 412 / 880 ms** (10k / 50k / 100k; git `7f7c0f5`) grow roughly with doc count (β ≈ 0.95); **linear** extrapolation gives **~87 s** cold p50 @ **10M × 128** vs tpuf **874 ms** (~**100×**)—**not** parity on AWS/1024-d/10M measured terms; 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
 
 **Superseded (do not cite):** linear-only fit on older **86/400/824 ms** tiers → **~81 s** @ 10M (~**93×** slower); anecdotal **~7 s** @ 100k from debug build or contention.
 
@@ -22,8 +22,8 @@
 |-------|------------|-----|
 | Measured cold p50 @ 10k–100k × 128 (MinIO) | **High** | Committed `op-scaling-*.json`; release+v3; CI schema gate |
 | 100k sub-linear vs 10k+50k bridge | **Medium** | LOO + bounded `index_object_count`; see § 100k stability |
-| Extrapolated 10M × 128 (~2.2 s, ~2.5× tpuf) | **Low** | Unmeasured; log_linear vs prior linear swings **~2 s** vs **~80 s** |
-| √dim / linear-d @ 10M × 1024 (~7× / ~20×) | **Low** | Heuristics; 128-d synthetic only on openpuffer |
+| Extrapolated 10M × 128 (~87 s, ~100× tpuf) | **Low** | Unmeasured; model choice (linear best R² on 96/412/880) |
+| √dim / linear-d @ 10M × 1024 (~283× / ~799×) | **Low** | Heuristics; 128-d synthetic only on openpuffer |
 | turbopuffer doc-count scaling shape | **Low** | Single official cold point at 10M |
 | Head-to-head parity @ 10M | **None** here | MinIO vs GCP; different QPS model |
 
@@ -50,20 +50,22 @@
 
 | Docs | Dims | Label | p50 | p90 | p99 | Environment |
 |------|------|-------|-----|-----|-----|-------------|
-| 10,000 | 128 | 10k (inline stress) | **111** | 128 | 128 | minio-testcontainers |
+| 10,000 | 128 | 10k (inline stress) | **96** | 99 | 99 | minio-testcontainers |
 | 10,000 | 128 | 10k-synthetic128 (`queries.json`) | **97** | 108 | 108 | minio-testcontainers |
-| 50,000 | 128 | 50k | **525** | 595 | 595 | minio-testcontainers |
-| 100,000 | 128 | 100k | **813** | 900 | 900 | minio-testcontainers |
+| 50,000 | 128 | 50k | **412** | 450 | 450 | minio-testcontainers |
+| 100,000 | 128 | 100k | **880** | 900 | 900 | minio-testcontainers |
+
+**Ingest (from `op-scaling-*.json`, same runs):** 10k **11 s** @ **909 docs/s**; 50k **14 s** @ **3571 docs/s**; 100k **132 s** @ **758 docs/s**.
 
 **Warm @ 10k:** p50 **81 ms** ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json)).
 
-**Scaling read (10k → 100k):** **~7.3×** latency for **10×** docs → power-law **β ≈ 0.91**; per-doc p50 **~0.008 ms/doc** at 100k.
+**Scaling read (10k → 100k):** **~9.2×** latency for **10×** docs → power-law **β ≈ 0.95**; per-doc p50 **~0.0088 ms/doc** at 100k.
 
 ---
 
 ## Visual summary (doc count vs cold p50)
 
-X-axis uses **log₁₀(document count)** so 10k / 50k / 100k / 10M are evenly spaced; Y is cold **p50 (ms)**. openpuffer **10M** point is **log_linear extrapolation** (unmeasured). turbopuffer has **one** official cold point @ 10M ([`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json)).
+X-axis uses **log₁₀(document count)** so 10k / 50k / 100k / 10M are evenly spaced; Y is cold **p50 (ms)**. openpuffer **10M** point is **linear extrapolation** (unmeasured). turbopuffer has **one** official cold point @ 10M ([`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json)).
 
 ### Mermaid — scaling curve (log₁₀ N)
 
@@ -71,8 +73,8 @@ X-axis uses **log₁₀(document count)** so 10k / 50k / 100k / 10M are evenly s
 xychart-beta
     title "Cold p50 (ms) vs log₁₀ doc count"
     x-axis ["4.0 · 10k", "4.7 · 50k", "5.0 · 100k", "7.0 · 10M"]
-    y-axis "p50 (ms)" 0 --> 2200
-    line "openpuffer (measured + extrap)" [111, 525, 813, 2160]
+    y-axis "p50 (ms)" 0 --> 90000
+    line "openpuffer (measured + extrap)" [96, 412, 880, 87321]
 ```
 
 ### Mermaid — @ 10M only (extrap vs official)
@@ -81,8 +83,8 @@ xychart-beta
 xychart-beta
     title "10M cold p50 — openpuffer extrap vs turbopuffer official"
     x-axis ["openpuffer extrap 10M×128", "tpuf official 10M×1024"]
-    y-axis "p50 (ms)" 0 --> 2500
-    bar [2160, 874]
+    y-axis "p50 (ms)" 0 --> 90000
+    bar [87321, 874]
 ```
 
 ### ASCII (terminal / plain-text)
@@ -93,24 +95,19 @@ Cold p50 (ms) vs document count — log₁₀(N) on horizontal axis
 
 p50
 (ms)
- 2200 ┤                                                      ○ op extrap 2160
- 2000 ┤
- 1800 ┤
- 1600 ┤
- 1400 ┤
- 1200 ┤
+87321 ┤                                                      ○ op extrap (linear)
  1000 ┤                                              ■ tpuf 874
-  800 ┤                                    ● op 813
-  600 ┤
-  525 ┤                       ● op 525
-  400 ┤
-  200 ┤          ● op 111
+  880 ┤                                    ● op 880
+  500 ┤
+  412 ┤                       ● op 412
+  200 ┤
+   96 ┤          ● op 96
     0 ┼──────────┬──────────┬──────────┬──────────────────────
       log₁₀(N)=4.0      4.7       5.0                    7.0
            10k        50k      100k                    10M
 
-Legend: ● 111 / 525 / 813 ms (MinIO, 128-d, committed JSON @ da45441)
-        ○ 2160 ms = log_linear extrap @ 10M×128 (~2.5× tpuf on doc count alone)
+Legend: ● 96 / 412 / 880 ms (MinIO, 128-d, committed JSON @ 7f7c0f5)
+        ○ 87321 ms = linear extrap @ 10M×128 (~100× tpuf on doc count alone)
         ■ 874 ms = turbopuffer homepage calculator (10M×1024, GCP, 8 QPS×30m)
 ```
 
@@ -124,13 +121,14 @@ Three `run-op-scaling-benchmark.sh 100k` runs (release, same harness):
 
 | Run | p50 (ms) |
 |-----|----------|
-| Tier sweep (`9c637d1`, committed) | **813** |
+| Prior sweep (`da45441`, superseded) | **813** |
 | Stability rerun 1 | **857** |
 | Stability rerun 2 | **906** |
+| Refresh @ `7f7c0f5` (committed) | **880** |
 
-**Variance:** min **813**, max **906**, median **857**, σ≈**47 ms** (~±6% vs median). Jitter is host/MinIO noise and per-run ingest layout, not the superseded ~7 s outlier. Extrapolation uses committed sweep **813 ms**.
+**Variance (four runs):** min **813**, max **906**, median **869**, σ≈**38 ms** (~±4% vs median). Jitter is host/MinIO noise and per-run ingest layout, not the superseded ~7 s outlier. Committed JSON uses refresh **880 ms** (p90/p99 **900**).
 
-**Index objects (bench harness, not in `op-scaling-*.json`):** `index_object_count` **72 / 236 / 269** @ 10k / 50k / 100k on tier sweep (all &lt; 500 cap).
+**Index objects (bench harness, not in `op-scaling-*.json`):** `index_object_count` **280** @ 100k on `7f7c0f5` refresh (prior sweep **269** @ 100k; 10k/50k unchanged class).
 
 ---
 
@@ -158,10 +156,10 @@ openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the 
 
 | Tier | Docs × dims | `storage_roundtrips` | `candidates_ratio` | `recall_at_10` | Cold p50 (op-scaling) | Artifact |
 |------|-------------|----------------------|--------------------|----------------|------------------------|----------|
-| 10k | 10k × 128 | **3** | **0.008** | — (not in op-scaling) | **111 ms** | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json) + [`baseline-10k.json`](../../benchmarks/results/baseline-10k.json) |
+| 10k | 10k × 128 | **3** | **0.008** | — (not in op-scaling) | **96 ms** | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json) + [`baseline-10k.json`](../../benchmarks/results/baseline-10k.json) |
 | 10k synthetic-128 | 10k × 128 | **3** | _(same gate; ratio not in op-scaling JSON)_ | **1.0** | **97 ms** | [`op-scaling-10k-synthetic128.json`](../../benchmarks/results/op-scaling-10k-synthetic128.json) |
-| 50k | 50k × 128 | **3** | **0.0016** | **1.0** | **525 ms** | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) + [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json) |
-| 100k | 100k × 128 | **3** | **0.0008** | **1.0** | **813 ms** | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) + [`nightly-100k.json`](../../benchmarks/results/nightly-100k.json) |
+| 50k | 50k × 128 | **3** | **0.0016** | **1.0** | **412 ms** | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) + [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json) |
+| 100k | 100k × 128 | **3** | **0.0008** | **1.0** | **880 ms** | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) + [`nightly-100k.json`](../../benchmarks/results/nightly-100k.json) |
 
 **Read:** `storage_roundtrips` stays **3** (≤ 4 gate) across tiers—cold probe work scales in **latency**, not extra S3 batch rounds on this sweep. `candidates_ratio` falls **0.008 → 0.0016 → 0.0008** as N grows (sub-linear candidate fraction). `recall_at_10` is **1.0** @ 50k/100k on measured gates.
 
@@ -172,8 +170,9 @@ openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the 
 | System | What is measured | Order-of-magnitude |
 |--------|------------------|--------------------|
 | **turbopuffer** | Write path: durable commit ≤ **~200 ms**; fleet **~10k+ vectors/s** class cited in product docs | Managed batching inside commit window; **not** ~1 HTTP commit/s cap |
-| **openpuffer @ 100k nightly** | `bench_cold_100k_nightly`: upsert + index until caught-up, then 7 cold queries | Harness notes **~15–30 min** wall; [`run-op-scaling-benchmark.sh`](../../scripts/run-op-scaling-benchmark.sh) cites **~8–15 min** for 100k tier → **~110–210 docs/s** end-to-end (100k ÷ wall clock, includes index build) |
-| **openpuffer @ 50k (inline stress)** | `fifty_thousand_docs_v3_cold_probed_validation` | [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json): **`ingest_elapsed_secs`: 14** → **~3.6k docs/s** upsert-only on MinIO (5×10k batches; **not** synthetic-128 workload) |
+| **openpuffer @ 100k nightly** | `bench_cold_100k_nightly`: upsert + index until caught-up, then 7 cold queries | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json): **`ingest_wall_secs`: 132** → **758 docs/s** end-to-end @ `7f7c0f5` (~2.7 min wall on this host) |
+| **openpuffer @ 50k (inline stress)** | `fifty_thousand_docs_v3_cold_probed_validation` | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json): **`ingest_wall_secs`: 14** → **3571 docs/s** (5×10k batches; **not** synthetic-128 workload) |
+| **openpuffer @ 10k** | `bench_cold_10k_baseline` | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json): **`ingest_wall_secs`: 11** → **909 docs/s** |
 
 **Caveats:** openpuffer enforces **~1 WAL commit/s per namespace** ([`COMPARISON.md`](../COMPARISON.md)); tpuf’s **200 ms commit** is a **latency bound**, not the same throughput model. Do **not** equate openpuffer end-to-end MinIO ingest+index minutes with tpuf write-path seconds.
 
@@ -194,34 +193,34 @@ openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the 
 
 ## Scaling tail (100k vs 10k+50k linear bridge)
 
-Hold-out from a **linear** fit on collapsed tiers predicts **~1054 ms** @ 100k; measured **813 ms** (−23%). A two-point bridge 10k→50k alone predicts **~1042 ms** @ 100k. **No super-linear tail** on this sweep—100k is **sub-linear** vs those bridges. `index_object_count` grows sub-linearly in N (72 → 236 → 269), consistent with bounded cold probe work rather than runaway object fan-out.
+Leave-one-out on a **linear** fit (collapsed tiers) predicts **~770 ms** @ 100k; measured **880 ms** (+14%). A two-point bridge 10k→50k alone predicts **~824 ms** @ 100k. **No super-linear cold tail** on this refresh—100k is modestly **above** the LOO linear prediction. `index_object_count` @ 100k **280** (bench harness) remains bounded (&lt; 500 cap).
 
 ---
 
 ## Extrapolation and back-solve
 
-**Fit (4 labels, collapsed @ 10k → 104 ms mean):** best model **log_linear**  
-\(L \approx -2671 + 299.75\log N\) with **R² = 0.986**.
+**Fit (4 labels, collapsed @ 10k → 96.5 ms mean):** best model **linear**  
+\(L \approx -2.89 + 0.00873\cdot N\) with **R² = 0.998**.
 
 | Scale | openpuffer p50 (extrap / estimate) | vs tpuf cold **874 ms** |
 |-------|--------------------------------------|-------------------------|
-| 1M × 128 | **1,470 ms** (~1.5 s) | ~1.7× |
-| 10M × 128 | **2,160 ms** (~2.2 s) | **~2.5×** |
-| 10M × 1024 (√dim heuristic, ×2.83) | **6,111 ms** (~6.1 s) | **~7.0×** |
-| 10M × 1024 (linear-d estimate, ×8) | **17,283 ms** (~17.3 s) | **~19.8×** |
+| 1M × 128 | **8,729 ms** (~8.7 s) | ~10× |
+| 10M × 128 | **87,321 ms** (~87 s) | **~100×** |
+| 10M × 1024 (√dim heuristic, ×2.83) | **246,981 ms** (~247 s) | **~283×** |
+| 10M × 1024 (linear-d estimate, ×8) | **698,567 ms** (~699 s) | **~799×** |
 | turbopuffer official | **874 ms** | 1× |
 
 **When would openpuffer match tpuf 874 ms?** (same MinIO harness, 128-d, cold p50—extrapolation only)
 
 | Model | N @ 874 ms |
 |-------|------------|
-| power-law | **~99k** (99,120) |
-| linear | **~104k** (103,819) |
-| log-linear (best) | **~137k** (136,836) |
+| power-law | **~104k** (103,705) |
+| linear (best) | **~100k** (100,419) |
+| log-linear | **~136k** (135,972) |
 
-**Per-doc @ 10M (cold p50 / N):** openpuffer extrap **~216 µs/doc** vs tpuf official **~87 µs/doc** → need **~2×** lower per-doc cold work on this normalization (extrapolation only; not a competitiveness claim).
+**Per-doc @ 10M (cold p50 / N):** openpuffer extrap **~8732 µs/doc** vs tpuf official **~87 µs/doc** → need **~100×** lower per-doc cold work on this normalization (extrapolation only; not a competitiveness claim).
 
-**Similar scaling?** **Shape:** roughly log-linear / power β≈0.91 on measured tiers; **absolute:** extrapolated 10M MinIO cold is still **multiple×** above tpuf’s GCP managed number on √dim-adjusted rows; do not treat log-linear extrapolation to 10M as measured.
+**Similar scaling?** **Shape:** near-linear / power β≈0.95 on measured tiers; **absolute:** linear extrapolation to 10M MinIO cold is **~100×** above tpuf’s GCP managed number on doc count alone; do not treat linear extrapolation to 10M as measured.
 
 ---
 
@@ -233,7 +232,7 @@ Hold-out from a **linear** fit on collapsed tiers predicts **~1054 ms** @ 100k; 
 4. **Load model** — 7 sequential cold samples, not **8 QPS × 30 min**; tail latency and queueing differ.
 5. **Doc-count curve for tpuf** — only **one** official cold point at 10M; cannot fit β for turbopuffer from public data.
 6. **500k tier skipped** — MinIO L2 ingest + index ≫ 45 min on dev host; not in fit set.
-7. **Extrapolation to 10M** — unmeasured; model choice (log_linear vs prior linear fit) swings 10M×128 from **~2 s** to **~80 s**—prior **~81 s / ~93×** narrative is **superseded** by the 2026-06-05 sweep; `EXTRAP_JSON.notes[]` documents this.
+7. **Extrapolation to 10M** — unmeasured; model choice swings 10M×128 from **~2 s** (log_linear on older 111/525/813 tiers) to **~87 s** (linear on 96/412/880 @ `7f7c0f5`); `EXTRAP_JSON.notes[]` documents superseded fits.
 8. **100k rerun variance** — ±6% p50 across three runs; not instability at 10× level.
 
 ---
@@ -285,77 +284,12 @@ make bench-compare-tpuf
 
 ## Appendix: `make bench-compare-tpuf` output
 
-Captured after full tier refresh @ `da45441` (committed JSON, no re-ingest):
+Captured after 100k refresh @ `7f7c0f5` (committed JSON):
 
 ```
-./scripts/compare-op-scaling-to-tpuf.sh
-=== openpuffer scaling → turbopuffer 10M reference ===
-
-tpuf official cold p50: 874 ms (10M × 1024, GCP, 8 QPS × 30m)
-
-Measured openpuffer cold p50 (MinIO, release + v3):
-    10000 docs × 128-d (10k): 111 ms
-    10000 docs × 128-d (10k-synthetic128): 97 ms
-    50000 docs × 128-d (50k): 525 ms
-   100000 docs × 128-d (100k): 813 ms
-
-Collapsed tiers for regression (mean @ duplicate N): [(10000, 104.0), (50000, 525.0), (100000, 813.0)]
-
-### Model comparison (fit on collapsed tiers)
-| Model | Formula | R² | RMSE (ms) |
-|-------|---------|-----|-----------|
-| log_linear ← best | L ≈ -2671.05 + 299.75·log(N) | 0.9862 | 34.3 |
-| linear | L ≈ 65.15 + 0.00779098·N | 0.9707 | 49.8 |
-| power_law | L ≈ 0.02401 · N^0.913 | 0.9689 | 51.3 |
-
-### Leave-one-out — 2-point fit → predict 3rd tier (collapsed N)
-| Held out | actual | predicted | error % |
-|----------|--------|-----------|---------|
-| N=10,000 | 104 | 190 | +82.9% |
-| N=50,000 | 525 | 438 | -16.6% |
-| N=100,000 | 813 | 1054 | +29.7% |
-
-### Leave-one-out — 4 labels (fit 3 → predict held-out)
-| Held out | actual | predicted | error % |
-|----------|--------|-----------|---------|
-| 10k @ 10,000 | 111 | 101 | -9.2% |
-| 10k-synthetic128 @ 10,000 | 97 | 114 | +18.0% |
-| 50k @ 50,000 | 525 | 438 | -16.6% |
-| 100k @ 100,000 | 813 | 1054 | +29.7% |
-
-Best model: **log_linear** — L ≈ -2671.05 + 299.75·log(N)
-
-| Scale | p50 (ms) | Notes |
-|-------|----------|-------|
-| extrap 1M × 128 | **1470** | log_linear |
-| extrap 10M × 128 | **2160** | log_linear |
-| 10M × 1024 (√dim heuristic) | **6111** | ×2.83 on 10M×128 |
-| 10M × 1024 (linear-d **estimate**) | **17283** | ×8 brute/O(d); not measured |
-
-### Side-by-side (cold p50)
-| System | Docs × dims | Environment | p50 (ms) |
-|--------|-------------|-------------|----------|
-| turbopuffer (official) | 10M × 1024 | GCP managed | **874** |
-| openpuffer (extrapolated) | 10M × 128 | MinIO (log_linear) | **2160** (2.2s (2160 ms)) |
-| openpuffer (√dim estimate) | 10M × 1024 | MinIO + ×2.83 | **6111** (6.1s (6111 ms)) |
-| openpuffer (linear-d estimate) | 10M × 1024 | MinIO + ×8 | **17283** (17.3s (17283 ms)) |
-
-√dim heuristic: L(10M,1024) ≈ L(10M,128) × √(1024/128)
-Linear-d estimate: L(10M,1024) ≈ L(10M,128) × (1024/128) for brute/dot-dominated work
-
-### When would openpuffer match tpuf 874 ms?
-  power_law: N ≈ 99.1k (99,120 docs) @ 128-d
-  linear: N ≈ 103.8k (103,819 docs) @ 128-d
-  log_linear: N ≈ 136.8k (136,836 docs) @ 128-d
-
-  Per-doc @ 10M: openpuffer extrap 216.04 µs/doc vs tpuf 87.40 µs/doc → need ~2× improvement
-
-### Are we in the same ballpark vs tpuf 874 ms?
-extrapolated openpuffer is **~7× slower** than tpuf 874 ms — **not** in the same absolute ballpark on this MinIO harness
-
-Raw 10M×128 / tpuf: 2.5×
-√dim 10M×1024 / tpuf: 7.0×
-Linear-d 10M×1024 / tpuf: 19.8×
+Measured openpuffer cold p50: 10k=96ms, 50k=412ms, 100k=880ms
+Best model: linear — extrap 10M×128 = 87321 ms (~99.9× tpuf 874 ms)
+Verdict: ./scripts/print-scaling-verdict.sh — ingest 10k=909 docs/s, 50k=3571, 100k=758
 ```
 
-`EXTRAP_JSON` from the same run is stored in CI logs and emitted by `compare-op-scaling-to-tpuf.sh` for automation; see `benchmarks/report/compare_op_scaling_to_tpuf.py`.
+Full tables: run `make bench-compare-tpuf`. `EXTRAP_JSON` emitted by `compare-op-scaling-to-tpuf.sh`; see `benchmarks/report/compare_op_scaling_to_tpuf.py`.

@@ -1,12 +1,12 @@
 {
   "schema_version": "op_scaling_v1",
-  "timestamp_utc": "2026-06-04T23:25:55Z",
-  "git_commit": "da45441e9747898a0380fb1f9ef0c920933940ed",
+  "timestamp_utc": "2026-06-04T23:44:05Z",
+  "git_commit": "7f7c0f5eb2f51a45783084d9ce8525e2b3a92f3d",
   "environment": "minio-testcontainers",
   "path": "cold",
   "namespace_docs": 100000,
   "dimensions": 128,
-  "p50_ms": 813,
+  "p50_ms": 880,
   "p90_ms": 900,
   "p99_ms": 900,
   "storage_roundtrips": 3,
@@ -16,13 +16,15 @@
   "cargo_profile": "release",
   "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_100k_nightly -- --ignored --nocapture",
   "query_latencies_ms": [
-    812,
-    900,
-    776,
-    806,
-    819,
+    835,
+    858,
+    882,
+    893,
     813,
-    849
+    880,
+    900
   ],
-  "notes": "Nightly 100k gate. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_100k_nightly -- --ignored --nocapture"
+  "notes": "Nightly 100k gate. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_100k_nightly -- --ignored --nocapture",
+  "ingest_wall_secs": 132.0,
+  "docs_per_sec": 757.58
 }
