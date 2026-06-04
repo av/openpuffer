@@ -295,7 +295,7 @@ facts check --tags bench-tpuf
 ```
 
 - **Dispatch (dry-run):** [.github/workflows/benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml)
-- **Nightly program smoke:** `large-dataset-program` in [.github/workflows/nightly-stress.yml](../.github/workflows/nightly-stress.yml)
+- **Nightly (G6):** [.github/workflows/nightly-stress.yml](../.github/workflows/nightly-stress.yml) — `large-dataset-program` (G2 @ 10k + l1 dry-run) runs **parallel** with `bench-100k` (L1 engine @ 100k MinIO; only one 100k ingest/night). See [docs/BENCHMARKS.md § G6 nightly](../docs/BENCHMARKS.md#github-actions--nightly-regression-g6).
 - **G2 + 10k schema:** `g2-minio-correctness` in [.github/workflows/ci.yml](../.github/workflows/ci.yml)
 
 ## Further reading

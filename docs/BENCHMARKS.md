@@ -633,13 +633,24 @@ Workflow: [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/be
 
 ### GitHub Actions — nightly regression (G6)
 
-Scheduled with [`.github/workflows/nightly-stress.yml`](../.github/workflows/nightly-stress.yml) (**03:00 UTC**, same cron as 100k bench). Job **`large-dataset-program`** (no repository secrets):
+Scheduled in [`.github/workflows/nightly-stress.yml`](../.github/workflows/nightly-stress.yml) at **03:00 UTC** (`workflow_dispatch` also). Four jobs run **in parallel** (no `needs` between scale gates and the comparison program):
 
-1. [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) — full G2 MinIO correctness (Docker testcontainers).
-2. [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) `--tier l1 --dry-run --skip-g2` — G3→G5 harness preflight (ingest/bench/tpuf/id-overlap/render-report fixtures only).
-3. `facts check --tags bench-large` and `facts check --tags bench-tpuf`.
+| Job | Large-dataset role | Scale / ingest | What it proves |
+|-----|-------------------|----------------|----------------|
+| **`bench-100k`** | L1 **engine** SLO (SPFresh/cold track) | **100k** MinIO — single nightly 100k ingest | `bench_cold_100k_nightly` + lib `recall_at_10_100k_*`, `ann_v3_built_index_object_count_100k_*` (`--ignored`). Same doc count as tier **l1**; inline Rust upsert, not [`bench-large.sh`](../scripts/bench-large.sh) / `l1-100k/queries.json`. Optional: `OPENPUFFER_BENCH_WRITE_RESULTS=1` → [`nightly-100k.json`](../benchmarks/results/nightly-100k.json) (correctness snapshot only — **not** tpuf comparison latency). |
+| **`large-dataset-program`** | G6 **harness** regression | **10k** G2 + **l1 dry-run** (no 100k ingest) | (1) [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) — synthetic-128 fixture + integration + non-ignored `bench_cold`; (2) [`run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) `--tier l1 --dry-run --skip-g2` — G3→G5 shell fixtures; (3) `facts check --tags bench-large` / `bench-tpuf`. |
+| **`stress-50k`** | Mid-tier scale (not G6) | **50k** MinIO | `large_stress` v3 cold probed between CI 10k and L1 100k. |
+| **`facts-check`** | Optional | — | Full `facts check` after `bench-100k` + `stress-50k` (`continue-on-error`). Does **not** duplicate `bench-large` / `bench-tpuf` facts (those run inside `large-dataset-program`). |
 
-Does **not** run live AWS/tpuf ingest or [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) (100k MinIO schema example is operator-maintained; see committed `large-aws-l1-schema-minio.example.json`).
+**Why two jobs at L1 (100k)?** The comparison program’s live path is [`ingest-large.sh`](../scripts/ingest-large.sh) + [`bench-large.sh`](../scripts/bench-large.sh) on **AWS** with committed `l1-100k` manifests. Nightly splits work so CI does not run **two** full 100k MinIO ingests: `bench-100k` holds engine recall/roundtrip/candidate gates at 100k; `large-dataset-program` holds G2 API semantics at 10k plus operator-script dry-run for the same tier label **l1**.
+
+**Not scheduled here (avoid duplicate / cost):**
+
+- Live AWS/tpuf — [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml) (manual, secrets).
+- [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) @ 100k — operator-maintained; CI uses `--docs 10000` in `ci.yml` `g2-minio-correctness` only.
+- Ignored `bench_cold` / 100k lib tests inside `large-dataset-program` — reserved for **`bench-100k`** only.
+
+**PR/push G2:** `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the same G2 script as nightly step 1, plus the 10k schema example; nightly repeats G2 on schedule inside `large-dataset-program`, not inside `bench-100k`.
 
 ### Phase 4 — Metrics matrix
 
@@ -877,12 +888,15 @@ On AWS 1M, try raising concurrency (e.g. `64`) if RTT-bound; lower on memory-con
 
 ## Tiers
 
-| Tier | Size | Command | Environment |
-|------|------|---------|-------------|
-| **CI** | 10k | `cargo test -F bench --test bench_cold` + lib 10k ANN gates | MinIO testcontainers (`.github/workflows/ci.yml` job `bench-10k`) |
-| **Mid-tier** | 50k | `cargo test --release -F large_stress --test stress_50k -- --ignored` | MinIO v3 + cold probed (`fifty_thousand_docs_v3_cold_probed_validation`); optional warm v2 stress |
-| **Nightly** | 100k | `cargo test -F bench --test bench_cold -- --ignored` + lib `--ignored` | MinIO + in-memory v3 (`.github/workflows/nightly-stress.yml` job `bench-100k`) |
-| **Manual** | 1M | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 |
+| Tier | Size | Command | Environment / CI job |
+|------|------|---------|----------------------|
+| **CI** | 10k | `cargo test -F bench --test bench_cold` + lib 10k ANN gates | MinIO testcontainers — `ci.yml` `bench-10k` |
+| **G2 (program)** | 10k | `./scripts/run-minio-correctness-gates.sh` | synthetic-128 fixture — `ci.yml` `g2-minio-correctness`; nightly `large-dataset-program` step 1 |
+| **Mid-tier** | 50k | `cargo test --release -F large_stress --test stress_50k -- --ignored` | MinIO v3 + cold probed — `nightly-stress.yml` `stress-50k` |
+| **Nightly L1 engine** | 100k | `cargo test -F bench --test bench_cold -- --ignored` + lib `--ignored` | MinIO — `nightly-stress.yml` `bench-100k` (pairs with program job below) |
+| **Nightly L1 harness** | l1 dry-run | `./scripts/run-large-benchmark-program.sh --tier l1 --dry-run` | No live ingest — `nightly-stress.yml` `large-dataset-program` |
+| **Manual L1–L3 live** | 100k–1M | [`bench-large.sh`](../scripts/bench-large.sh) + tpuf driver | AWS + tpuf — operator / `benchmark-large-live.yml` |
+| **Manual** | 1M (legacy) | [`scripts/bench-1m.sh`](../scripts/bench-1m.sh) | AWS S3 — prefer `bench-large.sh --tier l3` for shared workload |
 
 ### CI (10k gates)
 
@@ -898,9 +912,9 @@ cargo test --lib ann_v3_index_object_count_100k_under_five_hundred -- --nocaptur
 
 Non-ignored bench tests: `bench_cold_10k_baseline`, `bench_cold_10k_warm_vs_cold`, `bench_cold_10k_storage_roundtrips_at_most_four`.
 
-### Nightly (100k + lib ignored)
+### Nightly (100k + lib ignored) — job `bench-100k`
 
-Scheduled **03:00 UTC** (or `workflow_dispatch`):
+Scheduled **03:00 UTC** in `nightly-stress.yml` (parallel with `large-dataset-program`; see [§ G6 nightly job map](#github-actions--nightly-regression-g6)):
 
 ```bash
 cargo test --release -F bench --test bench_cold -- --ignored --nocapture
@@ -910,11 +924,11 @@ cargo test --release --lib \
   -- --ignored --nocapture
 ```
 
-Gates: `recall@10 ≥ 0.88`, `candidates_ratio < 0.20`, `storage_roundtrips ≤ 4` (100k MinIO); lib recall ≥ 0.90, built index objects < 500.
+Gates: `recall@10 ≥ 0.88`, `candidates_ratio < 0.20`, `storage_roundtrips ≤ 4` (100k MinIO); lib recall ≥ 0.90, built index objects < 500. This is the **L1-scale engine proof** for the large-dataset program; measured tpuf comparison latency still requires AWS [`bench-large.sh`](../scripts/bench-large.sh) (not nightly).
 
-### Mid-tier (50k v3 + cold probed, optional)
+### Mid-tier (50k v3 + cold probed)
 
-Between CI 10k and nightly 100k. Not scheduled in CI by default (`#[ignore]`).
+Between CI 10k and nightly 100k. Nightly: `nightly-stress.yml` job `stress-50k` (`#[ignore]` locally unless `--ignored`).
 
 ```bash
 cargo build --release --features large_stress

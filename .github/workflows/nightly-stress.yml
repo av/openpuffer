@@ -1,4 +1,15 @@
-# Nightly scale: 50k stress, 100k cold bench, 100k ANN lib gates, large-dataset G2 + program dry-run (MinIO).
+# Nightly scale + large-dataset program (G6) — four parallel jobs, no duplicate 100k MinIO ingest.
+#
+# Relationship to PLAN_LARGE_DATASET_BENCHMARK.md (L1 = 100k × 128-dim):
+#   • bench-100k          — engine SLO proof @ L1 scale (Rust `bench_cold_100k_nightly` + lib ANN gates).
+#                         Same doc count as tier l1; inline MinIO ingest, not `bench-large.sh` / `queries.json`.
+#   • large-dataset-program — comparison harness regression (G2 @ 10k + L1 shell dry-run G3–G5).
+#                         Does NOT run ignored 100k tests (that is bench-100k only).
+#   • stress-50k          — mid-tier v3 cold probed (50k); between CI 10k and nightly 100k.
+#   • facts-check         — optional full `facts check` after bench-100k + stress-50k (continue-on-error).
+#
+# PR/push G2 lives in ci.yml `g2-minio-correctness` (+ 10k schema example). Nightly re-runs G2 inside
+# large-dataset-program on schedule only — not a second 100k ingest alongside bench-100k.
 name: Nightly large stress
 
 on:
@@ -14,6 +25,9 @@ env:
   CARGO_BIN_EXE_openpuffer: ${{ github.workspace }}/target/release/openpuffer
 
 jobs:
+  # L1-scale engine gate (SPFresh/cold track). Complements large-dataset-program: proves recall,
+  # candidates_ratio, storage_roundtrips @ 100k MinIO. Optional artifact: OPENPUFFER_BENCH_WRITE_RESULTS=1
+  # → benchmarks/results/nightly-100k.json (G2/correctness only — not tpuf comparison latency).
   bench-100k:
     name: bench 100k + ANN lib (ignored)
     runs-on: ubuntu-latest
@@ -45,6 +59,7 @@ jobs:
           ann_v3_built_index_object_count_100k_under_five_hundred
           -- --ignored --nocapture
 
+  # Mid-tier between CI 10k and L1 100k; independent of large-dataset-program dry-run.
   stress-50k:
     name: stress_50k (50k docs, MinIO)
     runs-on: ubuntu-latest
@@ -69,6 +84,9 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: cargo test --release -F large_stress --test stress_50k -- --ignored --nocapture
 
+  # G6: large-dataset comparison program — G2 correctness @ 10k (shared synthetic-128 fixture) plus
+  # `run-large-benchmark-program.sh --tier l1 --dry-run` (ingest/bench/tpuf/overlap/render fixtures).
+  # Parallel with bench-100k by design: only one job performs full 100k MinIO ingest per night.
   large-dataset-program:
     name: large-dataset G2 + program dry-run (l1)
     runs-on: ubuntu-latest
@@ -97,11 +115,13 @@ jobs:
       - name: Python tooling (benchmark harness)
         run: ./scripts/install-benchmark-python-deps.sh
 
+      # 10k only (`bench_cold` without --ignored). See job bench-100k for L1-scale engine proof.
       - name: G2 MinIO correctness gates
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: ./scripts/run-minio-correctness-gates.sh
 
+      # Shell harness preflight aligned with tier l1 (100k manifests); no live AWS/tpuf spend.
       - name: Large-dataset program dry-run (G3–G5 harness, no AWS/tpuf secrets)
         run: ./scripts/run-large-benchmark-program.sh --tier l1 --dry-run --skip-g2
 
@@ -113,6 +133,7 @@ jobs:
           facts check --tags bench-large
           facts check --tags bench-tpuf
 
+  # Does not need large-dataset-program (that job already runs bench-large + bench-tpuf facts).
   facts-check:
     name: facts check (optional)
     runs-on: ubuntu-latest
