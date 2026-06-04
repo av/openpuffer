@@ -40,6 +40,47 @@ cargo test --release -F bench --test bench_cold -- --ignored --nocapture   # 100
 
 Helpers live in [`tests/common/synthetic_workload.rs`](../tests/common/synthetic_workload.rs). Ingest/query scripts use the same manifest via [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) and [`scripts/bench-large.sh`](../scripts/bench-large.sh).
 
+### ANN index v3 gate (`OPENPUFFER_ANN_VERSION=3`)
+
+The large-dataset program (G3–G5) and the SPFresh/cold @ 1M track both require **ANN index format v3** on openpuffer. Default `serve` / indexer still build **v2** (two-level k-means) unless you opt in.
+
+| Why v3 is mandatory | Detail |
+|---------------------|--------|
+| **Same engine as SPFresh plan** | v3 routing + L2 splits, probed cold fetch, recall gates — see [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) Phase B ([`OPENPUFFER_ANN_VERSION=3`](PLAN_SPFRESH_AND_COLD_1M.md#b1--index-format-v3)) |
+| **Program SLOs** | Large-tier gates assume probed cold path: `storage_roundtrips ≤ 4`, `recall@10 ≥ 0.85`, `candidates_ratio < 0.20` @ 100k+ — v2 at L1/L3 often misses recall or roundtrip caps |
+| **Comparable artifacts** | Bench JSON records `preferred_ann_version`; reports show `preferred_ann_version=3 (gate)` — v2 runs are invalid for [COMPARISON.md](COMPARISON.md) / measured G5 |
+| **turbopuffer** | Managed index has no equivalent flag; openpuffer side must still be v3 for fair cold/recall interpretation |
+
+**Set before ingest** (indexer inherits from `serve`):
+
+```bash
+export OPENPUFFER_ANN_VERSION=3   # or: openpuffer serve --ann-version 3 …
+```
+
+[`scripts/ingest-large.sh`](../scripts/ingest-large.sh), [`scripts/bench-large.sh`](../scripts/bench-large.sh), [`scripts/bench-1m.sh`](../scripts/bench-1m.sh), and [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh) default to `3` and warn if overridden. Scripts poll namespace meta until **`index_cursor == wal_commit_seq`** and **`preferred_ann_version == 3`** before cold queries.
+
+**Verify live namespace** (during ingest index wait or before bench):
+
+```bash
+curl -s "http://127.0.0.1:8080/v1/namespaces/${NAMESPACE}" \
+  | jq '{index_cursor,wal_commit_seq,preferred_ann_version,index_status}'
+# expected when caught up: index_cursor == wal_commit_seq, preferred_ann_version == 3
+```
+
+**Verify committed JSON** (ingest sidecar + bench output):
+
+```bash
+jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq}' benchmarks/results/large-aws-l1.json
+jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq}' benchmarks/results/ingest-large-l1.json
+# both must show preferred_ann_version: 3 and index_cursor_eq_wal_commit_seq: true
+```
+
+Offline schema + cross-field gate: [`scripts/validate-benchmark-json.sh`](../scripts/validate-benchmark-json.sh) (enforces `preferred_ann_version == 3` on openpuffer + ingest artifacts). G2 integration: `synthetic_128_g2_correctness_gates_on_minio` serves with `--ann-version 3` and asserts meta `preferred_ann_version == 3`.
+
+**If meta shows v2:** stop `serve`, `export OPENPUFFER_ANN_VERSION=3`, delete the namespace (`DELETE /v1/namespaces/{name}` + empty S3 prefix), re-run ingest. Do not bench a namespace indexed under v2.
+
+Implementation detail: [ARCHITECTURE.md § Vector ANN](ARCHITECTURE.md#vector-ann-spfresh-inspired). Large-dataset plan cross-ref: [PLAN_LARGE_DATASET_BENCHMARK.md § ANN v3](PLAN_LARGE_DATASET_BENCHMARK.md#ann-index-v3-gate-mandatory).
+
 ---
 
 ## Large-dataset program — Operator runbook (Phases 4–6)

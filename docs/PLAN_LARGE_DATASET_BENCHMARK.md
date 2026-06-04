@@ -65,6 +65,8 @@ Blocked-run log: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/re
 
 **Division of labor:** SPFresh/cold work ships the engine behaviors and SLO gates; this plan wires those gates into a **reproducible apples-to-apples comparison** against managed turbopuffer (same workload, regions, JSON artifacts, report). L3 (1M) here reuses the same cold/recall targets as the SPFresh plan; L1 (100k) is the default comparison tier.
 
+**ANN v3:** both plans require `OPENPUFFER_ANN_VERSION=3` and `preferred_ann_version == 3` in namespace meta / bench JSON — [§ ANN index v3 gate](#ann-index-v3-gate-mandatory), [BENCHMARKS.md § ANN v3](BENCHMARKS.md#ann-index-v3-gate-openpuffer_ann_version3).
+
 ---
 
 ## Program harness verification (offline complete)
@@ -136,9 +138,34 @@ Use **synthetic, deterministic** data so runs are diffable without storing 100k�
   - `title`: short string (FTS smoke).
   - `priority`: int for `order_by` tie-break tests.
 - **Schema:** `embedding` as `[128]f32`, `distance_metric: cosine_distance`.
-- **ANN index:** openpuffer `OPENPUFFER_ANN_VERSION=3` on serve before ingest; turbopuffer uses default production index (no equivalent flag).
+- **ANN index:** openpuffer **`OPENPUFFER_ANN_VERSION=3`** on `serve` before ingest; turbopuffer uses default production index (no equivalent flag). See [ANN index v3 gate (mandatory)](#ann-index-v3-gate-mandatory) below.
 
 Store a small **query set** (e.g. 50 vectors + 10 filter/hybrid specs) as JSON beside the generator manifest.
+
+### ANN index v3 gate (mandatory)
+
+This evaluation program measures the **SPFresh-direction v3 index** shipped under [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) (Phase B: routing table, L2 splits, probed cold fetch, recall HTTP). **v2 is the binary default**; large-tier harnesses opt in explicitly.
+
+| Requirement | Enforcement |
+|-------------|-------------|
+| **Serve / indexer** | `export OPENPUFFER_ANN_VERSION=3` or `serve --ann-version 3` **before** first upsert on a namespace |
+| **Index catch-up** | Poll `GET /v1/namespaces/{name}` until `index_cursor == wal_commit_seq` **and** `preferred_ann_version == 3` ([`ingest-large.sh`](../scripts/ingest-large.sh), [`bench-large.sh`](../scripts/bench-large.sh)) |
+| **Artifacts** | `ingest-large-*.json` and `large-aws-*.json` must record `"preferred_ann_version": 3` and `"index_cursor_eq_wal_commit_seq": true` |
+| **Offline verify** | `./scripts/validate-benchmark-json.sh` cross-checks `preferred_ann_version == 3` on openpuffer + ingest JSON |
+| **G2 MinIO** | `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` — serve with ann v3, assert meta after index |
+
+**Why not v2:** program gates (`storage_roundtrips ≤ 4`, `recall@10 ≥ 0.85` @ L1 AWS, `candidates_ratio` targets) and the cold probe planner in [BENCHMARKS.md](BENCHMARKS.md#ann-index-v3-gate-openpuffer_ann_version3) are calibrated for v3. A v2 namespace invalidates cold/recall comparison rows and breaks the “apples-to-apples” openpuffer column in G5.
+
+**Verify `preferred_ann_version` in JSON:**
+
+```bash
+jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq,environment}' benchmarks/results/large-aws-l1.json
+jq '{preferred_ann_version,index_cursor_eq_wal_commit_seq}' benchmarks/results/ingest-large-l1.json
+```
+
+Pending live fact (add when `large-aws-l1.json` exists): `environment=aws-s3`, `preferred_ann_version == 3`, `storage_roundtrips ≤ 4` — see [Phase 0 fact sheet](#fact-sheet).
+
+**Recovery:** delete namespace + S3 prefix, re-ingest with v3 — do not flip `OPENPUFFER_ANN_VERSION` mid-namespace.
 
 ---
 

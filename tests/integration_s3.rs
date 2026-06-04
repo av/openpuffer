@@ -1895,12 +1895,16 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
     let listen = format!("127.0.0.1:{listen_port}");
     // Empty `--cache-dir` disables segment cache so strong cold queries report `storage_roundtrips`
     // (matches bench_cold G2 gate and PLAN §4.2 cold protocol).
-    let mut serve = ServeHandle::spawn_with_options(
+    let mut serve = ServeHandle::spawn_with_limits_and_ann_version(
         &fixture,
         &listen,
         Some(PathBuf::from("")),
         Some(10_000),
         None,
+        None,
+        None,
+        None,
+        Some(3),
     );
     serve.wait_ready().await;
 
@@ -1921,6 +1925,24 @@ async fn synthetic_128_g2_correctness_gates_on_minio() {
     }
     sleep(Duration::from_millis(1200)).await;
     wait_until_indexed(&serve.base_url, ns, Duration::from_secs(300)).await;
+
+    let meta_resp = reqwest::Client::new()
+        .get(format!("{}/v1/namespaces/{ns}", serve.base_url))
+        .send()
+        .await
+        .expect("namespace metadata after G2 ingest");
+    assert_eq!(meta_resp.status(), StatusCode::OK);
+    let meta: Value = meta_resp.json().await.expect("metadata json");
+    assert_eq!(
+        meta["preferred_ann_version"].as_u64(),
+        Some(3),
+        "G2 large-tier path requires OPENPUFFER_ANN_VERSION=3 (preferred_ann_version in meta)"
+    );
+    assert_eq!(
+        meta["index_cursor"].as_u64(),
+        meta["wal_commit_seq"].as_u64(),
+        "G2 namespace must be fully indexed before recall/queries"
+    );
 
     let (recall_num, recall_top_k) = recall_defaults(&queries);
     let recall_resp = reqwest::Client::new()

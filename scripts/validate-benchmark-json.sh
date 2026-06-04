@@ -250,8 +250,36 @@ def validate_overlap_cross_fields(path: Path, data: dict) -> None:
             )
 
 
+def validate_openpuffer_ann_gate(path: Path, data: dict) -> None:
+    """Large-dataset program requires v3 index (OPENPUFFER_ANN_VERSION=3)."""
+    pref = data.get("preferred_ann_version")
+    if pref != 3:
+        raise SystemExit(
+            f"{path}: preferred_ann_version must be 3 (got {pref!r}); "
+            "re-ingest with OPENPUFFER_ANN_VERSION=3 — see docs/BENCHMARKS.md#ann-index-v3-gate-openpuffer_ann_version3"
+        )
+    if data.get("index_cursor_eq_wal_commit_seq") is not True:
+        raise SystemExit(
+            f"{path}: index_cursor_eq_wal_commit_seq must be true (got {data.get('index_cursor_eq_wal_commit_seq')!r})"
+        )
+
+
+def validate_ingest_ann_gate(path: Path, data: dict) -> None:
+    pref = data.get("preferred_ann_version")
+    if pref != 3:
+        raise SystemExit(
+            f"{path}: preferred_ann_version must be 3 (got {pref!r}); "
+            "serve must use OPENPUFFER_ANN_VERSION=3 before ingest"
+        )
+    if data.get("index_cursor_eq_wal_commit_seq") is not True:
+        raise SystemExit(
+            f"{path}: index_cursor_eq_wal_commit_seq must be true (got {data.get('index_cursor_eq_wal_commit_seq')!r})"
+        )
+
+
 def validate_ingest_cross_fields(path: Path, data: dict) -> None:
     validate_tier_alignment(path, "ingest", data)
+    validate_ingest_ann_gate(path, data)
     timing = data["ingest_timing"]
     if data["ingest_elapsed_secs"] != timing["upsert_wall_sec"]:
         raise SystemExit(f"{path}: ingest_elapsed_secs != ingest_timing.upsert_wall_sec")
@@ -285,6 +313,7 @@ for path in paths:
     elif kind == "openpuffer":
         schema_errors(op_validator, data, "large-aws", path)
         validate_tier_alignment(path, kind, data)
+        validate_openpuffer_ann_gate(path, data)
     else:
         schema_errors(tpuf_validator, data, "tpuf", path)
         validate_tier_alignment(path, kind, data)
