@@ -2,7 +2,42 @@
 
 Chronological record of commits that built the **offline harness** for [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) (A1–A6, G2–G6, JSON schemas, operator wrappers). **Live G3/G4 JSON and measured G5** are still operator-pending; see [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md).
 
-**Verify gate:** `./scripts/verify-large-benchmark-program.sh`
+**Verify gate:** `./scripts/verify-large-benchmark-program.sh` (exit **0** @ `9670556`; harness **complete** @ `43fa706`)
+
+**Session log:** iterations **49–74** (timeboxed run 2026-06-04); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
+
+---
+
+## Iterations 49–74 (session 2026-06-04)
+
+| Iter | Commit | Description |
+|------|--------|-------------|
+| **49** | `5aca279` | G3 live retry skipped on MinIO; add [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) EC2 one-pager |
+| **50** | `aa7de00` | `large-benchmark-serve-ready.sh` — poll `/health` or `/v1/ready`; wired into ingest-large + bench-large |
+| **51** | `cf5b490` | This changelog — harness commit history for operator handoff |
+| **52** | `622a1b8` | `GET /v1/ready` S3 deep probe (Rust API); integration test; serve-ready prefers `/v1/ready` |
+| **53** | `fe6fc92` | Mandate `OPENPUFFER_ANN_VERSION=3`; validate `preferred_ann_version == 3`; G2 serve `--ann-version 3` |
+| **54** | `64654dd` | Large-benchmark cost estimator script for L1–L3 operator planning |
+| **55** | `4459e3a` | Skip `run-tpuf-large-benchmark.sh` when `TURBOPUFFER_API_KEY` unset; log in `OPERATOR_G3_G4_ATTEMPT.md` |
+| **56** | `9670556` | `.gitignore` live tier JSON; `check-benchmark-artifacts.sh` in verify gate; README staging rules |
+| **57** | `9d5b87b` | Harness audit: `verify-large-benchmark-program.sh` exit 0; PLAN harness-complete statement |
+| **58** | `f712750` | Fix harness audit changelog commit reference |
+| **59** | `43fa706` | PLAN architecture mermaid — real script names and operator sequence |
+| **60** | — | Session status: harness complete @ `43fa706`; verify PASS @ `9670556`; live pending EC2 + S3 + tpuf key |
+| **61** | `57f7f39` | Index timeout troubleshooting in `docs/BENCHMARKS.md`; `scripts/diagnose-index-lag.sh` |
+| **62** | `29f50fb` | `schema_version: large_benchmark_v1` on ingest/bench/tpuf/id-overlap JSON + schemas + validate gate |
+| **63** | `2b7984b` | `.gitattributes` + `normalize-benchmark-json.sh` for diff-friendly benchmark JSON; CI `--check` |
+| **64** | `51a6f79` | Makefile `bench-verify` / `bench-dry-run` / `bench-g2-minio`; README links |
+| **65** | `f3103c8` | [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md) — `queries.json` structure, cold/warm, recall_defaults |
+| **66** | `1b5fb41` | Consolidate benchmark Python deps → `benchmarks/requirements.txt`; `install-benchmark-python-deps.sh` |
+| **67** | `ae22a7a` | Secret-echo audit gate and preflight hardening for operator scripts |
+| **68** | `3c2ca6e` | Document ingest-large sequential batches (WAL + index lag) |
+| **69** | `756f1a8` | ISO8601 UTC timestamps (`Z` suffix) on harness result JSON; `utc_timestamps.py` + validate gate |
+| **70** | `04c50f1` | [workloads/EMBEDDINGS.md](workloads/EMBEDDINGS.md) — `bench_sin_v1` vs `xorshift_f32` |
+| **71** | `84bb89a` | [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md) operator PR summary |
+| **72** | `f123909` | CI: pin Python 3.11 for benchmark workflows and verify gate |
+| **73** | `a061bcd` | Standard exit codes documented for large-dataset benchmark scripts |
+| **74** | `02398a8`, `d09192d` | shellcheck fixes for exit-codes and serve-ready libs; live G3/G4 attempt 3 blocked (MinIO, no tpuf key) |
 
 ---
 
@@ -11,21 +46,23 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 | Track | Commits | One-line summary |
 |-------|---------|------------------|
 | **A1** workload | `6186190`, `76ff071` | Deterministic `generate_synthetic.py` + committed L1/L2/L3 manifests and queries |
-| **A2** ingest | `d788b65`, `98a9ff7`, `d0bc8ba`, `5da0aa1`, `aa7de00` | `ingest-large.sh` with timing JSON, S3 retry/resume, serve readiness poll, tpuf ingest parity |
+| **A2** ingest | `d788b65`, `98a9ff7`, `d0bc8ba`, `5da0aa1`, `aa7de00`, `3c2ca6e` | `ingest-large.sh` with timing JSON, S3 retry/resume, serve readiness, batch/WAL docs |
 | **A3** bench | `9272b8f`, `f877d64`, `5ccf9eb` | `bench-large.sh` tiered cold/filter/hybrid/warm → `large-aws-{tier}.json` |
-| **A4** tpuf driver | `08e66ce`, `696a247` | `run_benchmark.py` ingest + cold/filter/hybrid/warm + recall on shared workload |
+| **A4** tpuf driver | `08e66ce`, `696a247`, `5da0aa1` | `run_benchmark.py` ingest + cold/filter/hybrid/warm + recall; ingest retry parity |
 | **A5** report | `59f5822`, `265c635`, `bd449b6` | `render-report.sh` merge; measured-mode schema/interpretation/redaction; exemplar + MinIO shape JSON |
-| **A6** CI dispatch | `1902c62`, `58c3271` | `benchmark-large-dispatch.yml` dry-run; optional live workflow secrets doc |
-| **G2** correctness | `5972ab7`, `67c7050`, `ef4fa97`, `2cccc7e`, `33a14d1`, `476a753` | MinIO integration/bench gates, full filter/hybrid query coverage, CI `g2-minio-correctness`, 10k schema fast path |
-| **G3** AWS operator | `a1b34cc`, `ee30fd1`, `5aca279` | `run-aws-large-benchmark.sh`, `preflight-aws-ec2.sh`, EC2 quick runbook (live blocked on MinIO dev host) |
-| **G4** tpuf operator | `95197a9`, `fa08a69` | `run-tpuf-large-benchmark.sh`, `preflight-tpuf.sh`, G4 operator runbook |
+| **A6** CI dispatch | `1902c62`, `58c3271`, `f123909` | `benchmark-large-dispatch.yml` dry-run; live secrets doc; Python 3.11 pin |
+| **API** readiness | `622a1b8`, `aa7de00` | `GET /v1/ready` + shared serve-ready poll before ingest/bench |
+| **G2** correctness | `5972ab7`, `67c7050`, `ef4fa97`, `2cccc7e`, `33a14d1`, `476a753`, `fe6fc92` | MinIO gates, full filter/hybrid queries, CI `g2-minio-correctness`, 10k schema path, ANN v3 mandate |
+| **G3** AWS operator | `a1b34cc`, `ee30fd1`, `5aca279`, `64654dd` | AWS wrapper, EC2 preflight/runbook, cost estimator (live blocked on MinIO dev host) |
+| **G4** tpuf operator | `95197a9`, `fa08a69`, `4459e3a` | tpuf harness, preflight, skip when API key unset |
 | **Phase 3.3** overlap | `52e3208`, `3a3904a` | Cross-engine id spot-check + JSON Schema + production-shaped mock |
-| **E2E** orchestration | `250257b`, `bfaec74`, `a309b8d` | `run-large-benchmark-program.sh` chain; `verify-large-benchmark-program.sh`; L2/L3 dry-run timeouts |
-| **JSON schemas** | `c91c063`, `fe7edd3`, `5627247` | `validate-benchmark-json.sh` for large-aws, tpuf, ingest, id-overlap (L1–L3 generalized) |
-| **G6** regression | `433d2fd`, `833e1bc` | Nightly `large-dataset-program` dry-run; full MinIO L1 schema example regeneration |
+| **E2E** orchestration | `250257b`, `bfaec74`, `a309b8d`, `51a6f79` | Program chain, verify gate, L2/L3 timeouts, Makefile targets |
+| **JSON schemas** | `c91c063`, `fe7edd3`, `5627247`, `29f50fb`, `756f1a8`, `2b7984b` | Schemas L1–L3, `schema_version`, UTC timestamps, normalize + gitattributes |
+| **G6** regression | `433d2fd`, `833e1bc`, `9d5b87b` | Nightly program dry-run; harness audit; MinIO L1 schema example |
 | **@spec** facts | `77a45bb`, `2337cbb` | `bench-large` / `bench-tpuf` tags; validate, preflight, schema facts |
-| **Docs / hub** | `8594099`, `23fe932`, `3ddf464`, `4a7102a`, `7424cad`, `32cb61c` | BENCHMARKS phases 4–6 runbook; benchmarks README; PLAN status; COMPARISON checklist; G3/G4 attempt log |
-| **Harness hygiene** | `868fd26`, `ff3eef8` | shellcheck coverage for benchmark shell scripts and tests |
+| **Docs / hub** | `8594099`, `23fe932`, `3ddf464`, `4a7102a`, `7424cad`, `32cb61c`, `cf5b490`, `43fa706`, `f3103c8`, `04c50f1`, `84bb89a`, `57f7f39` | Runbooks, README, PLAN/COMPARISON, QUERY_SPEC, EMBEDDINGS, handoff PR summary |
+| **Harness hygiene** | `868fd26`, `ff3eef8`, `02398a8`, `ae22a7a`, `a061bcd`, `1b5fb41` | shellcheck, exit codes, secret-echo audit, consolidated Python deps |
+| **Operator attempts** | `32cb61c`, `5aca279`, `4459e3a`, `d09192d` | Logged G3/G4 live skips (MinIO env, no tpuf key) |
 
 ---
 
@@ -33,17 +70,35 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 | Date | Commit | Description |
 |------|--------|-------------|
-| 2026-06-04 | (this commit) | **UTC timestamps** (`generated_at`, `started_at`, `finished_at` with `Z` suffix) on all harness result JSON; `benchmarks/report/utc_timestamps.py` + `scripts/lib/benchmark-utc-timestamp.sh`; drivers use `date -u` / `datetime.now(timezone.utc)`; `validate-benchmark-json.sh` Z-suffix gate |
-| 2026-06-04 | `29f50fb` | **`schema_version: large_benchmark_v1`** on all harness result JSON (ingest/bench/tpuf/id-overlap); JSON Schemas + fixtures/examples + `validate-benchmark-json.sh`; migration note in root `CHANGELOG.md` |
-| 2026-06-04 | (see git log) | **Python deps consolidation:** `benchmarks/requirements.txt`; `install-benchmark-python-deps.sh`; CI dispatch/live/nightly; `tpuf_driver/requirements.txt` shim |
-| 2026-06-04 | `9d5b87b` | **Harness audit (operator handoff):** `verify-large-benchmark-program.sh` exit 0 @ `9670556`; PLAN status + checklist harness-complete statement; no live G3/G4 on MinIO/no-tpuf host |
+| 2026-06-04 | `d09192d` | Live G3/G4 attempt 3 blocked (MinIO env, no `TURBOPUFFER_API_KEY`) |
+| 2026-06-04 | `02398a8` | shellcheck: exit-codes and serve-ready lib fixes |
+| 2026-06-04 | `a061bcd` | Standard exit codes for large-dataset benchmark scripts |
+| 2026-06-04 | `f123909` | CI: pin Python 3.11 for benchmark workflows and verify gate |
+| 2026-06-04 | `84bb89a` | [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md) operator PR summary |
+| 2026-06-04 | `f3103c8` | [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md) for `queries.json` structure |
+| 2026-06-04 | `04c50f1` | [workloads/EMBEDDINGS.md](workloads/EMBEDDINGS.md) — `bench_sin_v1` vs `xorshift_f32` |
+| 2026-06-04 | `51a6f79` | Makefile `bench-verify` / `bench-dry-run` / `bench-g2-minio` |
+| 2026-06-04 | `2b7984b` | JSON diff-friendly `.gitattributes` + `normalize-benchmark-json.sh` |
+| 2026-06-04 | `756f1a8` | ISO8601 UTC timestamps on harness result JSON + validate Z-suffix gate |
+| 2026-06-04 | `29f50fb` | `schema_version: large_benchmark_v1` on all harness result JSON |
+| 2026-06-04 | `3c2ca6e` | Document ingest-large sequential batches (WAL + index lag) |
+| 2026-06-04 | `57f7f39` | Index timeout troubleshooting + `diagnose-index-lag.sh` |
+| 2026-06-04 | `ae22a7a` | Secret-echo audit gate and preflight hardening |
+| 2026-06-04 | `1b5fb41` | Consolidate benchmark Python deps into `benchmarks/requirements.txt` |
+| 2026-06-04 | `43fa706` | PLAN architecture mermaid with real scripts and operator sequence |
+| 2026-06-04 | `f712750` | Fix harness audit changelog commit hash |
+| 2026-06-04 | `9d5b87b` | Harness audit (operator handoff): verify exit 0 @ `9670556` |
 | 2026-06-04 | `9670556` | Git policy for live results JSON (`check-benchmark-artifacts.sh` in verify gate) |
-| 2026-06-04 | `aa7de00` | Shared serve readiness wait (`/health` or `/v1/ready`) before ingest/bench upsert/query |
-| 2026-06-04 | `5aca279` | G3 live retry skipped on MinIO; add [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) |
+| 2026-06-04 | `4459e3a` | Skip live G4 when `TURBOPUFFER_API_KEY` unset |
+| 2026-06-04 | `64654dd` | Large-benchmark cost estimator L1–L3 |
+| 2026-06-04 | `fe6fc92` | Mandate ANN v3 for large-dataset program |
+| 2026-06-04 | `622a1b8` | `GET /v1/ready` for S3-backed traffic readiness |
+| 2026-06-04 | `cf5b490` | Add CHANGELOG_LARGE_DATASET harness commit history |
+| 2026-06-04 | `aa7de00` | Shared serve readiness wait (`/health` or `/v1/ready`) before ingest/bench |
+| 2026-06-04 | `5aca279` | G3 live retry skipped on MinIO; [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) |
 | 2026-06-04 | `5627247` | Generalize benchmark JSON schemas for L2/L3 tiers + example artifacts |
 | 2026-06-04 | `2337cbb` | `@spec` facts for validate-benchmark-json, preflight scripts, and schemas |
-| 2026-06-04 | `3a9318f` | Git policy: `.gitignore` live `large-aws-*` / `tpuf-*` paths; `check-benchmark-artifacts.sh` CI gate |
-| 2026-06-04 | `3a3904a` | id-overlap JSON Schema, production-shaped mock, committed `id-overlap-l1.example.json` |
+| 2026-06-04 | `3a3904a` | id-overlap JSON Schema, production-shaped mock, `id-overlap-l1.example.json` |
 | 2026-06-04 | `7424cad` | COMPARISON operator checklist mirroring PLAN steps 1–5 |
 | 2026-06-04 | `fe7edd3` | ingest-large-l1 JSON Schema wired into validate-benchmark-json |
 | 2026-06-04 | `c91c063` | JSON Schema validation for large-aws and tpuf L1 artifacts |
@@ -93,5 +148,8 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 ## Related docs
 
 - [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) — goals G1–G6, phase matrix, verification checklist
+- [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md) — operator PR summary (iter 71)
 - [README.md](README.md) — directory layout, JSON commit policy, script index
 - [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) — EC2 live run one-pager
+- [workloads/QUERY_SPEC.md](workloads/QUERY_SPEC.md) — `queries.json` contract (iter 65)
+- [workloads/EMBEDDINGS.md](workloads/EMBEDDINGS.md) — vector generation semantics (iter 70)
