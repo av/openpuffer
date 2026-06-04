@@ -376,7 +376,7 @@ Record these commit SHAs in every report:
 
 ### Fact sheet
 
-`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` (28 facts) and `facts check --tags bench-tpuf` (13 facts, overlap with bench-large) ([BENCHMARKS.md](BENCHMARKS.md#facts)).
+`@spec` facts for the comparison harness (tags `bench-large`, `bench-tpuf`) live in [`.facts`](../.facts); verify with `facts check --tags bench-large` (32 facts) and `facts check --tags bench-tpuf` (15 facts, 12 overlap with bench-large) ([BENCHMARKS.md](BENCHMARKS.md#facts)).
 
 **Covered by `@spec` + `@implemented` today:** A1–A5 scripts, G2 gates, G3 `run-aws-large-benchmark.sh` + `preflight-aws-ec2.sh`, G4 `run-tpuf-large-benchmark.sh` + `preflight-tpuf.sh`, `scripts/validate-benchmark-json.sh` (four L1 JSON schemas + fixtures/`*.example.json`), `verify-large-benchmark-program.sh` offline harness, MinIO schema example JSON, Phase 3.3 id-overlap (`id-overlap-l1.example.json`), A6 dispatch id-overlap + tpuf dry-run, report merge fixtures, exemplar `NOT MEASURED` report.
 
