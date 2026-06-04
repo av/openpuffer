@@ -530,7 +530,7 @@ Ordered work to make this plan one-command reproducible:
 | A3 | `scripts/bench-large.sh` (+ G3 [`run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh)) | `benchmarks/results/large-aws-{l1,l2,l3}.json` |
 | A4 | [`run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) → `benchmarks/tpuf_driver/run_benchmark.py` | `benchmarks/results/tpuf-{l1,l2,l3}.json` |
 | A5 | `scripts/render-report.sh` (merge JSON → markdown) | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
-| A6 | [`benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` dry-run | CI not default (cost) |
+| A6 | [`benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml) dry-run + optional [`benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml) (`enable_live_run` default **false**); secrets: [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) | CI dry-run default; live costs $ |
 
 **Operator wrappers (G3/G4)** — shared preflight in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh):
 
@@ -571,7 +571,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | **tpuf index wait** | SDK metadata fields vary | Driver polls until row count stable / index status quiescent (mirror openpuffer gate) | `run_benchmark.py` |
 | **MinIO → COMPARISON** | Accidental publish | **Never** — `environment=minio` or path contains `minio`/`example`/`schema`; guard in preflight | `large_preflight_guard_aws_results_path` |
 | **Cost ceiling** | Unbounded recall @ 1M | Start **L1 only**; cap tpuf `num` on L3; delete namespaces in `finally` | Operator |
-| **CI live AWS/tpuf** | Secrets in GitHub | **Manual** `workflow_dispatch` dry-run only (A6); live secrets optional later | `benchmark-large-dispatch.yml` |
+| **CI live AWS/tpuf** | Secrets in GitHub | Dry-run default (A6); optional live workflow with repo secrets + `enable_live_run=false` until operator enables | `benchmark-large-dispatch.yml`, `benchmark-large-live.yml`, [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) |
 
 ---
 
@@ -605,7 +605,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | A5 `render-report.sh` | [x] | fact `ved`; measured-mode hardening (schema, interpretation, appendix redaction) |
 | G3 `run-aws-large-benchmark.sh` | [x] harness / [ ] live | fact `bue`; `a1b34cc`; **no** `benchmarks/results/large-aws-l1.json` |
 | G4 `run-tpuf-large-benchmark.sh` | [x] harness / [ ] live | fact `eos`; `95197a9`; **no** `benchmarks/results/tpuf-l1.json` |
-| A6 `benchmark-large-dispatch.yml` | [x] | `1902c62`; dry-run ingest/bench/tpuf/id-overlap + `facts check`; run-aws dry-run in workflow |
+| A6 `benchmark-large-dispatch.yml` + optional `benchmark-large-live.yml` | [x] dry-run / [x] live skeleton | `1902c62` dispatch; live workflow + [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) (secrets preflight; `enable_live_run` default false) |
 | Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
 | MinIO integration + bench green | [x] | `./scripts/run-integration-s3.sh` + `cargo test -F bench`; `ef4fa97` (2026-06-04) |
 | MinIO schema example JSON (full: ingest timing, filter/hybrid, warm) | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; `./scripts/run-minio-large-schema-example.sh` (`--warm` default); facts `3np`, `ccb` |

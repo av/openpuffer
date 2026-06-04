@@ -160,7 +160,7 @@ Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l3 --skip-g2
 ```
 
-**GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs [`verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (full offline harness).
+**GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs [`verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (full offline harness). Optional live dispatch (secrets, **disabled by default**): [benchmark-large-live.yml](../.github/workflows/benchmark-large-live.yml) — secret names and IAM notes in [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md).
 
 **Spot-check ids:** `queries.json` `spot_check` uses the first 10 `vector_queries`; doc indices scale with tier (`num_docs / 50` stride), e.g. L2 → 0, 10k, …, 90k; L3 → 0, 20k, …, 180k.
 
@@ -424,7 +424,18 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
 2. Choose **tier** (`l1`, `l2`, or `l3`; default `l1`).
 3. Workflow runs [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (offline gates only; no repository secrets).
 
-Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml). Live ingest/bench on AWS and managed turbopuffer still run from an operator host with credentials (future: optional job inputs + secrets for one-click live runs).
+Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml).
+
+### GitHub Actions — optional live dispatch
+
+Manual live comparison (G3→G4→G5) via Actions is **opt-in** and **off by default**:
+
+1. Add repository secrets per [BENCHMARKS_GITHUB_ACTIONS_SECRETS.md](BENCHMARKS_GITHUB_ACTIONS_SECRETS.md) (`OPENPUFFER_S3_*`, `TURBOPUFFER_API_KEY`).
+2. GitHub → **Actions** → **Large-dataset benchmark (live — optional)** → **Run workflow**.
+3. Leave **`enable_live_run`** = `false` first run → validates secrets only (no spend).
+4. Set **`enable_live_run`** = `true` only after EC2/region/fairness review (prefer **self-hosted runner** in `OPENPUFFER_S3_REGION` over `ubuntu-latest`).
+
+Workflow: [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml). EC2 + instance profile remains the recommended path: [§ G3 — EC2 + AWS S3](#g3--ec2--aws-s3-operator-setup).
 
 ### GitHub Actions — nightly regression (G6)
 

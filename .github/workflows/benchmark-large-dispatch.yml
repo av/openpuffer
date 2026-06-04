@@ -1,5 +1,9 @@
 # Manual large-dataset harness preflight (dry-run only; no AWS / tpuf secrets).
 # Validates workloads, scripts, report merge, and @spec facts before operator spend.
+#
+# Optional LIVE runs (repository secrets, disabled by default):
+#   .github/workflows/benchmark-large-live.yml
+#   docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 name: Large-dataset benchmark (dispatch)
 
 on:

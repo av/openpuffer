@@ -1,0 +1,220 @@
+# Optional LIVE large-dataset benchmark (G3 AWS + G4 tpuf + G5 report).
+# DISABLED BY DEFAULT: workflow_dispatch input enable_live_run defaults to false.
+# Configure repository secrets per docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
+# Offline harness (no secrets): benchmark-large-dispatch.yml
+name: Large-dataset benchmark (live — optional)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Workload tier (l1=100k, l2=500k, l3=1M)
+        required: true
+        default: l1
+        type: choice
+        options:
+          - l1
+          - l2
+          - l3
+      enable_live_run:
+        description: >-
+          false = secrets preflight only (no AWS/tpuf spend).
+          true = run G3→G4→overlap→report (costs money; use self-hosted EC2 in bench region when possible).
+        required: true
+        default: false
+        type: boolean
+      warm:
+        description: Include warm/filter/hybrid secondary metrics (more API volume)
+        required: false
+        default: false
+        type: boolean
+      skip_g2:
+        description: Skip MinIO G2 subset inside run-large-benchmark-program.sh
+        required: false
+        default: true
+        type: boolean
+      measured_report:
+        description: render-report without --dry-run (requires live JSON artifacts)
+        required: false
+        default: true
+        type: boolean
+
+# Do not run on push/PR/schedule — operators only.
+concurrency:
+  group: benchmark-large-live-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  OPENPUFFER_ANN_VERSION: "3"
+  OPENPUFFER_COLD_S3_CONCURRENCY: "32"
+  TURBOPUFFER_BENCH_DELETE_FIRST: "1"
+  OPENPUFFER_BENCH_ENFORCE_GATES: "1"
+
+jobs:
+  secrets-preflight:
+    name: secrets preflight (${{ inputs.tier }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mask turbopuffer key in logs
+        if: secrets.TURBOPUFFER_API_KEY != ''
+        run: echo "::add-mask::${{ secrets.TURBOPUFFER_API_KEY }}"
+
+      - name: Mask S3 secret key in logs
+        if: secrets.OPENPUFFER_S3_SECRET_KEY != ''
+        run: echo "::add-mask::${{ secrets.OPENPUFFER_S3_SECRET_KEY }}"
+
+      - name: Check required repository secrets
+        id: check
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            OPENPUFFER_S3_BUCKET \
+            OPENPUFFER_S3_REGION \
+            OPENPUFFER_S3_ACCESS_KEY \
+            OPENPUFFER_S3_SECRET_KEY \
+            TURBOPUFFER_API_KEY
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "Missing repository secrets: ${missing[*]}"
+            echo "Configure per docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            if [[ "${{ inputs.enable_live_run }}" == "true" ]]; then
+              exit 1
+            fi
+            echo "enable_live_run=false — treating missing secrets as informational only."
+            exit 0
+          fi
+          echo "All required repository secrets are set (values not printed)."
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+        env:
+          OPENPUFFER_S3_BUCKET: ${{ secrets.OPENPUFFER_S3_BUCKET }}
+          OPENPUFFER_S3_REGION: ${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_S3_ACCESS_KEY: ${{ secrets.OPENPUFFER_S3_ACCESS_KEY }}
+          OPENPUFFER_S3_SECRET_KEY: ${{ secrets.OPENPUFFER_S3_SECRET_KEY }}
+          TURBOPUFFER_API_KEY: ${{ secrets.TURBOPUFFER_API_KEY }}
+
+      - name: Region / endpoint wiring (non-secret)
+        run: |
+          echo "OPENPUFFER_S3_REGION=${OPENPUFFER_S3_REGION}"
+          echo "OPENPUFFER_S3_ENDPOINT=${OPENPUFFER_S3_ENDPOINT}"
+          echo "TURBOPUFFER_REGION=${TURBOPUFFER_REGION}"
+        env:
+          OPENPUFFER_S3_REGION: ${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_S3_ENDPOINT: https://s3.${{ secrets.OPENPUFFER_S3_REGION }}.amazonaws.com
+          TURBOPUFFER_REGION: aws-${{ secrets.OPENPUFFER_S3_REGION }}
+
+      - name: Live run disabled (default)
+        if: inputs.enable_live_run != true
+        run: |
+          echo "enable_live_run=false — no G3/G4 spend."
+          echo "Re-run with enable_live_run=true after secrets validate and you accept cost/fairness constraints."
+          echo "Prefer EC2/self-hosted runner in OPENPUFFER_S3_REGION; see docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md"
+
+  # ---------------------------------------------------------------------------
+  # LIVE PROGRAM — runs only when enable_live_run=true AND secrets-preflight OK.
+  # Wall clock: L1 ~30–90 min, L2 ~2–4 h, L3 ~3–6 h on m7i.xlarge-class host.
+  # ---------------------------------------------------------------------------
+  live-program:
+    name: live program (${{ inputs.tier }})
+    needs: secrets-preflight
+    if: inputs.enable_live_run == true && needs.secrets-preflight.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-large-live
+
+      - name: Python tooling (tpuf driver + pytest)
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r benchmarks/tpuf_driver/requirements.txt pytest
+
+      - name: Mask secrets
+        run: |
+          echo "::add-mask::${{ secrets.TURBOPUFFER_API_KEY }}"
+          echo "::add-mask::${{ secrets.OPENPUFFER_S3_SECRET_KEY }}"
+          echo "::add-mask::${{ secrets.OPENPUFFER_S3_ACCESS_KEY }}"
+
+      - name: Preflight only (hosted runner sanity)
+        run: ./scripts/run-large-benchmark-program.sh --preflight-only --tier "${{ inputs.tier }}"
+        env:
+          OPENPUFFER_S3_BUCKET: ${{ secrets.OPENPUFFER_S3_BUCKET }}
+          OPENPUFFER_S3_REGION: ${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_S3_ENDPOINT: https://s3.${{ secrets.OPENPUFFER_S3_REGION }}.amazonaws.com
+          OPENPUFFER_S3_ACCESS_KEY: ${{ secrets.OPENPUFFER_S3_ACCESS_KEY }}
+          OPENPUFFER_S3_SECRET_KEY: ${{ secrets.OPENPUFFER_S3_SECRET_KEY }}
+          TURBOPUFFER_API_KEY: ${{ secrets.TURBOPUFFER_API_KEY }}
+          TURBOPUFFER_REGION: aws-${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_BENCH_HOST_LABEL: github-actions@ubuntu-latest
+          OPENPUFFER_BENCH_CLIENT_MODE: remote
+
+      - name: Live G3→G4→overlap→report
+        run: |
+          set -euo pipefail
+          args=(--tier "${{ inputs.tier }}")
+          [[ "${{ inputs.skip_g2 }}" == "true" ]] && args+=(--skip-g2)
+          [[ "${{ inputs.warm }}" == "true" ]] && args+=(--warm)
+          [[ "${{ inputs.measured_report }}" == "true" ]] && args+=(--measured-report)
+          ./scripts/run-large-benchmark-program.sh "${args[@]}"
+        env:
+          OPENPUFFER_S3_BUCKET: ${{ secrets.OPENPUFFER_S3_BUCKET }}
+          OPENPUFFER_S3_REGION: ${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_S3_ENDPOINT: https://s3.${{ secrets.OPENPUFFER_S3_REGION }}.amazonaws.com
+          OPENPUFFER_S3_ACCESS_KEY: ${{ secrets.OPENPUFFER_S3_ACCESS_KEY }}
+          OPENPUFFER_S3_SECRET_KEY: ${{ secrets.OPENPUFFER_S3_SECRET_KEY }}
+          TURBOPUFFER_API_KEY: ${{ secrets.TURBOPUFFER_API_KEY }}
+          TURBOPUFFER_REGION: aws-${{ secrets.OPENPUFFER_S3_REGION }}
+          OPENPUFFER_BENCH_HOST_LABEL: github-actions@ubuntu-latest
+          OPENPUFFER_BENCH_CLIENT_MODE: remote
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: large-benchmark-live-${{ inputs.tier }}-${{ github.run_id }}
+          path: |
+            benchmarks/results/large-aws-${{ inputs.tier }}.json
+            benchmarks/results/tpuf-${{ inputs.tier }}.json
+            benchmarks/results/id-overlap-${{ inputs.tier }}.json
+            benchmarks/results/ingest-large-${{ inputs.tier }}.json
+            docs/reports/BENCHMARK_VS_TURBOPUFFER_*.md
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # SKELETON: self-hosted EC2 runner in bench region (uncomment and disable
+  # live-program above when moving off ubuntu-latest). Requires a runner with
+  # label openpuffer-bench-ec2 and instance profile for S3 (omit ACCESS_KEY secrets).
+  # ---------------------------------------------------------------------------
+  # live-program-ec2:
+  #   name: live program EC2 (${{ inputs.tier }})
+  #   needs: secrets-preflight
+  #   if: inputs.enable_live_run == true
+  #   runs-on: [self-hosted, openpuffer-bench-ec2]
+  #   timeout-minutes: 360
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: source <(./scripts/preflight-aws-ec2.sh --export-creds)
+  #     - run: |
+  #         export TURBOPUFFER_API_KEY="${{ secrets.TURBOPUFFER_API_KEY }}"
+  #         export TURBOPUFFER_REGION=aws-${{ secrets.OPENPUFFER_S3_REGION }}
+  #         export OPENPUFFER_BENCH_CLIENT_MODE=localhost
+  #         ./scripts/run-large-benchmark-program.sh --tier ${{ inputs.tier }} --skip-g2 --measured-report
