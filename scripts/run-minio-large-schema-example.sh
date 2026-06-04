@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Validate bench-large JSON schema on MinIO @ 100k (G3 schema only — NOT tpuf/COMPARISON).
-# Writes benchmarks/results/large-aws-l1-schema-minio.example.json with environment=minio.
+# Validate bench-large JSON schema on MinIO (G3 schema only — NOT tpuf/COMPARISON).
+# Default: L1 @ 100k → large-aws-l1-schema-minio.example.json (environment=minio).
 #
 # Expects MinIO at OPENPUFFER_TEST_S3_* or compose defaults (see run-integration-s3.sh).
-# Ingest ~15–30 min @ L1; gates disabled (MinIO p50 is not an AWS SLO).
+# Ingest ~15–30 min @ 100k; gates disabled (MinIO p50 is not an AWS SLO).
 #
 # Usage:
 #   ./scripts/run-minio-large-schema-example.sh
+#   ./scripts/run-minio-large-schema-example.sh --docs 10000   # CI fast path (~2–5 min)
 #   ./scripts/run-minio-large-schema-example.sh --tier l1 --skip-ingest  # bench only
 #   ./scripts/run-minio-large-schema-example.sh --skip-warm              # cold + filter/hybrid only
 set -euo pipefail
@@ -18,12 +19,15 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
+DOCS="${OPENPUFFER_BENCH_DOCS:-100000}"
 SKIP_INGEST=0
 WARM_MODE=1
 for arg in "$@"; do
   case "$arg" in
     --tier=*) TIER="${arg#*=}" ;;
     --tier) shift; TIER="${1:?}" ;;
+    --docs=*) DOCS="${arg#*=}" ;;
+    --docs) shift; DOCS="${1:?--docs requires a number}" ;;
     --skip-ingest) SKIP_INGEST=1 ;;
     --warm) WARM_MODE=1 ;;
     --skip-warm) WARM_MODE=0 ;;
@@ -37,7 +41,11 @@ done
 [[ "${OPENPUFFER_BENCH_WARM:-}" == "0" ]] && WARM_MODE=0
 
 [[ "$TIER" == "l1" ]] || {
-  echo "schema example script only supports --tier l1 (100k)" >&2
+  echo "schema example script only supports --tier l1" >&2
+  exit 1
+}
+[[ "$DOCS" == "100000" || "$DOCS" == "10000" ]] || {
+  echo "schema example supports --docs 10000 (CI fast path) or 100000 (committed L1 example)" >&2
   exit 1
 }
 
@@ -55,9 +63,17 @@ export OPENPUFFER_ANN_VERSION=3
 export OPENPUFFER_BENCH_ENVIRONMENT=minio
 export OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1
 export OPENPUFFER_BENCH_ENFORCE_GATES=0
-export OPENPUFFER_BENCH_RESULTS="$ROOT/benchmarks/results/large-aws-l1-schema-minio.example.json"
+# 10k fast path writes *-schema-minio-10k.example.json (not committed; same keys as 100k example).
+if [[ "$DOCS" == "10000" ]]; then
+  SCHEMA_SUFFIX="-10k"
+else
+  SCHEMA_SUFFIX=""
+fi
+export OPENPUFFER_INGEST_DOCS="$DOCS"
+export OPENPUFFER_BENCH_DOCS="$DOCS"
+export OPENPUFFER_BENCH_RESULTS="$ROOT/benchmarks/results/large-aws-l1-schema-minio${SCHEMA_SUFFIX}.example.json"
 export OPENPUFFER_INGEST_ENVIRONMENT=minio
-export OPENPUFFER_INGEST_RESULTS="$ROOT/benchmarks/results/ingest-large-l1-schema-minio.example.json"
+export OPENPUFFER_INGEST_RESULTS="$ROOT/benchmarks/results/ingest-large-l1-schema-minio${SCHEMA_SUFFIX}.example.json"
 export OPENPUFFER_BENCH_INGEST_JSON="$OPENPUFFER_INGEST_RESULTS"
 
 large_preflight_toolchain
@@ -69,7 +85,7 @@ if ! curl -sf "${ENDPOINT}/minio/health/live" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "run-minio-large-schema-example: tier=${TIER} endpoint=${ENDPOINT} bucket=${BUCKET} warm=${WARM_MODE}"
+echo "run-minio-large-schema-example: tier=${TIER} docs=${DOCS} endpoint=${ENDPOINT} bucket=${BUCKET} warm=${WARM_MODE}"
 echo "  NOT for COMPARISON.md / tpuf tables — environment=minio schema validation only"
 
 export OPENPUFFER_INGEST_DELETE_FIRST="${OPENPUFFER_INGEST_DELETE_FIRST:-1}"

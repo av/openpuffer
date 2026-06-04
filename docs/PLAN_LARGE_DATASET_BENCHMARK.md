@@ -568,11 +568,12 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | Phase 3.3 id overlap | [x] harness / [ ] live | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; fact `nz2`; `52e3208` / `336eadb` |
 | MinIO integration + bench green | [x] | `./scripts/run-integration-s3.sh` + `cargo test -F bench`; `ef4fa97` (2026-06-04) |
 | MinIO schema example JSON (full: ingest timing, filter/hybrid, warm) | [x] | `large-aws-l1-schema-minio.example.json`, `ingest-large-l1-schema-minio.example.json`; `./scripts/run-minio-large-schema-example.sh` (`--warm` default); facts `3np`, `ccb` |
+| MinIO schema CI fast path (`--docs 10000`) | [x] | `./scripts/run-minio-large-schema-example.sh --docs 10000` → `*-schema-minio-10k.example.json` (not committed; same JSON keys as 100k example) |
 | G5 exemplar report (`NOT MEASURED`) | [x] skeleton | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8` |
 | Live `large-aws-{tier}.json` (AWS) | [ ] | Requires `OPENPUFFER_S3_*` on EC2; `run-aws-large-benchmark.sh --tier l1` |
 | Live `tpuf-{tier}.json` | [ ] | Requires `TURBOPUFFER_API_KEY`; `run-tpuf-large-benchmark.sh --tier l1` |
 | Measured report + COMPARISON rows | [ ] | `render-report.sh` without `--dry-run`; [COMPARISON.md](COMPARISON.md) L1 table still placeholder (`5ec9851`) |
-| `facts check --tags "ann or cold"` | [ ] verify on change | Run before release if ann/cold gates touched |
+| `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
 
 **Program complete** when the four `[ ]` live/measured rows above are checked and methodology in the dated report matches [Unresolved assumptions](#unresolved-assumptions) defaults (or documents overrides).
 

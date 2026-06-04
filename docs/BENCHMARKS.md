@@ -98,6 +98,10 @@ Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.s
 ./scripts/run-minio-large-schema-example.sh
 # → large-aws-l1-schema-minio.example.json + ingest-large-l1-schema-minio.example.json
 #   (environment=minio; ingest timing; filter/hybrid; warm by default; --skip-warm optional)
+
+# CI / quick schema validation (~2–5 min; does not update committed 100k artifacts):
+./scripts/run-minio-large-schema-example.sh --docs 10000
+# → large-aws-l1-schema-minio-10k.example.json + ingest-large-l1-schema-minio-10k.example.json
 ```
 
 **Dry-run** (no credentials):

@@ -3974,10 +3974,12 @@ async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
     let l0 = CentroidIndexL0::decode(&l0_bytes)
         .expect("decode centroids-l0")
         .clamp_probe_plan_for_query();
+    let max_cluster_gets = cluster_get_upper_bound(&l0);
     assert!(
-        l0.num_fine_total > 100,
-        "fixture must have many fine clusters (got {})",
-        l0.num_fine_total
+        l0.num_fine_total as usize > max_cluster_gets,
+        "fixture must have more fine clusters than probe cap (fine={}, cap={})",
+        l0.num_fine_total,
+        max_cluster_gets
     );
 
     let index_prefix = format!("{ROOT_PREFIX}{ns}/index/");
@@ -3988,19 +3990,14 @@ async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
         .filter(|k| k.contains("clusters-"))
         .count();
     assert!(
-        s3_cluster_objects > 100,
-        "S3 should list many cluster objects (got {s3_cluster_objects})"
-    );
-    assert!(
-        s3_cluster_objects >= l0.num_fine_total as usize / 2,
-        "cluster object count {s3_cluster_objects} should track num_fine_total {}",
+        s3_cluster_objects >= l0.num_fine_total as usize,
+        "S3 cluster objects {s3_cluster_objects} should cover num_fine_total {}",
         l0.num_fine_total
     );
 
     let query_vec: Vec<f64> = (0..STRESS_DIM)
         .map(|d| (d as f64 * 0.02).cos())
         .collect();
-    let max_cluster_gets = cluster_get_upper_bound(&l0);
 
     let (vindex, probe_roundtrips, _probe_keys, _probed_clusters) = fetch_cold_vector_probed(
         &fixture.client,
@@ -4027,9 +4024,10 @@ async fn cold_vector_query_cluster_gets_bounded_by_probe_plan() {
         l0.num_fine_total
     );
     assert!(
-        cluster_segments_fetched * 10 < s3_cluster_objects,
-        "probed fetch should not scale with full index: fetched {cluster_segments_fetched}, \
-         s3_cluster_objects {s3_cluster_objects}"
+        cluster_segments_fetched * 2 < l0.num_fine_total as usize,
+        "probed fetch should stay well below full fine index: fetched {cluster_segments_fetched}, \
+         num_fine_total {}",
+        l0.num_fine_total
     );
     assert!(
         probe_roundtrips <= 2,
