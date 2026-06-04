@@ -1,0 +1,352 @@
+# Archive: PLAN_LARGE_DATASET_BENCHMARK — Phases 1–7 (original specification)
+
+**Archived:** 2026-06-04 (offline harness complete @ `7a38d7f`).  
+**Active plan:** [PLAN_LARGE_DATASET_BENCHMARK.md](../PLAN_LARGE_DATASET_BENCHMARK.md) — program status, Phase 0, Phase 8 harness map, verification checklist, operator actions.
+
+This file preserves the original phase-by-phase **implementation specification**. Harness automation (A1–A6, G2–G6) is **done**; live `large-aws-*.json`, `tpuf-*.json`, measured G5, and [COMPARISON.md](../COMPARISON.md) rows remain operator-pending on EC2 + AWS S3 + `TURBOPUFFER_API_KEY`.
+
+---
+
+## Phase 1 — Workload generator and manifest
+
+**Deliverable:** `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/` (committed; seed 42).
+
+### 1.1 Generator script
+
+Implement `benchmarks/workloads/generate_synthetic.py` (or Rust binary) that:
+
+1. Writes `manifest.json`: `seed`, `num_docs`, `dim`, `batch_size`, `id_scheme`, `embedding_fn`, attribute definitions (see [`benchmarks/workloads/EMBEDDINGS.md`](../../benchmarks/workloads/EMBEDDINGS.md)).
+2. Streams **upsert batches** compatible with:
+   - openpuffer: `POST /v2/namespaces/{ns}` with `upsert_columns` (10k rows/batch).
+   - turbopuffer: `namespace.write(upsert_columns=...)` or `upsert_rows` with same column names.
+3. Emits `queries.json`: vector queries, hybrid specs, filter-only queries (fixed count).
+
+**Determinism:** same `seed` + `num_docs` → identical vectors on both sides.
+
+### 1.2 Ingest cadence (openpuffer)
+
+Follow [BENCHMARKS.md § 1M ingest cadence](../BENCHMARKS.md#1m-ingest-cadence) scaled to tier:
+
+| Tier | Batches (10k) | Sleep between batches | Wall time (ingest only) |
+|------|---------------|------------------------|-------------------------|
+| 100k | 10 | ~1.1s | ~12–15 min |
+| 500k | 50 | ~1.1s | ~60–70 min |
+| 1M | 100 | ~1.1s | ~17–20 min |
+
+**Do not** use `block_until_indexed: true` for large tiers; poll `GET /v1/namespaces/{name}` until `index_cursor == wal_commit_seq` and `preferred_ann_version == 3`.
+
+### 1.3 Ingest (turbopuffer)
+
+- Use **large write batches** (up to 512 MiB per [limits](https://turbopuffer.com/docs/limits)); for 128-dim f32, 10k rows per batch is safe.
+- Reuse **one SDK client** for connection pooling ([Performance](https://turbopuffer.com/docs/performance)).
+- Record `rows_affected` and wall time per batch in driver logs.
+
+---
+
+## Phase 2 — Environment setup
+
+### 2.1 openpuffer on AWS
+
+| Step | Action |
+|------|--------|
+| 1 | Create S3 bucket in target region (e.g. `us-east-1`); enable versioning optional for forensics. |
+| 2 | Launch **EC2** in **same region** (e.g. **`m7i.xlarge`**; see [BENCHMARKS.md § G3 EC2](../BENCHMARKS.md#g3--ec2--aws-s3-operator-setup)); `./scripts/preflight-aws-ec2.sh`; install release binary or build on host. |
+| 3 | Run `openpuffer serve` with: `--ann-version 3`, `--cache-dir ""` for cold runs, `OPENPUFFER_COLD_S3_CONCURRENCY=32` (tune 32→64 if RTT-bound). |
+| 4 | Optional warm runs: non-empty `--cache-dir` + `POST /v1/namespaces/{ns}/warm` before query phase. |
+| 5 | Enable metrics if comparing operator view: `cargo build --release --features metrics`, scrape `GET /metrics`. |
+
+**Security:** no public ingress required; SSH tunnel or private VPC. Comparison client can be the same EC2 host as `serve` (localhost) to isolate **server** latency from client WAN—document which mode was used.
+
+### 2.2 turbopuffer managed
+
+| Step | Action |
+|------|--------|
+| 1 | Pick region closest to EC2 (e.g. `aws-us-east-1` / `gcp-us-central1` per [Regions](https://turbopuffer.com/docs/regions)). |
+| 2 | Create ephemeral namespace; delete in `finally`. |
+| 3 | Ingest via Python driver using shared generator output. |
+| 4 | Poll namespace metadata until indexed (tpuf `index_status` / row counts stable—mirror openpuffer’s `index_cursor` check). |
+
+### 2.3 MinIO preflight (correctness only)
+
+Before spending AWS/tpuf budget:
+
+```bash
+cargo test -F integration --test integration_s3 -- --nocapture
+cargo test -F bench --test bench_cold -- --nocapture
+cargo test --release -F bench --test bench_cold -- --ignored --nocapture   # 100k
+```
+
+Failures here block Phase 3–7.
+
+---
+
+## Phase 3 — Functional testing (correctness before performance)
+
+Run on **MinIO** (CI) and spot-check on **AWS** after first large ingest.
+
+### 3.1 API parity smoke
+
+| Area | openpuffer check | turbopuffer check |
+|------|------------------|-------------------|
+| Write ACK | `wal_commit_seq` advances | write response success |
+| Strong read | query sees last upsert | same |
+| Vector query | `performance` block present | `performance` if exposed |
+| Recall | `POST …/recall` → `avg_recall`, counts | `namespace.recall()` same fields |
+| Errors | `{"error","status":"error"}` | SDK `APIError` shape |
+
+Existing integration coverage: `tests/integration_s3.rs` (53+ scenarios). Re-run subset after large ingest: `recall_http_*`, `ten_thousand_docs_indexed_query`, `cold_hybrid_10k_*`.
+
+### 3.2 Recall equivalence
+
+On **fully indexed** namespace at comparison tier:
+
+| System | Call | Gate (starting point) |
+|--------|------|------------------------|
+| openpuffer | `POST /v1/namespaces/{ns}/recall` `num=20, top_k=10` | `avg_recall ≥ 0.85` (1M gate); aim **≥ 0.90** @ 100k |
+| turbopuffer | `recall(num=20, top_k=10)` | Record actual; typically high on synthetic uniform data |
+
+**Important:** recall compares ANN vs exhaustive **within each product’s engine**. Cross-system recall equality is not required; report both numbers side by side.
+
+### 3.3 Result correctness spot-check
+
+For 10 fixed queries from `queries.json` (`spot_check` block; first `vector_queries`):
+
+1. Export or query `top_k=10` with `include_attributes`.
+2. Compare **id overlap** between systems only where distance metric and ranking are defined identically (pure vector ANN, same query vector).
+3. Document expected divergence (different ANN graphs, probes).
+
+**Automation:** [`benchmarks/cross_check/run_spotcheck.py`](../../benchmarks/cross_check/run_spotcheck.py) / [`scripts/run-id-overlap-spotcheck.sh`](../../scripts/run-id-overlap-spotcheck.sh) → `benchmarks/results/id-overlap-{tier}.json`. CI-safe: `--dry-run` and `--mock` (no API key). Live run after both namespaces are indexed.
+
+### 3.4 Load and soak (optional)
+
+- Sustained query load: 10 min @ 10 QPS cold cache-bust between queries.
+- Watch: indexer lag (`index_cursor < wal_commit_seq`), OOM on `serve`, S3 throttling (`503` SlowDown).
+
+---
+
+## Phase 4 — Performance evaluation
+
+### 4.1 Metrics matrix
+
+Collect the same **logical** metrics where APIs allow:
+
+| Metric | openpuffer source | turbopuffer source | Notes |
+|--------|-------------------|--------------------|-------|
+| Cold p50/p95 query latency | 7+ runs, empty cache each time | Same protocol | Client-side `time_total_ms` |
+| Warm p50 latency | `--cache-dir` + warm endpoint | [Warm cache](https://turbopuffer.com/docs/warm-cache) | openpuffer `consistency: eventual` on pinned view |
+| `storage_roundtrips` | `performance.storage_roundtrips` | May differ or be absent | openpuffer-specific; still report |
+| S3 GET count | `cold_s3_keys_fetched`, debug cache-stats | N/A (opaque) | Explain in report |
+| `candidates_ratio` | `performance.candidates_ratio` | tpuf `performance` if present | |
+| `recall@10` | `/recall` or bench JSON | `recall()` | |
+| Index object count | S3 `list-objects` under `index/` | Not applicable | openpuffer operability metric |
+| Ingest duration | Wall clock + commit count | Wall clock | openpuffer ~1 commit/s/ns |
+| Write throughput | docs/sec given batch cadence | docs/sec | Not comparable 1:1 due to WAL cap |
+
+### 4.2 Cold query protocol (mandatory for comparison)
+
+Identical client procedure:
+
+1. **Indexed gate:** metadata shows catch-up complete.
+2. **Cache bust (openpuffer):** empty `--cache-dir` or delete cache dir between runs; restart `serve` if needed.
+3. **Cache bust (turbopuffer):** use fresh namespace or documented cache-cold approach (new namespace per cold series is simplest).
+4. **Query:** vector-only `rank_by`, `top_k=10`, `consistency: strong`, minimal `include_attributes`.
+5. **Repeat:** 7 cold runs (match [`bench_cold.rs`](../../tests/bench_cold.rs)); report p50 and p95.
+6. **Record** full JSON line per run (latency + performance block).
+
+openpuffer automation (tiered; **not** `bench-1m.sh` for L1/L2):
+
+```bash
+# G3 one-shot (recommended): G2 subset → AWS preflight → ingest → bench
+./scripts/run-aws-large-benchmark.sh --tier l1
+# → benchmarks/results/large-aws-l1.json
+
+# Or stepwise:
+./scripts/ingest-large.sh --tier l1
+./scripts/bench-large.sh --tier l1
+
+# L3 (1M) still available via bench-large --tier l3 or legacy bench-1m.sh
+```
+
+### 4.3 Warm query protocol
+
+1. `POST /v1/namespaces/{ns}/warm` (openpuffer) / tpuf warm API.
+2. 20 queries without cache bust; `consistency: eventual` where applicable.
+3. Compare p50 to turbopuffer’s sub-10ms **goal** ([ARCHITECTURE.md](../ARCHITECTURE.md))—report honestly if not met at 100k+.
+
+### 4.4 Hybrid and filter (secondary)
+
+If report scope includes hybrid:
+
+- openpuffer: `cold_hybrid_10k_*` pattern at 100k (FTS bootstrap + vector).
+- turbopuffer: equivalent `rank_by` Sum/Product per [Hybrid](https://turbopuffer.com/docs/hybrid).
+- Gates: `storage_roundtrips ≤ 4` (openpuffer); tpuf latency only.
+
+### 4.5 Reference numbers (not a substitute for measurement)
+
+Use published turbopuffer tradeoffs only as **context**, not as measured tpuf row in the report:
+
+- Cold queries occasionally **100s of ms** P999; marketing **~400–500ms class @ 1M** on landing/docs.
+- Consistent reads **~10ms floor**; warm **~14ms** class cited in [COMPARISON.md](../COMPARISON.md).
+
+**The report’s turbopuffer column must come from Phase 4.2 runs in your chosen region.**
+
+---
+
+## Phase 5 — Debugging playbook
+
+When gates fail or numbers look wrong, work through this order.
+
+### 5.1 Index not caught up
+
+**Symptoms:** high `candidates_ratio`, low recall, slow queries scanning WAL.
+
+| Check | Command / API |
+|-------|----------------|
+| Meta lag | `GET /v1/namespaces/{ns}` → `index_cursor`, `wal_commit_seq`, `index_status` |
+| Unindexed bytes | `unindexed_bytes` > 0 |
+| Fix | Wait; scale indexer fairness; reduce concurrent namespaces; inspect indexer logs |
+
+### 5.2 Cold path fetching too much
+
+**Symptoms:** `storage_roundtrips > 4`, `cold_s3_keys_fetched` scales with total clusters.
+
+| Check | Where |
+|-------|--------|
+| Probed vs full load | `performance.ann_probed_clusters`, Prometheus `openpuffer_ann_probe_clamp_total` |
+| Probe env | `OPENPUFFER_ANN_COARSE_PROBE`, `OPENPUFFER_ANN_FINE_PROBE`, `OPENPUFFER_ANN_MAX_PROBE_CLUSTERS` |
+| ANN version | `preferred_ann_version` must be `3` for large-tier program |
+| Code path | [`plan_cold_query`](../../src/s3_batch.rs), [`fetch_cold_vector_probed`](../../src/storage.rs) |
+
+### 5.3 High latency but low roundtrips
+
+**Symptoms:** `storage_roundtrips` ≤ 4 but p50 > 600ms on AWS.
+
+| Check | Action |
+|-------|--------|
+| RTT | Run S3 GET latency from EC2; try `OPENPUFFER_COLD_S3_CONCURRENCY=64` |
+| Region mismatch | Move EC2 or bucket |
+| Strong consistency | WAL tail on large unindexed window—wait for catch-up |
+| Instance size | CPU for decode/rerank; try `--ann-rerank` off for latency A/B |
+
+### 5.4 Recall collapse
+
+| Check | Action |
+|-------|--------|
+| v2 vs v3 | Re-index with `OPENPUFFER_ANN_VERSION=3` |
+| Probes too low | Increase coarse/fine probe; watch `candidates_ratio` |
+| Re-rank | Enable `OPENPUFFER_ANN_RERANK=1` for recall A/B (latency tradeoff) |
+| Data drift | Confirm generator seed unchanged |
+
+### 5.5 Write / ingest stalls
+
+| Check | Action |
+|-------|--------|
+| 1 commit/s cap | Expected; do not compare ingest fairly to tpuf without noting cap |
+| CAS conflicts | Retry storms in logs; reduce parallel writers |
+| S3 errors | 503 SlowDown → backoff; check IAM |
+
+### 5.6 turbopuffer-specific
+
+| Issue | Action |
+|-------|--------|
+| 429 / rate limit | Smaller batch concurrency; retry with SDK backoff |
+| Region latency | Re-run from closer region |
+| Billing on recall | Reduce `num` on large namespaces per [Recall billing](https://turbopuffer.com/docs/recall#billing) |
+
+### 5.7 Object storage forensics (openpuffer)
+
+```bash
+aws s3 ls s3://$BUCKET/openpuffer/$NS/ --recursive | head
+aws s3 cp s3://$BUCKET/openpuffer/$NS/meta.json - | jq .
+# WAL segments
+aws s3 ls s3://$BUCKET/openpuffer/$NS/wal/
+# Index footprint
+aws s3 ls s3://$BUCKET/openpuffer/$NS/index/ | wc -l
+```
+
+Compare `index_object_count` in bench JSON with list count.
+
+---
+
+## Phase 6 — Assessing results
+
+### 6.1 Pass/fail rubric (openpuffer)
+
+Use existing gates from [BENCHMARKS.md](../BENCHMARKS.md) at the tier you ran:
+
+| Tier | storage_roundtrips | recall@10 | p50 cold (AWS) | candidates_ratio |
+|------|-------------------|-----------|----------------|------------------|
+| 100k MinIO | ≤ 4 | ≥ 0.88 (bench) / 0.90 (lib) | informational | < 0.20 |
+| 100k AWS | ≤ 4 | ≥ 0.85–0.90 | **< 600ms** target | < 0.20 |
+| 1M AWS | ≤ 4 | ≥ 0.85 | **< 600ms** target | < 0.20 |
+
+### 6.2 Comparison interpretation (openpuffer vs tpuf)
+
+| Outcome | Meaning |
+|---------|---------|
+| openpuffer cold p50 **within ~2×** tpuf @ same tier/region | Architecture competitive for self-hosted; tune probes/concurrency |
+| openpuffer cold p50 **> 2×** tpuf | Investigate S3 RTT, probe clamp, rerank, indexer lag; not necessarily incorrect |
+| openpuffer recall **<<** tpuf | Expected if v3 ANN simpler than prod SPFresh; tune probes/rerank |
+| openpuffer recall **≈** tpuf | Strong signal on synthetic data; validate on real embeddings before product claims |
+| openpuffer ingest **much slower** | Expected (~1 WAL commit/s); separate write-path report section |
+
+### 6.3 When to block a release
+
+- Any **correctness** regression on MinIO integration suite.
+- `storage_roundtrips > 4` on caught-up strong cold vector query @ 10k/100k.
+- `recall@10` below tier gate on AWS after indexing complete.
+- Comparison report missing methodology (region, tier, seed, commit SHA).
+
+---
+
+## Phase 7 — Comparison report deliverable
+
+**Path:** `docs/reports/BENCHMARK_VS_TURBOPUFFER_YYYY-MM-DD.md` (create `docs/reports/` on first run).
+
+### 7.1 Required sections
+
+1. **Executive summary** — 3–5 bullets: who should use openpuffer vs tpuf for this workload.
+2. **Methodology** — tier, doc count, dim, seed, regions, instance types, cache policy, commit SHAs.
+3. **Setup summary** — ingest duration, indexing wait time, namespace names (redacted if needed).
+4. **Results tables** — copy template below.
+5. **Correctness** — recall both sides; spot-check overlap note.
+6. **Debugging notes** — failures encountered and fixes (reproducibility for the next run).
+7. **Limitations** — WAL cap, API subset, no tpuf `storage_roundtrips`, billing not included unless measured.
+8. **Appendix** — full JSON artifacts linked from `benchmarks/results/`.
+
+### 7.2 Results table template
+
+```markdown
+## Results @ 100k × 128-dim cosine (synthetic seed=…)
+
+| Metric | openpuffer (AWS us-east-1) | turbopuffer (region …) | Ratio (op/tpuf) |
+|--------|---------------------------|-------------------------|-----------------|
+| Ingest wall time | | | |
+| Time to indexed | | | |
+| Cold p50 query (ms) | | | |
+| Cold p95 query (ms) | | | |
+| Warm p50 query (ms) | | | |
+| recall@10 (num=20) | | | |
+| storage_roundtrips | | n/a | |
+| cold_s3_keys_fetched | | n/a | |
+| candidates_ratio | | | |
+| index_object_count | | n/a | |
+
+**Query protocol:** strong consistency, vector-only ANN, top_k=10, cache cold, 7 runs.
+**Client:** EC2 localhost vs tpuf SDK from same host.
+```
+
+### 7.3 Updating [COMPARISON.md](../COMPARISON.md)
+
+After the report is accepted:
+
+```bash
+./scripts/fill-comparison-from-report.sh --report docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md
+```
+
+Refuses `NOT MEASURED` dry-run reports unless `--allow-fixture` (exemplar harness only). Copies the L1 **Results** table (and overlap from **Correctness** when present) into `docs/COMPARISON.md` markers `comparison-l1-*`.
+
+- Replace “manual gate pending” / “product reference” rows in [Maturity vs TurboPuffer](../COMPARISON.md#maturity-vs-turbopuffer-measured) with measured tpuf + openpuffer AWS numbers (manual or follow-up edit).
+- Link the report and JSON paths.
+- Keep honest gaps (auth, multi-tenant, true SPFresh, write throughput).
+
