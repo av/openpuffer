@@ -73,6 +73,57 @@ Three `run-op-scaling-benchmark.sh 100k` runs (release, same harness):
 
 **Index objects (bench harness, not in `op-scaling-*.json`):** `index_object_count` **72 / 236 / 269** @ 10k / 50k / 100k on tier sweep (all &lt; 500 cap).
 
+---
+
+## Efficiency metrics
+
+Beyond cold **p50**, this section compares **cold-path probe efficiency** (S3 roundtrips, candidate fraction, recall) and **order-of-magnitude ingest** claims. turbopuffer rows below are **published policy/docs**, not re-measured in this repo.
+
+### turbopuffer — official throughput and latency claims
+
+Sources: [Tradeoffs](https://turbopuffer.com/docs/tradeoffs) (2026-06-05), [tpuf-official-reference.json](../../benchmarks/results/tpuf-official-reference.json), vendored [`vector-10m-cold.toml`](../../benchmarks/specs/tpuf/vector-10m-cold.toml).
+
+| Topic | Claim | Notes |
+|-------|--------|-------|
+| **Consistent read floor** | **~10 ms** | Object-storage metadata checks for latest writes; sub-10 ms needs `consistency: eventual` |
+| **Warm query class** | **~14 ms p50** @ 10M × 1024 | Homepage calculator / hot spec (NVMe + cache) |
+| **Cold tail** | **P99 in 100s of ms** occasionally | Cold queries on object storage; marketing cold p50 **874 ms** @ 10M |
+| **Write commit** | **Up to ~200 ms** to durable commit | WAL-on-object-storage; **thousands of writes/s per namespace** |
+| **Query bench load** | **8 QPS × 30 min**, 1 namespace | `vectors_10m_cold`; not single-client sequential |
+
+openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the turbopuffer API; those are openpuffer-only cold-path metrics.
+
+### openpuffer — cold-path efficiency by tier
+
+`op-scaling-*.json` records `storage_roundtrips` and `recall_at_10` where the harness emits them. **`candidates_ratio`** comes from companion bench artifacts ([`baseline-10k.json`](../../benchmarks/results/baseline-10k.json), [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json), [`nightly-100k.json`](../../benchmarks/results/nightly-100k.json)) on the **same** MinIO + v3 probed cold path (inline 10k/50k/100k vectors except **synthetic-128 @ 10k**).
+
+| Tier | Docs × dims | `storage_roundtrips` | `candidates_ratio` | `recall_at_10` | Cold p50 (op-scaling) | Artifact |
+|------|-------------|----------------------|--------------------|----------------|------------------------|----------|
+| 10k | 10k × 128 | **3** | **0.008** | — (not in op-scaling) | **111 ms** | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json) + [`baseline-10k.json`](../../benchmarks/results/baseline-10k.json) |
+| 10k synthetic-128 | 10k × 128 | **3** | _(same gate; ratio not in op-scaling JSON)_ | **1.0** | **97 ms** | [`op-scaling-10k-synthetic128.json`](../../benchmarks/results/op-scaling-10k-synthetic128.json) |
+| 50k | 50k × 128 | **3** | **0.0016** | **1.0** | **525 ms** | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) + [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json) |
+| 100k | 100k × 128 | **3** | **0.0008** | **1.0** | **813 ms** | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) + [`nightly-100k.json`](../../benchmarks/results/nightly-100k.json) |
+
+**Read:** `storage_roundtrips` stays **3** (≤ 4 gate) across tiers—cold probe work scales in **latency**, not extra S3 batch rounds on this sweep. `candidates_ratio` falls **0.008 → 0.0016 → 0.0008** as N grows (sub-linear candidate fraction). `recall_at_10` is **1.0** @ 50k/100k on measured gates.
+
+**Warm @ 10k (throughput shape):** p50 **81 ms** with no cold `storage_roundtrips` ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json))—not comparable to tpuf **14 ms** warm @ 10M without matched cache tier.
+
+### Ingest throughput (order-of-magnitude, not apples-to-apples)
+
+| System | What is measured | Order-of-magnitude |
+|--------|------------------|--------------------|
+| **turbopuffer** | Write path: durable commit ≤ **~200 ms**; fleet **~10k+ vectors/s** class cited in product docs | Managed batching inside commit window; **not** ~1 HTTP commit/s cap |
+| **openpuffer @ 100k nightly** | `bench_cold_100k_nightly`: upsert + index until caught-up, then 7 cold queries | Harness notes **~15–30 min** wall; [`run-op-scaling-benchmark.sh`](../../scripts/run-op-scaling-benchmark.sh) cites **~8–15 min** for 100k tier → **~110–210 docs/s** end-to-end (100k ÷ wall clock, includes index build) |
+| **openpuffer @ 50k (inline stress)** | `fifty_thousand_docs_v3_cold_probed_validation` | [`cold-50k-v3.json`](../../benchmarks/results/cold-50k-v3.json): **`ingest_elapsed_secs`: 14** → **~3.6k docs/s** upsert-only on MinIO (5×10k batches; **not** synthetic-128 workload) |
+
+**Caveats:** openpuffer enforces **~1 WAL commit/s per namespace** ([`COMPARISON.md`](../COMPARISON.md)); tpuf’s **200 ms commit** is a **latency bound**, not the same throughput model. Do **not** equate openpuffer end-to-end MinIO ingest+index minutes with tpuf write-path seconds.
+
+### synthetic-128 cold @ 50k — skipped
+
+**Not run** in this iteration. Existing gates: [`bench_cold_10k_synthetic_128_workload_gate`](../../tests/bench_cold.rs) @ 10k only; 50k uses [`stress_50k`](../../tests/stress_50k.rs) **inline** embeddings (not `queries.json`). A 50k synthetic-128 gate would require a new test (ingest+index **≫30 min** on this host per 100k nightly class) — deferred.
+
+---
+
 **Official turbopuffer reference (not re-measured here):**
 
 | Path | Docs × dims | p50 | p90 | p99 |
