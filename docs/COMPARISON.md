@@ -34,21 +34,40 @@ Head-to-head latency and recall against **managed turbopuffer** on a **shared sy
 | Client | Same-region EC2; localhost `serve` vs tpuf SDK (document instance type in report) |
 | Pass/fail rubric | [`BENCHMARKS.md` § Phase 6](BENCHMARKS.md#phase-6--passfail-rubric) (e.g. AWS L1 cold p50 **&lt; 600 ms**, recall **≥ 0.85**, `storage_roundtrips ≤ 4`) |
 
+**Offline preflight (no AWS/tpuf spend):**
+
+```bash
+./scripts/verify-large-benchmark-program.sh       # harness gates; optional --with-g2 for MinIO G2
+```
+
+### Operator checklist (live G3–G5)
+
+Mirrors [PLAN § Next operator actions](PLAN_LARGE_DATASET_BENCHMARK.md#next-operator-actions):
+
+| Step | Action | Committed artifact |
+|------|--------|-------------------|
+| **1** | Provision bench **EC2** (`m7i.xlarge`, same region as S3 bucket, e.g. `us-east-1`); instance profile or `OPENPUFFER_S3_*` for a dedicated `openpuffer-bench-*` bucket — [BENCHMARKS § G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup) | — |
+| **2** | **Unset** MinIO dev endpoint (`OPENPUFFER_S3_ENDPOINT`); `./scripts/preflight-aws-ec2.sh` then `./scripts/run-aws-large-benchmark.sh --tier l1` | `benchmarks/results/large-aws-l1.json` (+ ingest sidecar) |
+| **3** | Export `TURBOPUFFER_API_KEY` (test org) and `TURBOPUFFER_REGION=aws-us-east-1`; `./scripts/preflight-tpuf.sh --tier l1` then `./scripts/run-tpuf-large-benchmark.sh --tier l1` | `benchmarks/results/tpuf-l1.json` |
+| **4** | After both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` | `benchmarks/results/id-overlap-l1.json` (Phase 3.3) |
+| **5** | `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); copy measured rows into [§ L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf); add `@spec` facts for live JSON | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
+
+Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (MinIO endpoint / missing tpuf key).
+
 **Regenerate report skeleton (fixtures only — not comparison numbers):**
 
 ```bash
 ./scripts/render-report.sh --dry-run --date YYYY-MM-DD
 ```
 
-**Publish measured comparison:**
+**Publish measured comparison (step-by-step commands):**
 
 ```bash
-./scripts/run-minio-correctness-gates.sh          # G2 — block spend if red
-./scripts/ingest-large.sh --tier l1
-./scripts/bench-large.sh --tier l1                # → benchmarks/results/large-aws-l1.json
-python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1   # → benchmarks/results/tpuf-l1.json
-./scripts/run-id-overlap-spotcheck.sh --tier l1   # optional Phase 3.3
-./scripts/render-report.sh --tier l1 --date YYYY-MM-DD
+./scripts/run-minio-correctness-gates.sh          # G2 — block spend if red (or rely on step 2 wrapper)
+./scripts/run-aws-large-benchmark.sh --tier l1    # steps 1–2 (G3 ingest + bench)
+./scripts/run-tpuf-large-benchmark.sh --tier l1   # step 3 (G4)
+./scripts/run-id-overlap-spotcheck.sh --tier l1   # step 4
+./scripts/run-large-benchmark-program.sh --tier l1 --measured-report   # step 5 (or render-report.sh)
 # Then fill § L1 measured rows below from the report (Phase 7.3)
 ```
 

@@ -48,6 +48,8 @@ Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-
 4. **Cross-check ids** after both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` → `id-overlap-l1.json`.
 5. **Publish measured comparison**: `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); update [COMPARISON.md](COMPARISON.md) L1 table; add `@spec` facts for live artifacts.
 
+Operator table (same steps 1–5): [COMPARISON.md § Operator checklist](COMPARISON.md#operator-checklist-live-g3g5).
+
 Blocked-run log: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (`bfaec74` session — MinIO endpoint, no tpuf key).
 
 ---
