@@ -48,13 +48,23 @@ extrap_128 = int(data["extrap_10m_128_p50_ms"])
 extrap_1024 = int(data["extrap_10m_1024_heuristic_p50_ms"])
 if tpuf != 874:
     raise SystemExit(f"tpuf_official_cold_p50_ms={tpuf}, want 874")
-if extrap_128 < 30_000 or extrap_128 > 120_000:
+if extrap_128 < 30_000 or extrap_128 > 130_000:
     raise SystemExit(f"extrap_10m_128_p50_ms={extrap_128} out of expected range")
-if extrap_1024 < 80_000 or extrap_1024 > 400_000:
+if extrap_1024 < 80_000 or extrap_1024 > 450_000:
     raise SystemExit(f"extrap_10m_1024_heuristic_p50_ms={extrap_1024} out of expected range")
+if data.get("fit", {}).get("best_model") not in ("linear", "power_law", "log_linear"):
+    raise SystemExit("missing or unknown fit.best_model")
+if data.get("backsolve_n_best_model", 0) < 50_000 or data.get("backsolve_n_best_model", 0) > 250_000:
+    raise SystemExit("backsolve_n_best_model out of expected ~100k range")
 if data["ratio_heuristic_vs_tpuf"] < 50:
     raise SystemExit("ratio_heuristic_vs_tpuf too low — not orders-of-magnitude slower than tpuf")
-print(f"test_compare-op-scaling-to-tpuf: EXTRAP_JSON ok (10M×128={extrap_128} ms, heuristic={extrap_1024} ms)")
+models = data.get("models", {})
+if not models or "linear" not in models or "power_law" not in models:
+    raise SystemExit("expected models.linear and models.power_law in EXTRAP_JSON")
+print(
+    f"test_compare-op-scaling-to-tpuf: EXTRAP_JSON ok "
+    f"(best={data['fit']['best_model']}, 10M×128={extrap_128} ms, heuristic={extrap_1024} ms)"
+)
 PY
 
 echo "test_compare-op-scaling-to-tpuf: OK"

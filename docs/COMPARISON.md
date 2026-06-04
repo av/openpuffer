@@ -74,7 +74,7 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 
 ### Scaling vs turbopuffer official (MinIO extrapolation)
 
-Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Power-law extrapolation from committed `op-scaling-*.json` yields **~73 s** cold p50 @ 10M×128 on this harness vs tpuf official **874 ms** (~83×); √dim heuristic @ 10M×1024 is **~206 s** (~235×). **Not the same absolute ballpark**; near-linear doc scaling (β ≈ 0.95) is shape analysis only. Full tables, warm-path notes, and gaps: [`docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md`](reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). Reproduce: `make bench-compare-tpuf` or `./scripts/compare-op-scaling-to-tpuf.sh`; refresh tiers: `make bench-op-scaling`.
+Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Four-point fit (best **linear** model) extrapolates **~81.5 s** cold p50 @ 10M×128 vs tpuf **874 ms** (~93×); √dim estimate @ 10M×1024 **~231 s** (~264×); linear-d estimate **~652 s** (~746×). Back-solve: **~107k docs** for 874 ms on this harness only. **Not the same absolute ballpark** at 10M. Full model validation, warm-path notes: [`docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md`](reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). Reproduce: `make bench-compare-tpuf` or `./scripts/compare-op-scaling-to-tpuf.sh`.
 
 ---
 

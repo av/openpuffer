@@ -70,5 +70,33 @@
       "p99": 27
     }
   },
-  "comparison_report": "docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md"
+  "comparison_report": "docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md",
+  "scaling_curve_official": {
+    "note": "No second official cold p50 at a different document_count was found for the Vector Perf calculator workload (1024-d, top_k=10, 8 QPS × 30m). Homepage calculator and tpuf-benchmark benchmarks/website/ are fixed at 10M docs.",
+    "searched_at": "2026-06-05",
+    "sources_checked": [
+      {
+        "id": "homepage_calculator",
+        "url": "https://turbopuffer.com",
+        "finding": "Vector Perf tab: only 10M × 1024 workload; URL query params do not expose alternate doc-count latencies"
+      },
+      {
+        "id": "tpuf_benchmark_website",
+        "url": "https://github.com/turbopuffer/tpuf-benchmark/tree/main/benchmarks/website",
+        "finding": "vector-10m-cold/hot, fulltext-10m-cold/hot, hybrid-10m-hot — all 10M document_count"
+      },
+      {
+        "id": "ann_v3_blog",
+        "url": "https://turbopuffer.com/blog/ann-v3",
+        "finding": "100B-vector scale / p99 targets; not a second published (N, cold p50) point for 10M×1024 comparison"
+      }
+    ],
+    "same_doc_count_different_path": {
+      "document_count": 10000000,
+      "dimensions": 1024,
+      "cold_p50_ms": 874,
+      "warm_p50_ms": 14,
+      "note": "Warm vs cold at same N is a cache-path comparison, not doc-count scaling"
+    }
+  }
 }
