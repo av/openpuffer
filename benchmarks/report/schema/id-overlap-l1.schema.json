@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openpuffer.dev/benchmarks/report/schema/id-overlap-l1.schema.json",
-  "title": "id-overlap spot-check JSON (all tiers)",
+  "title": "id-overlap spot-check JSON (L1–L3)",
   "description": "Schema for benchmarks/results/id-overlap-{tier}.json (Phase 3.3 run_spotcheck.py output).",
   "type": "object",
   "additionalProperties": true,

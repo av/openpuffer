@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openpuffer.dev/benchmarks/report/schema/ingest-large-l1.schema.json",
-  "title": "openpuffer ingest-large L1 JSON",
-  "description": "Schema for benchmarks/results/ingest-large-l1*.json and report fixtures (ingest-large.sh output).",
+  "title": "openpuffer ingest-large JSON (L1–L3)",
+  "description": "Schema for benchmarks/results/ingest-large-{l1,l2,l3}*.json and report fixtures (ingest-large.sh output). Tier-specific doc counts are cross-checked in validate-benchmark-json.sh.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -24,7 +24,7 @@
   "properties": {
     "benchmark": { "const": "ingest_large" },
     "environment": { "type": "string", "minLength": 1 },
-    "tier": { "const": "l1" },
+    "tier": { "enum": ["l1", "l2", "l3"] },
     "workload_dir": { "type": "string", "minLength": 1 },
     "namespace": { "type": "string", "minLength": 1 },
     "num_docs": { "type": "integer", "minimum": 1 },

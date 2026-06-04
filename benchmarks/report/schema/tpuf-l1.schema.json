@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openpuffer.dev/benchmarks/report/schema/tpuf-l1.schema.json",
-  "title": "turbopuffer tpuf L1 benchmark JSON",
-  "description": "Schema for benchmarks/results/tpuf-l1*.json and report fixtures (run_benchmark.py output).",
+  "title": "turbopuffer tpuf benchmark JSON (L1–L3)",
+  "description": "Schema for benchmarks/results/tpuf-{l1,l2,l3}*.json and report fixtures (run_benchmark.py output). Tier-specific benchmark id and doc counts are cross-checked in validate-benchmark-json.sh.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -23,12 +23,12 @@
     "cold_query_runs"
   ],
   "properties": {
-    "benchmark": { "const": "cold_tpuf_l1" },
+    "benchmark": { "type": "string", "pattern": "^cold_tpuf_l[123]$" },
     "environment": {
       "type": "string",
       "pattern": "^turbopuffer:"
     },
-    "tier": { "const": "l1" },
+    "tier": { "enum": ["l1", "l2", "l3"] },
     "workload_dir": { "type": "string", "minLength": 1 },
     "namespace": { "type": "string", "minLength": 1 },
     "primary_query": { "type": "string", "minLength": 1 },

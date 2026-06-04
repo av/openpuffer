@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Validate committed large-dataset benchmark JSON (fixtures + *.example.json).
 #
-# Uses JSON Schema (python jsonschema) for large-aws, tpuf, ingest-large, and id-overlap artifacts.
-# Ingest JSON also gets cross-field timing consistency checks after schema pass.
+# Uses JSON Schema (python jsonschema) for large-aws, tpuf, ingest-large, and id-overlap
+# artifacts across tiers L1–L3. Ingest and overlap JSON also get cross-field checks after schema pass.
 #
 # Usage:
 #   ./scripts/validate-benchmark-json.sh
-#   ./scripts/validate-benchmark-json.sh benchmarks/report/fixtures/large-aws-l1.json
+#   ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l2.example.json
 #
 set -euo pipefail
 
@@ -35,8 +35,14 @@ collect_default_paths() {
     benchmarks/report/fixtures/ingest-large-l1.json \
     benchmarks/results/large-aws-l1-schema-minio.example.json \
     benchmarks/results/large-aws-l1-schema-minio-10k.example.json \
+    benchmarks/results/large-aws-l2.example.json \
+    benchmarks/results/large-aws-l3.example.json \
     benchmarks/results/ingest-large-l1-schema-minio.example.json \
     benchmarks/results/ingest-large-l1-schema-minio-10k.example.json \
+    benchmarks/results/ingest-large-l2.example.json \
+    benchmarks/results/ingest-large-l3.example.json \
+    benchmarks/results/tpuf-l2.example.json \
+    benchmarks/results/tpuf-l3.example.json \
     benchmarks/results/id-overlap-l1.example.json; do
     if [[ -f "$f" ]]; then
       paths+=("$f")
@@ -63,6 +69,7 @@ run_validation() {
 
   python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "${json_paths[@]}" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -79,6 +86,27 @@ tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
 overlap_validator = Draft202012Validator(json.loads(overlap_schema_path.read_text()))
 
+TIER_META = {
+    "l1": {
+        "docs": 100_000,
+        "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+        "cold_large": "cold_large_l1",
+        "cold_tpuf": "cold_tpuf_l1",
+    },
+    "l2": {
+        "docs": 500_000,
+        "workload_dir": "benchmarks/workloads/synthetic-128/l2-500k",
+        "cold_large": "cold_large_l2",
+        "cold_tpuf": "cold_tpuf_l2",
+    },
+    "l3": {
+        "docs": 1_000_000,
+        "workload_dir": "benchmarks/workloads/synthetic-128/l3-1m",
+        "cold_large": "cold_large_l3",
+        "cold_tpuf": "cold_tpuf_l3",
+    },
+}
+
 
 def classify(path: Path) -> str:
     s = str(path)
@@ -91,6 +119,99 @@ def classify(path: Path) -> str:
     if "large-aws" in s:
         return "openpuffer"
     raise SystemExit(f"validate-benchmark-json: cannot classify {path}")
+
+
+def infer_tier_from_path(path: Path) -> str | None:
+    m = re.search(r"-l([123])(?:\.json|[-.])", path.name)
+    if m:
+        return f"l{m.group(1)}"
+    return None
+
+
+def skip_doc_tier_check(path: Path) -> bool:
+    """MinIO CI fast-path examples use tier=l1 workload but fewer docs (e.g. 10k)."""
+    name = path.name
+    return "10k" in name or "schema-minio-10k" in name
+
+
+def validate_tier_alignment(path: Path, kind: str, data: dict) -> None:
+    tier = data.get("tier")
+    if tier not in TIER_META:
+        raise SystemExit(f"{path}: unknown tier {tier!r} (expected l1, l2, or l3)")
+    meta = TIER_META[tier]
+
+    path_tier = infer_tier_from_path(path)
+    if path_tier and path_tier != tier:
+        raise SystemExit(f"{path}: filename implies tier {path_tier} but JSON has tier={tier}")
+
+    workload = data.get("workload_dir")
+    if workload and workload != meta["workload_dir"]:
+        raise SystemExit(
+            f"{path}: workload_dir {workload!r} != expected {meta['workload_dir']!r} for tier {tier}"
+        )
+
+    if kind == "ingest":
+        expected_benchmark = "ingest_large"
+        if data.get("benchmark") != expected_benchmark:
+            raise SystemExit(
+                f"{path}: benchmark {data.get('benchmark')!r} != {expected_benchmark!r}"
+            )
+        num_docs = data.get("num_docs")
+        if (
+            num_docs is not None
+            and num_docs != meta["docs"]
+            and not skip_doc_tier_check(path)
+        ):
+            raise SystemExit(
+                f"{path}: num_docs {num_docs} != {meta['docs']} for tier {tier}"
+            )
+        batch_count = data.get("batch_count")
+        if batch_count is not None and num_docs is not None and not skip_doc_tier_check(path):
+            batch_size = data.get("batch_size") or 10_000
+            expected_batches = (num_docs + batch_size - 1) // batch_size
+            if batch_count != expected_batches:
+                raise SystemExit(
+                    f"{path}: batch_count {batch_count} != ceil({num_docs}/{batch_size})={expected_batches}"
+                )
+        return
+
+    if kind == "id-overlap":
+        if data.get("benchmark") != "id_overlap_spotcheck":
+            raise SystemExit(f"{path}: benchmark must be id_overlap_spotcheck")
+        return
+
+    if kind == "openpuffer":
+        expected_benchmark = meta["cold_large"]
+        if data.get("benchmark") != expected_benchmark:
+            raise SystemExit(
+                f"{path}: benchmark {data.get('benchmark')!r} != {expected_benchmark!r}"
+            )
+        docs = data.get("namespace_docs")
+        if (
+            docs is not None
+            and docs != meta["docs"]
+            and not skip_doc_tier_check(path)
+        ):
+            raise SystemExit(
+                f"{path}: namespace_docs {docs} != {meta['docs']} for tier {tier}"
+            )
+        return
+
+    # tpuf
+    expected_benchmark = meta["cold_tpuf"]
+    if data.get("benchmark") != expected_benchmark:
+        raise SystemExit(
+            f"{path}: benchmark {data.get('benchmark')!r} != {expected_benchmark!r}"
+        )
+    docs = data.get("namespace_docs")
+    if (
+        docs is not None
+        and docs != meta["docs"]
+        and not skip_doc_tier_check(path)
+    ):
+        raise SystemExit(
+            f"{path}: namespace_docs {docs} != {meta['docs']} for tier {tier}"
+        )
 
 
 def schema_errors(validator, data, label: str, path: Path) -> None:
@@ -107,6 +228,7 @@ def schema_errors(validator, data, label: str, path: Path) -> None:
 
 
 def validate_overlap_cross_fields(path: Path, data: dict) -> None:
+    validate_tier_alignment(path, "id-overlap", data)
     queries = data.get("queries") or []
     summary = data.get("summary") or {}
     if summary.get("query_count") != len(queries):
@@ -129,6 +251,7 @@ def validate_overlap_cross_fields(path: Path, data: dict) -> None:
 
 
 def validate_ingest_cross_fields(path: Path, data: dict) -> None:
+    validate_tier_alignment(path, "ingest", data)
     timing = data["ingest_timing"]
     if data["ingest_elapsed_secs"] != timing["upsert_wall_sec"]:
         raise SystemExit(f"{path}: ingest_elapsed_secs != ingest_timing.upsert_wall_sec")
@@ -154,16 +277,18 @@ for path in paths:
 
     kind = classify(path)
     if kind == "ingest":
-        schema_errors(ingest_validator, data, "ingest-large-l1", path)
+        schema_errors(ingest_validator, data, "ingest-large", path)
         validate_ingest_cross_fields(path, data)
     elif kind == "id-overlap":
         schema_errors(overlap_validator, data, "id-overlap", path)
         validate_overlap_cross_fields(path, data)
     elif kind == "openpuffer":
-        schema_errors(op_validator, data, "large-aws-l1", path)
+        schema_errors(op_validator, data, "large-aws", path)
+        validate_tier_alignment(path, kind, data)
     else:
-        schema_errors(tpuf_validator, data, "tpuf-l1", path)
-    print(f"OK {path} ({kind})")
+        schema_errors(tpuf_validator, data, "tpuf", path)
+        validate_tier_alignment(path, kind, data)
+    print(f"OK {path} ({kind}, tier={data.get('tier', '?')})")
 
 print(f"validate-benchmark-json: {len(paths)} file(s) OK")
 PY

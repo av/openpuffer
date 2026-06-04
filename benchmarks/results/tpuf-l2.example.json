@@ -1,0 +1,66 @@
+{
+  "benchmark": "cold_tpuf_l2",
+  "environment": "turbopuffer:aws-us-east-1",
+  "tier": "l2",
+  "workload_dir": "benchmarks/workloads/synthetic-128/l2-500k",
+  "namespace": "bench-tpuf-2099-06-04-l2",
+  "primary_query": "vector-q00",
+  "namespace_docs": 500000,
+  "dimensions": 128,
+  "seed": 42,
+  "embedding_fn": "bench_sin_v1",
+  "cache_dir": null,
+  "consistency": "strong",
+  "tpuf_region": "aws-us-east-1",
+  "preferred_ann_version": null,
+  "index_cursor_eq_wal_commit_seq": null,
+  "index_up_to_date": true,
+  "index_status": "up-to-date",
+  "approx_row_count": 500000,
+  "storage_roundtrips": null,
+  "cold_s3_keys_fetched": null,
+  "s3_get_count": null,
+  "s3_get_count_note": "N/A (managed turbopuffer)",
+  "p50_query_latency_ms": 280,
+  "p95_query_latency_ms": 350,
+  "p50_warm_query_latency_ms": 14,
+  "p95_warm_query_latency_ms": 19,
+  "warm_query_runs": 20,
+  "warm_consistency": "eventual",
+  "warm_protocol": "hint_cache_warm",
+  "warm_runs": [],
+  "candidates_ratio": 0.0015,
+  "recall_at_10": 0.94,
+  "cold_query_runs": 7,
+  "cold_runs": [],
+  "filter_query_runs": [
+    {
+      "query_name": "filter-category-in-012",
+      "query_kind": "filter",
+      "latency_ms": 310
+    },
+    {
+      "query_name": "filter-priority-gt-50",
+      "query_kind": "filter",
+      "latency_ms": 295
+    }
+  ],
+  "hybrid_query_runs": [
+    {
+      "query_name": "hybrid-sum-vector-bm25",
+      "query_kind": "hybrid",
+      "latency_ms": 340
+    },
+    {
+      "query_name": "hybrid-sum-with-category-filter",
+      "query_kind": "hybrid",
+      "latency_ms": 325
+    }
+  ],
+  "index_keys_total": null,
+  "index_object_count": null,
+  "ingest_elapsed_secs": 95.2,
+  "ingest_docs_per_sec": 1050.4,
+  "ingest_rows_written": 100000,
+  "notes": "fixture for render-report tests (tier l2 schema example; not measured)"
+}
