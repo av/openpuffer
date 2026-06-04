@@ -676,6 +676,50 @@ Collect the same **logical** metrics on both sides where APIs allow. JSON field 
 
 **Recall billing (tpuf):** use [`queries.json` `recall_defaults`](../benchmarks/workloads/QUERY_SPEC.md#recall_defaults) (`num=20`, `top_k=10`) — same as openpuffer bench. Lower `num` on L2/L3 if cost-sensitive.
 
+#### Optional Prometheus scrape during `bench-large` (openpuffer only)
+
+[`bench-large.sh`](../scripts/bench-large.sh) records comparison metrics in `large-aws-*.json` (`p50_query_latency_ms`, `performance.storage_roundtrips`, `cold_s3_keys_fetched`, etc.). For a **server-side operator view** during the same run, optionally scrape **`GET /metrics`** — only when the `serve` binary was built with the **`metrics`** Cargo feature ([README § Prometheus metrics](../README.md#prometheus-metrics)).
+
+| Item | Detail |
+|------|--------|
+| Default harness build | `cargo build --release --features integration` inside `bench-large.sh` / `ingest-large.sh` — **`/metrics` is not exposed** (HTTP **404**). |
+| Enable endpoint | Build **before** bench: `cargo build --release --features 'integration,metrics'` (both features: integration keeps `POST /v1/debug/cache-stats/reset` for cold cache bust). |
+| Who starts `serve` | **A)** Rebuild as above, then run `./scripts/bench-large.sh` (script starts `serve` from `target/release/openpuffer`). **B)** `export OPENPUFFER_BENCH_SKIP_SERVE=1`, start `serve` yourself from the metrics-enabled binary on the same `--listen` (default `127.0.0.1:8080`). |
+| When to scrape | After index catch-up (`index_cursor == wal_commit_seq`, `preferred_ann_version == 3`), during the **7-run cold vector series** and optional `/recall` — same window as JSON `cold_runs[]`. |
+| Not in comparison JSON | Prometheus samples are **not** merged into `large-aws-*.json` or `render-report.sh`; use them for debugging / dashboards alongside committed JSON. |
+| tpuf | No equivalent scrape in this program — tpuf side stays driver JSON only. |
+
+**Preflight** (on the bench host, after `serve` is listening):
+
+```bash
+curl -sf "http://127.0.0.1:8080/metrics" | head -20
+# 404 → rebuild with --features metrics (and restart serve)
+# 200 + openpuffer_ → scrape during bench-large
+```
+
+**Example — snapshot before/after cold series** (replace host/port if `OPENPUFFER_BENCH_LISTEN` differs):
+
+```bash
+LISTEN="${OPENPUFFER_BENCH_LISTEN:-127.0.0.1:8080}"
+curl -sf "http://${LISTEN}/metrics" -o "/tmp/openpuffer-metrics-before.prom"
+./scripts/bench-large.sh --tier l1
+curl -sf "http://${LISTEN}/metrics" -o "/tmp/openpuffer-metrics-after.prom"
+```
+
+**Counters/histograms useful for cold-path debugging** (mirror per-query `performance` JSON where noted):
+
+| Prometheus series | JSON / gate analogue |
+|-------------------|----------------------|
+| `openpuffer_cold_s3_keys_fetched` | `performance.cold_s3_keys_fetched` |
+| `openpuffer_ann_probed_clusters` | `performance.ann_probed_clusters` |
+| `openpuffer_ann_probe_clamp_total` | probe clamp events |
+| `openpuffer_cold_query_duration_seconds` | cold query latency (histogram) |
+| `openpuffer_s3_get_total` | segment cache + S3 GET pressure |
+| `openpuffer_index_lag_segments` | indexer lag while ingest still running |
+| `openpuffer_query_duration_seconds` | all query paths |
+
+See [§ 5.2 Cold path fetching too much](#52-cold-path-fetching-too-much) when `openpuffer_cold_s3_keys_fetched` or `openpuffer_ann_probe_clamp_total` diverge from JSON gates.
+
 ### Phase 4 — Cold query protocol (mandatory)
 
 Shared definition: [`benchmarks/workloads/QUERY_SPEC.md`](../benchmarks/workloads/QUERY_SPEC.md) (`cold_query_protocol`, `warm_query_protocol`, `vector_queries`, `filter_queries`, `hybrid_queries`). Committed L1 file: [`l1-100k/queries.json`](../benchmarks/workloads/synthetic-128/l1-100k/queries.json).
@@ -739,7 +783,7 @@ When gates fail or latencies look wrong, work in this order ([full detail in pla
 
 | Symptom | Check | Fix |
 |---------|-------|-----|
-| `storage_roundtrips > 4`, `cold_s3_keys_fetched` ≫ probed clusters | `performance.ann_probed_clusters`, `OPENPUFFER_ANN_*_PROBE`, `preferred_ann_version` | Re-index with v3; tune probes; see [ANN probe tuning](#ann-probe-tuning-serve--indexer) |
+| `storage_roundtrips > 4`, `cold_s3_keys_fetched` ≫ probed clusters | `performance.ann_probed_clusters`, `OPENPUFFER_ANN_*_PROBE`, `preferred_ann_version`; optional `GET /metrics` if built with `--features metrics` ([§ Optional Prometheus scrape](#optional-prometheus-scrape-during-bench-large-openpuffer-only)) | Re-index with v3; tune probes; see [ANN probe tuning](#ann-probe-tuning-serve--indexer) |
 
 #### 5.3 High latency, low roundtrips
 
