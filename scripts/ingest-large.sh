@@ -549,7 +549,9 @@ fi
 SERVE_PID=""
 BATCH_TMP=""
 cleanup() {
-  [[ -n "$SERVE_PID" ]] && kill "$SERVE_PID" 2>/dev/null || true
+  if [[ -n "$SERVE_PID" ]]; then
+    kill "$SERVE_PID" 2>/dev/null || true
+  fi
   if [[ -n "$BATCH_TMP" && -z "${OPENPUFFER_INGEST_BATCH_DIR:-}" ]]; then
     rm -rf "$BATCH_TMP"
   fi

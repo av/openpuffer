@@ -327,7 +327,6 @@ reset_cache() {
 }
 
 cold_query_once() {
-  local run_idx="$1"
   local t0 ms body roundtrips ratio cold_keys
   t0=$(date +%s%3N)
   body="$(curl -sf -X POST "${QUERY_URL}" \
@@ -540,9 +539,7 @@ run_warm_phase() {
       '{run:$run, query_name:$query_name, latency_ms:$latency_ms, candidates_ratio:$candidates_ratio, consistency:$consistency}')")
   done
 
-  local _warm_ifs="$IFS"
-  IFS=$'\n' warm_sorted=($(printf '%s\n' "${warm_latencies[@]}" | sort -n))
-  IFS="$_warm_ifs"
+  mapfile -t warm_sorted < <(printf '%s\n' "${warm_latencies[@]}" | sort -n)
   warm_p50="$(percentile_ms 50 "${warm_sorted[@]}")"
   warm_p95="$(percentile_ms 95 "${warm_sorted[@]}")"
   warm_runs_json="$(printf '%s\n' "${warm_run_lines[@]}" | jq -s '.')"
@@ -625,7 +622,7 @@ load_ingest_summary_for_bench() {
     echo "  ingest sidecar: (none at ${path})" >&2
     return 0
   fi
-  rel="${path#$ROOT/}"
+  rel="${path#"$ROOT"/}"
   INGEST_SUMMARY_JSON="$(jq -c \
     --arg rel "$rel" \
     '{
@@ -657,7 +654,9 @@ load_ingest_summary_for_bench
 
 SERVE_PID=""
 cleanup() {
-  [[ -n "$SERVE_PID" ]] && kill "$SERVE_PID" 2>/dev/null || true
+  if [[ -n "$SERVE_PID" ]]; then
+    kill "$SERVE_PID" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -695,7 +694,7 @@ run_i=0
 for _ in $(seq 1 "$COLD_RUNS"); do
   run_i=$((run_i + 1))
   reset_cache
-  read -r ms roundtrips ratio cold_keys < <(cold_query_once "$run_i")
+  read -r ms roundtrips ratio cold_keys < <(cold_query_once)
   LATENCIES+=("$ms")
   RUN_LINES+=("$(jq -cn \
     --argjson run "$run_i" \
@@ -710,9 +709,7 @@ for _ in $(seq 1 "$COLD_RUNS"); do
   LAST_COLD_KEYS="$cold_keys"
 done
 
-_old_ifs="$IFS"
-IFS=$'\n' sorted=($(printf '%s\n' "${LATENCIES[@]}" | sort -n))
-IFS="$_old_ifs"
+mapfile -t sorted < <(printf '%s\n' "${LATENCIES[@]}" | sort -n)
 P50_MS="$(percentile_ms 50 "${sorted[@]}")"
 P95_MS="$(percentile_ms 95 "${sorted[@]}")"
 

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared preflight for large-tier ingest/bench (G3 AWS scale proof, G4 turbopuffer baseline).
 # Source from ingest-large.sh, bench-large.sh, run-aws-large-benchmark.sh,
 # run-tpuf-large-benchmark.sh — do not execute directly.

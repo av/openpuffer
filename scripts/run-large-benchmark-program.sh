@@ -106,10 +106,18 @@ OVERLAP_RESULTS="${OPENPUFFER_ID_OVERLAP_RESULTS:-$ROOT/benchmarks/results/id-ov
 REPORT_OUT="${OPENPUFFER_REPORT_OUTPUT:-$ROOT/docs/reports/BENCHMARK_VS_TURBOPUFFER_${REPORT_DATE}.md}"
 
 print_program_plan() {
+  local g2_mode
+  if [[ "$SKIP_G2" == 1 ]]; then
+    g2_mode=skip
+  elif [[ "$FULL_G2" == 1 ]]; then
+    g2_mode=full-minio
+  else
+    g2_mode=subset
+  fi
   echo "run-large-benchmark-program plan"
   echo "  tier=${TIER} dry_run=${DRY_RUN} warm=${WARM_MODE}"
   echo "  aws_only=${AWS_ONLY} tpuf_only=${TPUF_ONLY} skip_tpuf=${SKIP_TPUF}"
-  echo "  g2: $([[ "$SKIP_G2" == 1 ]] && echo skip || ([[ "$FULL_G2" == 1 ]] && echo full-minio || echo subset))"
+  echo "  g2: ${g2_mode}"
   echo "  artifacts:"
   echo "    openpuffer: ${OP_RESULTS}"
   echo "    turbopuffer: ${TPUF_RESULTS}"

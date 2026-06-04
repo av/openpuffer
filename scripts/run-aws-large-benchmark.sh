@@ -62,6 +62,7 @@ run_plan_dry() {
   echo "run-aws-large-benchmark dry-run OK"
   echo "  tier=${TIER}"
   echo "  results=${RESULTS}"
+  echo "  ingest_only=${INGEST_ONLY} bench_only=${BENCH_ONLY}"
   echo "  steps: $([[ "$SKIP_G2" == 1 ]] && echo 'skip-g2' || echo 'g2-subset') → aws-preflight → ingest-large → bench-large"
   echo "  index_timeout_default=$(large_preflight_tier_index_timeout_sec "$TIER")s (override: OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC / OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC)"
   large_preflight_aws_time_estimate "$TIER"
