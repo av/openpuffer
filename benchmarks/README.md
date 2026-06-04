@@ -1,6 +1,6 @@
 # Benchmarks hub
 
-Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and result JSON. Operator procedures and SLO tables live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md); program goals and phase checklist in [docs/PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md). **Harness commit history:** [CHANGELOG_LARGE_DATASET.md](CHANGELOG_LARGE_DATASET.md). **EC2 live run (one page):** [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md).
+Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and result JSON. Operator procedures and SLO tables live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md); program goals and phase checklist in [docs/PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md). **Operator handoff (PR summary):** [docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md). **Harness commit history:** [CHANGELOG_LARGE_DATASET.md](CHANGELOG_LARGE_DATASET.md). **EC2 live run (one page):** [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md).
 
 ## Directory layout
 

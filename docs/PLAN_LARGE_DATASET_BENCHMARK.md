@@ -8,10 +8,12 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 
 | Track | Status | Summary |
 |-------|--------|---------|
-| **Harness (offline)** | **COMPLETE — operator handoff** | Final audit: `./scripts/verify-large-benchmark-program.sh` **exit 0** @ `9670556` (2026-06-04); A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run |
+| **Harness (offline)** | **COMPLETE — operator handoff** | Final audit: `./scripts/verify-large-benchmark-program.sh` **exit 0** @ `9670556` (2026-06-04); A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run — **PR-style summary:** [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md) |
 | **Live measurement (G3–G5)** | **BLOCKED** | Needs EC2 in target region + real AWS S3 + `TURBOPUFFER_API_KEY` (test org); this dev host: MinIO endpoint + no tpuf key — **do not** re-run live G3/G4 here; see [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
 
 ### Harness audit (operator handoff)
+
+**Operator handoff document (goals G1–G6, verify, credentials, doc index):** [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md)
 
 | Gate | Result |
 |------|--------|
@@ -838,6 +840,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 
 ## Related documents
 
+- [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md) — **operator handoff PR summary** (G1–G6, what was built, verify, blocked creds, doc index)
 - [BENCHMARKS.md](BENCHMARKS.md) — tiers, env vars, gates, artifacts
 - [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) — ANN/cold implementation program ([relationship](#how-this-plan-relates-to-spfresh--cold-1m))
 - [COMPARISON.md](COMPARISON.md) — living maturity matrix (update after report)
