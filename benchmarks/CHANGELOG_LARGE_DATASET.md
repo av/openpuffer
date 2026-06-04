@@ -8,6 +8,60 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 **Session log:** timeboxed run 2026-06-04 (**114** iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
 
+**Op-vs-tpuf scaling program (2026-06-04 → 2026-06-05):** timeboxed comparison through `a2c1fd6`; progress `/tmp/timeboxed-op-vs-tpuf-comparison-1780613123.md`
+
+---
+
+## Session 2026-06-05 — openpuffer vs turbopuffer scaling comparison
+
+| Field | Value |
+|-------|--------|
+| **Goal** | Compare openpuffer MinIO cold scaling (10k / 50k / 100k × 128) to turbopuffer official **874 ms** @ **10M × 1024** (GCP); deliver committed JSON, scripts, extrapolation, and operator report |
+| **Commits** | `256d46e` … `a2c1fd6` (measurements, compare/verify gates, CI smoke, docs, canonical linear extrap) |
+| **Verify gate** | `make bench-verify-op-scaling` → `./scripts/verify-op-scaling-comparison.sh` (offline; committed `op-scaling-*.json` + `tpuf-official-reference.json`) |
+| **CI** | `.github/workflows/ci.yml` job `op-scaling-comparison`; `verify-large-benchmark-program.sh --skip-op-scaling` avoids duplicate work |
+| **User report** | [BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](../docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md); hub [OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md) |
+
+### Artifacts and scripts
+
+| Artifact | Role |
+|----------|------|
+| `benchmarks/results/op-scaling-{10k,50k,100k}.json` | Cold p50/p90/p99 from 7 `query_latencies_ms`; `ingest_wall_secs` / `docs_per_sec` |
+| `benchmarks/results/op-scaling-10k-warm.json` | Warm path @ 10k (not tpuf-comparable without matched cache tier) |
+| `benchmarks/results/op-scaling-10k-synthetic128.json` | synthetic-128 G2 gate @ 10k (≥3 cold tiers for fit) |
+| `benchmarks/results/tpuf-official-reference.json` | Official tpuf calculator / tpuf-benchmark reference (**874 ms** cold p50 @ 10M × 1024) |
+| `scripts/run-op-scaling-benchmark.sh` | Regenerate all tiers (`make bench-op-scaling`) |
+| `scripts/compare-op-scaling-to-tpuf.sh` | `compare_op_scaling_to_tpuf.py` → `EXTRAP_JSON` + verdict |
+| `scripts/verify-op-scaling-comparison.sh` | Schema, facts, compare smoke (offline gate) |
+| `benchmarks/report/schema/op-scaling.schema.json` | `op_scaling_v1` JSON Schema |
+
+### Measured cold p50 (committed @ `7f7c0f5` refresh; reconciled in final sweep @ `a2c1fd6`)
+
+| Tier | p50 / p90 / p99 (ms) | Ingest | Notes |
+|------|----------------------|--------|--------|
+| 10k × 128 | **96 / 99 / 99** | 11 s @ **909 docs/s** | `bench_cold_10k_baseline` |
+| 50k × 128 | **412 / 450 / 450** | 14 s @ **3571 docs/s** | `stress_50k` v3 cold probed |
+| 100k × 128 | **880 / 900 / 900** | 132 s @ **758 docs/s** | `bench_cold_100k_nightly`; `index_object_count` ~280 on bench log |
+| 10k warm | **112 ms** p50 (final sweep; was **81 ms**) | — | `bench_cold_10k_warm_vs_cold` |
+| 10k synthetic-128 | **97 ms** p50 | — | G2 workload gate |
+
+### Canonical extrapolation vs tpuf (linear model, `2738d6f` + `compare_op_scaling_to_tpuf.py`)
+
+- **Best fit among tried models:** log-linear / √dim heuristics; **linear in doc count @ 128-d** is the canonical comparison (`canonical_model: linear`).
+- **Extrapolated openpuffer p50 @ 10M × 128:** **~87 s** (~**87321 ms** in `EXTRAP_JSON`; ~**100×** vs tpuf **874 ms** if MinIO scaling holds to 10M).
+- **Insight (`a2c1fd6`):** measured **880 ms** @ **100k × 128** is **coincidentally** near tpuf **874 ms** @ **10M × 1024**—different **N**, **D**, and backend; **not** parity. Do not read 100k ≈ 874 ms as “same ballpark.”
+- **Live tpuf @ 10k:** blocked without `TURBOPUFFER_API_KEY` (`tpuf-scaling-10k-live.json` pending/skipped).
+
+### Makefile / tests
+
+- `make bench-op-scaling`, `make bench-compare-tpuf`, `make bench-verify-op-scaling`
+- `scripts/test_compare-op-scaling-to-tpuf.sh`, `scripts/test_validate-op-scaling-json.sh`
+- Smoke: `cargo test -F bench bench_cold_10k_baseline -q` (10k cold harness)
+
+### Program status
+
+**Offline comparison program complete** through `a2c1fd6`: committed measurements, extrapolation tooling, verify gate, CI smoke, and published scaling report. **Live** tpuf re-measure at matched tiers remains operator-pending (API key / EC2).
+
 ---
 
 ## Session 2026-06-04
