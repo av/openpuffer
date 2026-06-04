@@ -93,6 +93,58 @@ large_preflight_s3_head_bucket() {
   return 0
 }
 
+# Default indexer poll timeout (seconds) when OPENPUFFER_*_INDEX_TIMEOUT_SEC is unset.
+large_preflight_tier_index_timeout_sec() {
+  local tier="$1"
+  case "$tier" in
+    l1) echo 7200 ;;   # 2h @ 100k
+    l2) echo 10800 ;;  # 3h @ 500k
+    l3) echo 14400 ;;  # 4h @ 1M
+    *)
+      echo "preflight: unknown tier ${tier} for index timeout" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Order-of-magnitude wall-clock hints for operators (m7i.xlarge, us-east-1; not a guarantee).
+large_preflight_aws_time_estimate() {
+  local tier="$1"
+  case "$tier" in
+    l1)
+      cat <<'EOF'
+preflight AWS time estimate (tier=l1, 100k docs, m7i.xlarge):
+  ingest WAL commits (~10×10k @ 1.1s sleep): ~12–15 min
+  index catch-up (poll index_cursor): often 15–60 min after ingest
+  bench (cold+filter/hybrid+recall): ~5–15 min
+  full G3 one-shot: ~30–90 min typical; allow OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC=7200
+EOF
+      ;;
+    l2)
+      cat <<'EOF'
+preflight AWS time estimate (tier=l2, 500k docs, m7i.xlarge):
+  ingest WAL commits (~50×10k @ 1.1s sleep): ~60–70 min
+  index catch-up: often 1–3 h (more S3 index objects than L1)
+  bench: ~10–20 min (same query count as L1; recall num=20 bills ~100 tpuf-side)
+  full G3 one-shot: ~2–4 h typical; default index timeout 10800s (override if indexer lags)
+EOF
+      ;;
+    l3)
+      cat <<'EOF'
+preflight AWS time estimate (tier=l3, 1M docs, m7i.xlarge):
+  ingest WAL commits (~100×10k @ 1.1s sleep): ~17–20 min (WAL-limited; not tpuf ingest time)
+  index catch-up: often 2–4 h on single host (do not use c6i.large)
+  bench: ~15–30 min; recall billed ~200 queries on tpuf if mirroring G4
+  full G3 one-shot: ~3–6 h typical; default index timeout 14400s; run L1 green first
+EOF
+      ;;
+    *)
+      echo "preflight: unknown tier ${tier} for AWS time estimate" >&2
+      return 1
+      ;;
+  esac
+}
+
 large_preflight_validate_tier_workload() {
   local tier="$1"
   local root="$2"

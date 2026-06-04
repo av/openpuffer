@@ -18,6 +18,21 @@ sys.path.insert(0, str(DRIVER_DIR))
 import run_benchmark as rb  # noqa: E402
 
 
+@pytest.mark.parametrize(
+    "tier,expected_timeout",
+    [("l1", 7200), ("l2", 10800), ("l3", 14400)],
+)
+def test_default_index_timeout_sec_per_tier(tier: str, expected_timeout: int) -> None:
+    import os
+
+    old = os.environ.pop("TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC", None)
+    try:
+        assert rb.default_index_timeout_sec(tier) == expected_timeout
+    finally:
+        if old is not None:
+            os.environ["TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC"] = old
+
+
 def test_percentile_ms() -> None:
     assert rb.percentile_ms([10, 20, 30, 40, 50, 60, 70], 50) == 40
     assert rb.percentile_ms([100], 95) == 100

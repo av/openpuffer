@@ -421,11 +421,14 @@
   command: test -x scripts/bench-large.sh && grep -q 'large-aws-' scripts/bench-large.sh && grep -q 'recall_defaults' scripts/bench-large.sh && grep -q 'cold_large_' scripts/bench-large.sh && grep -q 'warm_query_protocol' scripts/bench-large.sh && grep -q 'filter_query_runs' scripts/bench-large.sh && grep -q 'run_filter_hybrid_queries' scripts/bench-large.sh && test -x scripts/test_bench-large-secondary-schema.sh && ./scripts/test_bench-large-secondary-schema.sh && ./scripts/bench-large.sh --dry-run >/dev/null && ./scripts/bench-large.sh --tier l2 --dry-run >/dev/null && ./scripts/bench-large.sh --tier l3 --dry-run >/dev/null && ./scripts/bench-large.sh --warm --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
 - label: G3 run-aws-large-benchmark.sh dry-run and large-benchmark-preflight.sh exist with tier workload validation
-  command: test -x scripts/run-aws-large-benchmark.sh && test -f scripts/lib/large-benchmark-preflight.sh && grep -q 'large_preflight_guard_aws_results_path' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-aws-large-benchmark.sh --dry-run >/dev/null
+  command: test -x scripts/run-aws-large-benchmark.sh && test -f scripts/lib/large-benchmark-preflight.sh && grep -q 'large_preflight_guard_aws_results_path' scripts/lib/large-benchmark-preflight.sh && grep -q 'large_preflight_tier_index_timeout_sec' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-aws-large-benchmark.sh --dry-run >/dev/null && ./scripts/run-aws-large-benchmark.sh --tier l2 --dry-run >/dev/null && ./scripts/run-aws-large-benchmark.sh --tier l3 --dry-run >/dev/null
   tags: [spec, bench-large, implemented]
 - label: run-large-benchmark-program.sh chains G2 G3 G4 id-overlap render-report dry-run with tier and warm flags
-  command: test -x scripts/run-large-benchmark-program.sh && grep -q 'run-aws-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-tpuf-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-id-overlap-spotcheck.sh' scripts/run-large-benchmark-program.sh && grep -q 'render-report.sh' scripts/run-large-benchmark-program.sh && ./scripts/run-large-benchmark-program.sh --dry-run --tier l1 --skip-g2 >/dev/null
+  command: test -x scripts/run-large-benchmark-program.sh && grep -q 'run-aws-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-tpuf-large-benchmark.sh' scripts/run-large-benchmark-program.sh && grep -q 'run-id-overlap-spotcheck.sh' scripts/run-large-benchmark-program.sh && grep -q 'render-report.sh' scripts/run-large-benchmark-program.sh && ./scripts/run-large-benchmark-program.sh --dry-run --tier l1 --skip-g2 >/dev/null && ./scripts/run-large-benchmark-program.sh --dry-run --tier l2 --skip-g2 >/dev/null && ./scripts/run-large-benchmark-program.sh --dry-run --tier l3 --skip-g2 >/dev/null
   tags: [spec, bench-large, implemented]
+- label: L2 L3 harness dry-run script validates ingest bench G3 G4 program id-overlap render-report offline
+  command: test -x scripts/test_l2-l3-harness-dry-run.sh && grep -q 'L2/L3' docs/BENCHMARKS.md && ./scripts/test_l2-l3-harness-dry-run.sh >/dev/null
+  tags: [spec, bench-large, bench-tpuf, implemented]
 - label: run-minio-large-schema-example.sh targets schema example JSON with environment minio warm secondary query fields and optional --docs 10000 fast path
   command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh && grep -qE '(--warm|WARM_MODE)' scripts/run-minio-large-schema-example.sh && grep -q 'filter_query_runs' scripts/run-minio-large-schema-example.sh && grep -q 'docs 10000' scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio-10k.example.json' scripts/run-minio-large-schema-example.sh
   tags: [spec, bench-large, implemented]
@@ -466,7 +469,7 @@
   command: test -x scripts/run-tpuf-large-benchmark.sh && grep -q 'large_preflight_validate_tpuf_env' scripts/lib/large-benchmark-preflight.sh && ./scripts/run-tpuf-large-benchmark.sh --dry-run --skip-g2 >/dev/null
   tags: [spec, bench-tpuf, implemented]
 - label: benchmarks/tpuf_driver/run_benchmark.py unit tests pass and read workload queries.json recall_defaults
-  command: test -f benchmarks/tpuf_driver/run_benchmark.py && grep -q 'recall_defaults' benchmarks/tpuf_driver/run_benchmark.py && python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
+  command: test -f benchmarks/tpuf_driver/run_benchmark.py && grep -q 'recall_defaults' benchmarks/tpuf_driver/run_benchmark.py && grep -q 'TIER_INDEX_TIMEOUT_SEC' benchmarks/tpuf_driver/run_benchmark.py && python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
   tags: [spec, bench-tpuf, implemented]
 - label: tpuf bench JSON fixture cold_tpuf_l1 records tier region recall_at_10 p50 cold_query_runs ingest metrics
   command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/tpuf-l1.json')); assert d['benchmark']=='cold_tpuf_l1' and d['tier']=='l1' and all(k in d for k in ('tpuf_region','recall_at_10','p50_query_latency_ms','cold_query_runs','ingest_elapsed_secs')) and d['cold_query_runs']==7"
@@ -478,7 +481,7 @@
   command: test -x scripts/test_render-report-measured.sh && grep -q validate_measured_json_pair scripts/render-report.sh && grep -q render_comparison_interpretation scripts/render-report.sh && ./scripts/test_render-report-measured.sh >/dev/null
   tags: [spec, bench-tpuf, bench-large, implemented]
 - label: Phase 3.3 id overlap spot-check dry-run and pytest pass queries.json spot_check count 10
-  command: test -x scripts/run-id-overlap-spotcheck.sh && test -f benchmarks/cross_check/run_spotcheck.py && ./scripts/run-id-overlap-spotcheck.sh --tier l1 --dry-run >/dev/null && python3 -m pytest benchmarks/cross_check/test_id_overlap_spotcheck.py -q && python3 -c "import json; q=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/queries.json')); assert q['spot_check']['count']==10"
+  command: test -x scripts/run-id-overlap-spotcheck.sh && test -f benchmarks/cross_check/run_spotcheck.py && ./scripts/run-id-overlap-spotcheck.sh --tier l1 --dry-run >/dev/null && ./scripts/run-id-overlap-spotcheck.sh --tier l2 --dry-run >/dev/null && ./scripts/run-id-overlap-spotcheck.sh --tier l3 --dry-run >/dev/null && python3 -m pytest benchmarks/cross_check/test_id_overlap_spotcheck.py -q && python3 -c "import json; q=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/queries.json')); assert q['spot_check']['count']==10"
   tags: [spec, bench-large, bench-tpuf, implemented]
 
 # index/ann

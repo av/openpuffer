@@ -63,6 +63,8 @@ run_plan_dry() {
   echo "  tier=${TIER}"
   echo "  results=${RESULTS}"
   echo "  steps: $([[ "$SKIP_G2" == 1 ]] && echo 'skip-g2' || echo 'g2-subset') → aws-preflight → ingest-large → bench-large"
+  echo "  index_timeout_default=$(large_preflight_tier_index_timeout_sec "$TIER")s (override: OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC / OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC)"
+  large_preflight_aws_time_estimate "$TIER"
   large_preflight_print_aws_operator_env
   if [[ -n "${OPENPUFFER_S3_BUCKET:-}" ]]; then
     echo "  OPENPUFFER_S3_BUCKET=${OPENPUFFER_S3_BUCKET} (set)"

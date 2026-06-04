@@ -57,7 +57,7 @@ esac
 WORKLOAD_DIR="${OPENPUFFER_BENCH_WORKLOAD_DIR:-$TIER_WORKLOAD}"
 LISTEN="${OPENPUFFER_BENCH_LISTEN:-127.0.0.1:8080}"
 RESULTS="${OPENPUFFER_BENCH_RESULTS:-$ROOT/benchmarks/results/large-aws-${TIER}.json}"
-INDEX_TIMEOUT_SEC="${OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC:-7200}"
+INDEX_TIMEOUT_SEC="${OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC:-$(large_preflight_tier_index_timeout_sec "$TIER")}"
 ENFORCE_GATES="${OPENPUFFER_BENCH_ENFORCE_GATES:-1}"
 SKIP_SERVE="${OPENPUFFER_BENCH_SKIP_SERVE:-}"
 SKIP_INDEX_WAIT="${OPENPUFFER_BENCH_SKIP_INDEX_WAIT:-}"
@@ -256,6 +256,7 @@ run_dry_run() {
   else
     echo "  OPENPUFFER_S3_* unset (OK for dry-run; required for full run)"
   fi
+  large_preflight_aws_time_estimate "$TIER"
   echo "Full run after ingest: export OPENPUFFER_S3_* then ./scripts/bench-large.sh --tier ${TIER}"
   exit 0
 }

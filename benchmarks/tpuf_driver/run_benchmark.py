@@ -33,7 +33,19 @@ TIER_DEFAULTS: dict[str, tuple[int, str]] = {
     "l2": (500_000, "benchmarks/workloads/synthetic-128/l2-500k"),
     "l3": (1_000_000, "benchmarks/workloads/synthetic-128/l3-1m"),
 }
+TIER_INDEX_TIMEOUT_SEC: dict[str, int] = {
+    "l1": 7200,
+    "l2": 10800,
+    "l3": 14400,
+}
 RECALL_GATE = 0.85
+
+
+def default_index_timeout_sec(tier: str) -> int:
+    raw = os.environ.get("TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC")
+    if raw:
+        return int(raw)
+    return TIER_INDEX_TIMEOUT_SEC.get(tier, 7200)
 
 
 @dataclass(frozen=True)
@@ -398,7 +410,7 @@ def build_context(args: argparse.Namespace) -> RunContext:
     filter_specs = tuple(queries.get("filter_queries") or ())
     hybrid_specs = tuple(queries.get("hybrid_queries") or ())
 
-    index_timeout = int(os.environ.get("TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC", "7200"))
+    index_timeout = default_index_timeout_sec(tier)
     enforce_gates = os.environ.get("TURBOPUFFER_BENCH_ENFORCE_GATES", "1") != "0"
     skip_ingest = bool(args.skip_ingest or os.environ.get("TURBOPUFFER_BENCH_SKIP_INGEST"))
     skip_delete = bool(args.skip_delete or os.environ.get("TURBOPUFFER_BENCH_SKIP_DELETE"))

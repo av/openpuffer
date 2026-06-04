@@ -114,18 +114,45 @@ Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.s
 **Dry-run** (no credentials):
 
 ```bash
-./scripts/run-large-benchmark-program.sh --dry-run --tier l1
-./scripts/run-aws-large-benchmark.sh --dry-run
-./scripts/run-tpuf-large-benchmark.sh --dry-run
+./scripts/run-large-benchmark-program.sh --dry-run --tier l1   # or l2 / l3
+./scripts/run-aws-large-benchmark.sh --dry-run --tier l2
+./scripts/run-tpuf-large-benchmark.sh --dry-run --tier l3
 ./scripts/ingest-large.sh --tier l1 --dry-run
-./scripts/bench-large.sh --tier l1 --dry-run
-python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
-./scripts/run-id-overlap-spotcheck.sh --tier l1 --dry-run
+./scripts/bench-large.sh --tier l2 --dry-run
+python3 benchmarks/tpuf_driver/run_benchmark.py --tier l3 --dry-run
+./scripts/run-id-overlap-spotcheck.sh --tier l2 --dry-run
 ./scripts/run-id-overlap-spotcheck.sh --tier l1 --mock
-./scripts/render-report.sh --dry-run
+./scripts/render-report.sh --dry-run --tier l2
+./scripts/test_l2-l3-harness-dry-run.sh   # one-shot L2+L3 gate (CI / local)
 ```
 
 Tiers: **l1** (100k, default comparison), **l2** (500k), **l3** (1M). Workloads under `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/`.
+
+### L2 / L3 scale tiers — operator expectations
+
+Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only (G2); **do not** publish MinIO latencies in COMPARISON / tpuf reports.
+
+| Tier | Docs | Namespace default | WAL ingest (10k batches, ~1.1s sleep) | Index poll default | Full G3 on `m7i.xlarge` (typical) | tpuf recall billed (`num=20`) |
+|------|------|-------------------|---------------------------------------|--------------------|-----------------------------------|-------------------------------|
+| **L1** | 100k | `bench-large-100000` | ~12–15 min | `7200`s (2h) | ~30–90 min | ~20 |
+| **L2** | 500k | `bench-large-500000` | ~60–70 min | `10800`s (3h) | ~2–4 h | ~100 |
+| **L3** | 1M | `bench-large-1000000` | ~17–20 min WAL only | `14400`s (4h) | ~3–6 h | ~200 |
+
+**Index timeouts:** when `OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC` / `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC` / `TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC` are unset, harnesses pick tier defaults above (`large_preflight_tier_index_timeout_sec` in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh)). Raise on slow hosts or if `index_cursor` lags after ingest.
+
+**Cost / API volume (tpuf):** same cold/filter/hybrid query count as L1; recall billing scales with docs ([§ G4 billing](#billing-and-cost-guardrails-l1--l2--l3)). L3 optional `recall_defaults.num=10` with methodology note in the report.
+
+**End-to-end dry-run (offline):**
+
+```bash
+./scripts/test_l2-l3-harness-dry-run.sh
+./scripts/run-large-benchmark-program.sh --dry-run --tier l2 --skip-g2
+./scripts/run-large-benchmark-program.sh --dry-run --tier l3 --skip-g2
+```
+
+**GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs ingest/bench/tpuf/program/id-overlap dry-run for the selected tier (`l1`, `l2`, or `l3`).
+
+**Spot-check ids:** `queries.json` `spot_check` uses the first 10 `vector_queries`; doc indices scale with tier (`num_docs / 50` stride), e.g. L2 → 0, 10k, …, 90k; L3 → 0, 20k, …, 180k.
 
 ### G3 — EC2 + AWS S3 operator setup
 

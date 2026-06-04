@@ -20,14 +20,24 @@ sys.path.insert(0, str(CROSS_CHECK))
 import id_overlap as xcheck  # noqa: E402
 
 
-def test_committed_queries_have_spot_check() -> None:
-    queries = json.loads(L1_QUERIES.read_text())
+@pytest.mark.parametrize(
+    "tier_subdir,last_doc_index",
+    [
+        ("l1-100k", 18_000),
+        ("l2-500k", 90_000),
+        ("l3-1m", 180_000),
+    ],
+)
+def test_committed_queries_have_spot_check(tier_subdir: str, last_doc_index: int) -> None:
+    queries_path = WORKLOADS / "synthetic-128" / tier_subdir / "queries.json"
+    queries = json.loads(queries_path.read_text())
     assert queries["spot_check"]["count"] == 10
     assert queries["spot_check"]["top_k"] == 10
     specs = xcheck.spot_check_query_specs(queries)
     assert len(specs) == 10
     assert specs[0]["name"] == "vector-q00"
     assert specs[-1]["name"] == "vector-q09"
+    assert specs[-1]["doc_index"] == last_doc_index
 
 
 def test_overlap_metrics_symmetric() -> None:

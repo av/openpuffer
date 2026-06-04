@@ -130,6 +130,9 @@ print_program_plan() {
   else
     echo "  TURBOPUFFER_API_KEY unset (required for G4 live)"
   fi
+  echo ""
+  large_preflight_aws_time_estimate "$TIER"
+  large_preflight_tpuf_cost_estimate "$TIER" "$WARM_MODE"
 }
 
 run_g2() {
