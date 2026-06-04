@@ -874,9 +874,9 @@ Build v3 indexes with `OPENPUFFER_ANN_VERSION=3` on `serve` / indexer; lib tests
 ```bash
 facts check --tags ann                 # Phase B @spec gates (7 facts, includes ignored 100k recall)
 facts check --tags "ann or cold"       # Phase A+B program gates (10 spec facts)
-facts check --tags bench-large         # large-dataset harness A1–A3, G2 fixture gates (PLAN_LARGE_DATASET_BENCHMARK)
-facts check --tags bench-tpuf          # turbopuffer driver A4–A5, comparison report merge
+facts check --tags bench-large         # large-dataset harness (28 @spec facts; PLAN_LARGE_DATASET_BENCHMARK)
+facts check --tags bench-tpuf          # turbopuffer driver + comparison merge (13 @spec facts)
 facts ll --tags spec          # list program spec facts
 ```
 
-Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` and `bench-tpuf` cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
+Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` (28) and `bench-tpuf` (13) cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `validate-benchmark-json.sh` (four L1 JSON schemas), `verify-large-benchmark-program.sh`, `preflight-aws-ec2.sh` / `preflight-tpuf.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, `id-overlap-l1.example.json`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.

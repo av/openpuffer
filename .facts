@@ -437,7 +437,7 @@
   command: test -x scripts/test_l2-l3-harness-dry-run.sh && grep -q 'L2/L3' docs/BENCHMARKS.md && ./scripts/test_l2-l3-harness-dry-run.sh >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 - label: verify-large-benchmark-program.sh runs offline harness gates pytest render synthetic_workload_gate L1 L2 L3 dry-run documented in PLAN
-  command: test -x scripts/verify-large-benchmark-program.sh && grep -q 'verify-large-benchmark-program' docs/PLAN_LARGE_DATASET_BENCHMARK.md && grep -q 'synthetic_workload_gate' scripts/verify-large-benchmark-program.sh && grep -q 'test_l2-l3-harness-dry-run' scripts/verify-large-benchmark-program.sh && ./scripts/verify-large-benchmark-program.sh --skip-facts >/dev/null
+  command: test -x scripts/verify-large-benchmark-program.sh && grep -q verify-large-benchmark-program docs/PLAN_LARGE_DATASET_BENCHMARK.md && grep -q synthetic_workload_gate scripts/verify-large-benchmark-program.sh && grep -q test_l2-l3-harness-dry-run.sh scripts/verify-large-benchmark-program.sh && grep -q validate-benchmark-json.sh scripts/verify-large-benchmark-program.sh && ./scripts/verify-large-benchmark-program.sh --skip-facts >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 - label: run-minio-large-schema-example.sh targets schema example JSON with environment minio warm secondary query fields and optional --docs 10000 fast path
   command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh && grep -qE '(--warm|WARM_MODE)' scripts/run-minio-large-schema-example.sh && grep -q 'filter_query_runs' scripts/run-minio-large-schema-example.sh && grep -q 'docs 10000' scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio-10k.example.json' scripts/run-minio-large-schema-example.sh
@@ -472,6 +472,12 @@
 - label: bench_cold synthetic_128 workload gate test exists for 10k G2 path
   command: grep -q 'bench_cold_10k_synthetic_128_workload_gate' tests/bench_cold.rs && cargo test -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate --no-run -q
   tags: [spec, bench-large, implemented]
+- label: scripts/validate-benchmark-json.sh validates large-aws tpuf ingest-large id-overlap JSON schemas on fixtures and example artifacts
+  command: test -x scripts/validate-benchmark-json.sh && test -f benchmarks/report/schema/large-aws-l1.schema.json && test -f benchmarks/report/schema/tpuf-l1.schema.json && test -f benchmarks/report/schema/ingest-large-l1.schema.json && test -f benchmarks/report/schema/id-overlap-l1.schema.json && grep -q large-aws-l1.schema.json scripts/validate-benchmark-json.sh && grep -q tpuf-l1.schema.json scripts/validate-benchmark-json.sh && grep -q ingest-large-l1.schema.json scripts/validate-benchmark-json.sh && grep -q id-overlap-l1.schema.json scripts/validate-benchmark-json.sh && grep -q id-overlap-l1.example.json scripts/validate-benchmark-json.sh && ./scripts/validate-benchmark-json.sh >/dev/null
+  tags: [spec, bench-large, bench-tpuf, implemented]
+- label: G3 G4 operator preflight-aws-ec2.sh and preflight-tpuf.sh wrap large-benchmark-preflight for AWS and tpuf spend gates
+  command: test -x scripts/preflight-aws-ec2.sh && test -x scripts/preflight-tpuf.sh && grep -q large-benchmark-preflight.sh scripts/preflight-aws-ec2.sh && grep -q large-benchmark-preflight.sh scripts/preflight-tpuf.sh && grep -q preflight-aws-ec2.sh scripts/run-aws-large-benchmark.sh && grep -q preflight-tpuf.sh scripts/run-tpuf-large-benchmark.sh && grep -q large_preflight_validate_tier_workload scripts/lib/large-benchmark-preflight.sh && grep -q large_preflight_validate_s3_env scripts/lib/large-benchmark-preflight.sh
+  tags: [spec, bench-large, bench-tpuf, implemented]
 
 # bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
 
