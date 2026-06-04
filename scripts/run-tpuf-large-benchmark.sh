@@ -20,6 +20,8 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
+source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
 
 TIER="${TURBOPUFFER_BENCH_TIER:-l1}"
 DRY_RUN=0
@@ -69,6 +71,7 @@ run_plan_dry() {
   echo "  results=${RESULTS}"
   echo "  warm_mode=${WARM_MODE}"
   echo "  steps: $([[ "$SKIP_G2" == 1 ]] && echo 'skip-g2' || echo 'g2-subset') → tpuf-preflight → run_benchmark.py"
+  large_benchmark_cost_print "$TIER" "$WARM_MODE" tpuf
   large_preflight_print_tpuf_operator_env
   if [[ -n "${TURBOPUFFER_API_KEY:-}" ]]; then
     echo "  TURBOPUFFER_API_KEY=set"

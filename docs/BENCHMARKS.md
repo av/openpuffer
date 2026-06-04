@@ -419,7 +419,7 @@ Order-of-magnitude **API volume** for one full driver run (not USD — check the
 | **Recall cost** | L1/L2: `recall_defaults` `num=20`; L3: consider `num=10` with methodology note |
 | **No SKIP_DELETE in CI** | Never set `SKIP_DELETE` in automation |
 
-Print tier estimate: `./scripts/preflight-tpuf.sh --tier l1` (add `--warm` for warm-line estimate).
+Print tier estimate: `./scripts/estimate-large-benchmark-cost.sh --tier l1` (AWS + tpuf volume); `./scripts/preflight-tpuf.sh --tier l1` (tpuf + RTT); `./scripts/preflight-aws-ec2.sh --dry-run --tier l1` (AWS only). Add `--warm` for warm-line tpuf estimate.
 
 #### API key redaction in artifacts
 

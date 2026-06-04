@@ -20,6 +20,8 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
+source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
 
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 DRY_RUN=0
@@ -66,6 +68,7 @@ run_plan_dry() {
   echo "  steps: $([[ "$SKIP_G2" == 1 ]] && echo 'skip-g2' || echo 'g2-subset') → aws-preflight → ingest-large → bench-large"
   echo "  index_timeout_default=$(large_preflight_tier_index_timeout_sec "$TIER")s (override: OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC / OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC)"
   large_preflight_aws_time_estimate "$TIER"
+  large_benchmark_cost_print "$TIER" 0 aws
   large_preflight_print_aws_operator_env
   if [[ -n "${OPENPUFFER_S3_BUCKET:-}" ]]; then
     echo "  OPENPUFFER_S3_BUCKET=${OPENPUFFER_S3_BUCKET} (set)"

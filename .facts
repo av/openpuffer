@@ -481,6 +481,9 @@
 - label: G3 G4 operator preflight-aws-ec2.sh and preflight-tpuf.sh wrap large-benchmark-preflight for AWS and tpuf spend gates
   command: test -x scripts/preflight-aws-ec2.sh && test -x scripts/preflight-tpuf.sh && grep -q large-benchmark-preflight.sh scripts/preflight-aws-ec2.sh && grep -q large-benchmark-preflight.sh scripts/preflight-tpuf.sh && grep -q preflight-aws-ec2.sh scripts/run-aws-large-benchmark.sh && grep -q preflight-tpuf.sh scripts/run-tpuf-large-benchmark.sh && grep -q large_preflight_validate_tier_workload scripts/lib/large-benchmark-preflight.sh && grep -q large_preflight_validate_s3_env scripts/lib/large-benchmark-preflight.sh
   tags: [spec, bench-large, bench-tpuf, implemented]
+- label: estimate-large-benchmark-cost.sh prints EC2 hours S3 PUT GET and tpuf API volume for l1 l2 l3 with range tests
+  command: test -x scripts/estimate-large-benchmark-cost.sh && test -f scripts/lib/estimate-large-benchmark-cost.sh && grep -q estimate-large-benchmark-cost.sh scripts/preflight-aws-ec2.sh && grep -q large_benchmark_cost_print scripts/run-aws-large-benchmark.sh && ./scripts/test_estimate-large-benchmark-cost.sh >/dev/null
+  tags: [spec, bench-large, bench-tpuf, implemented]
 
 # bench-tpuf (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A4–A5, G4/G5)
 

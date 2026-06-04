@@ -298,39 +298,15 @@ large_preflight_tpuf_regions_align() {
   return 0
 }
 
-# Estimated API volume before a live G4 run (recall billing per turbopuffer recall#billing).
+# Estimated API volume before a live G4 run (delegates to estimate-large-benchmark-cost.sh).
 large_preflight_tpuf_cost_estimate() {
   local tier="$1"
   local warm="${2:-0}"
-  local docs batches recall_num recall_billed cold filter hybrid warm_runs total_queries
-  case "$tier" in
-    l1) docs=100000; batches=10 ;;
-    l2) docs=500000; batches=50 ;;
-    l3) docs=1000000; batches=100 ;;
-    *)
-      echo "preflight-tpuf: unknown tier ${tier} for cost estimate" >&2
-      return 1
-      ;;
-  esac
-  recall_num=20
-  recall_billed=$(( recall_num * ( (docs + 99999) / 100000 ) ))
-  [[ "$recall_billed" -lt "$recall_num" ]] && recall_billed=$recall_num
-  cold=7
-  filter=6
-  hybrid=4
-  warm_runs=0
-  [[ "$warm" == "1" ]] && warm_runs=20
-  total_queries=$(( cold + filter + hybrid + recall_billed + warm_runs + 1 ))
-  cat <<EOF
-preflight-tpuf cost estimate (tier=${tier}, docs=${docs}; not USD — see turbopuffer dashboard):
-  write batches (~10k rows): ~${batches} namespace.write calls
-  cold vector queries: ${cold}
-  filter + hybrid queries: $(( filter + hybrid )) (1× each, strong)
-  recall billed queries (num=${recall_num}): ~${recall_billed} (docs/100k × num, min num)
-  warm vector queries (optional --warm): ${warm_runs}
-  order-of-magnitude query calls (excl. ingest index polls): ~${total_queries}
-  guardrails: start L1; set TURBOPUFFER_BENCH_DELETE_FIRST=1; do not set TURBOPUFFER_BENCH_SKIP_DELETE unless debugging
-EOF
+  local root
+  root="$(large_preflight_root)"
+  # shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
+  source "${root}/scripts/lib/estimate-large-benchmark-cost.sh"
+  large_benchmark_cost_print "$tier" "$warm" tpuf
 }
 
 # Fail if benchmark JSON still contains secret-like substrings (before git commit).

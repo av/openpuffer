@@ -5,6 +5,8 @@
 #
 # Usage:
 #   ./scripts/preflight-aws-ec2.sh              # checks only (exit 0/1)
+#   ./scripts/preflight-aws-ec2.sh --tier l2    # cost estimate for tier
+#   ./scripts/preflight-aws-ec2.sh --dry-run    # cost estimate only (no S3/IMDS checks)
 #   ./scripts/preflight-aws-ec2.sh --export-creds  # print export lines for instance role (eval)
 #   source <(./scripts/preflight-aws-ec2.sh --export-creds)  # populate OPENPUFFER_S3_* keys
 #
@@ -19,22 +21,42 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
+source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
 
 EXPORT_CREDS=0
 SKIP_S3=0
 WARN_ONLY=0
+DRY_RUN=0
+TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 
-for arg in "$@"; do
-  case "$arg" in
-    --export-creds) EXPORT_CREDS=1 ;;
-    --skip-s3) SKIP_S3=1 ;;
-    --warn-only) WARN_ONLY=1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --export-creds) EXPORT_CREDS=1; shift ;;
+    --skip-s3) SKIP_S3=1; shift ;;
+    --warn-only) WARN_ONLY=1; shift ;;
+    --dry-run|-n) DRY_RUN=1; shift ;;
+    --tier=*) TIER="${1#*=}"; shift ;;
+    --tier)
+      shift
+      TIER="${1:?--tier requires l1|l2|l3}"
+      shift
+      ;;
     -h|--help)
       sed -n '2,18p' "$0"
       exit 0
       ;;
+    *) echo "preflight-aws-ec2: unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+case "$TIER" in
+  l1|l2|l3) ;;
+  *)
+    echo "preflight-aws-ec2: unknown tier ${TIER} (use l1, l2, or l3)" >&2
+    exit 1
+    ;;
+esac
 
 IMDS_BASE="http://169.254.169.254/latest"
 IMDS_TOKEN=""
@@ -180,7 +202,17 @@ preflight_ec2_s3() {
   large_preflight_s3_head_bucket
 }
 
+preflight_ec2_cost_estimate() {
+  large_benchmark_cost_print "$TIER" 0 aws
+}
+
 main() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    large_preflight_need_cmd python3
+    preflight_ec2_cost_estimate
+    echo "preflight-aws-ec2 dry-run OK (tier=${TIER}; no IMDS/S3 checks)"
+    exit 0
+  fi
   large_preflight_need_cmd curl
   large_preflight_need_cmd jq
   preflight_ec2_detect
@@ -194,7 +226,8 @@ main() {
   fi
   preflight_ec2_export_role_creds || true
   preflight_ec2_s3 || exit 1
-  echo "preflight-ec2: OK"
+  preflight_ec2_cost_estimate
+  echo "preflight-ec2: OK (tier=${TIER})"
 }
 
 main

@@ -21,6 +21,7 @@ for pattern in \
   scripts/*benchmark* \
   scripts/preflight-* \
   scripts/lib/*large* \
+  scripts/lib/estimate-large-benchmark-cost.sh \
   scripts/render-report.sh \
   scripts/run-id-overlap* \
   scripts/run-minio-correctness-gates.sh \
