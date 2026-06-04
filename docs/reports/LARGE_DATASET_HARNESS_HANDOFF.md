@@ -51,6 +51,8 @@ This PR-equivalent handoff documents a **timeboxed implementation** (~60 harness
 # or: make bench-verify
 ```
 
+**Developers with Docker** (optional CI-parity G2): add `--with-g2` or run `make bench-g2-minio` — see [§ Optional `--with-g2`](#optional---with-g2-docker-minio-g2-ci-parity).
+
 **One command for operator dry-run (documents env, no AWS/tpuf bill):**
 
 ```bash
@@ -180,6 +182,59 @@ Detailed diagram and script names: [PLAN § Architecture](../PLAN_LARGE_DATASET_
 
 **Last full audit (iteration 100, post-tag HEAD):** 2026-06-04T03:06:38Z, git **`8a56cbd`** (`large-dataset-harness-v1` + HANDOFF tag note), exit **0** (offline harness; G2 optional — add `--with-g2` for MinIO Docker parity with CI).
 
+### Optional: `--with-g2` (Docker MinIO G2 / CI parity)
+
+The default offline gate **skips G2** so merges and harness audits stay fast and **do not require Docker**. CI job `g2-minio-correctness` still runs G2 on every push/PR; use `--with-g2` locally when you want the same **testcontainers** subset before pushing G2-related changes.
+
+| | Default verify | `--with-g2` |
+|---|----------------|-------------|
+| Docker required | **No** | **Yes** (daemon reachable) |
+| G2 MinIO gates | Skipped (message: pass `--with-g2`) | Runs [`run-minio-correctness-gates.sh`](../../scripts/run-minio-correctness-gates.sh) |
+| Typical duration | ~minutes (pytest, dry-runs, facts) | **+ several minutes** (serial `cargo test` + ephemeral MinIO per integration test) |
+| CI parity | Offline harness only | Matches CI **step 1** (testcontainers) |
+
+**Prerequisites**
+
+- Docker installed and running (`docker info` succeeds).
+- Enough disk/RAM for serial integration + bench tests (avoid parallel `cargo test -F integration` while G2 runs).
+- Rust toolchain + Python 3.11+ (same as default verify).
+
+**Commands**
+
+```bash
+# Full offline harness + G2 (recommended before pushing integration_s3 / G2 changes)
+./scripts/verify-large-benchmark-program.sh --with-g2
+
+# Faster: L1 dry-runs + shared gates + G2 only (skip L2/L3 dry-run)
+./scripts/verify-large-benchmark-program.sh --with-g2 --skip-l2-l3
+
+# Makefile equivalents
+make bench-verify VERIFY_FLAGS="--with-g2"
+make bench-g2-minio   # G2 only — faster iteration when debugging MinIO gates
+```
+
+**What `--with-g2` runs** (via `run-minio-correctness-gates.sh`):
+
+1. `cargo test --test synthetic_workload_gate` — fixture vectors / `recall_defaults` (no Docker).
+2. `cargo test -F integration --test integration_s3 synthetic_128_g2_correctness_gates_on_minio` — 10k ingest, recall, all filter + hybrid queries on **testcontainers** MinIO.
+3. `cargo test -F bench --test bench_cold` — cold bench path + synthetic-128 workload gate.
+
+**What it does *not* run**
+
+- **Compose MinIO** on `127.0.0.1:9000` (CI job step 2). For that path after G2 is green: `ensure-compose-minio.sh` + `run-minio-large-schema-example.sh --docs 10000`. See [BENCHMARKS § MinIO backends](../BENCHMARKS.md#minio-backends-for-g2-testcontainers-vs-compose).
+- **Live G3–G5** or comparison latencies — MinIO G2 is correctness only; do not publish [COMPARISON.md](../COMPARISON.md) timings from MinIO.
+
+**When to use**
+
+| Situation | Action |
+|-----------|--------|
+| Routine harness / doc / schema change | Default verify (no `--with-g2`) |
+| Touching `integration_s3`, `bench_cold`, synthetic workload helpers, or G2 scripts | `--with-g2` or `make bench-g2-minio` |
+| Reproducing a CI `g2-minio-correctness` failure | `--with-g2` first; if green, run compose schema step per BENCHMARKS |
+| No Docker on laptop | Rely on CI G2; default verify still exits 0 for offline harness |
+
+**Troubleshooting:** Docker daemon down, port conflicts on `:9000`, or testcontainers flakes — [BENCHMARKS § G2 troubleshooting](../BENCHMARKS.md#g2-troubleshooting-compose--testcontainers).
+
 ### 2. Operator E2E dry-run (no cloud credentials)
 
 ```bash
@@ -190,10 +245,16 @@ Documents AWS/tpuf env expectations; produces fixture-backed report skeleton —
 
 ### 3. MinIO correctness only (G2)
 
+Same gates as `--with-g2` / `make bench-g2-minio` (testcontainers only):
+
 ```bash
 ./scripts/run-minio-correctness-gates.sh
-# MinIO JSON shape (not comparison timings):
-./scripts/run-minio-large-schema-example.sh --tier l1
+# or folded into full verify:
+./scripts/verify-large-benchmark-program.sh --with-g2
+
+# MinIO JSON shape (compose; not comparison timings):
+./scripts/ensure-compose-minio.sh
+./scripts/run-minio-large-schema-example.sh --tier l1 --docs 10000
 ```
 
 ### 4. Live measurement (program complete)
@@ -327,7 +388,8 @@ Both require **`OPENPUFFER_ANN_VERSION=3`** for large-tier gates. L3 (1M) reuses
 
 | Question | Answer |
 |----------|--------|
-| Is the harness safe to merge? | Yes, if `verify-large-benchmark-program.sh` exits 0 on the target branch |
+| Is the harness safe to merge? | Yes, if `verify-large-benchmark-program.sh` exits 0 on the target branch (G2 optional; CI runs G2 separately) |
+| Should I pass `--with-g2` before merge? | **Recommended** when changing G2/integration code; **not required** for offline-only harness work if CI `g2-minio-correctness` is green |
 | Can we publish COMPARISON latencies from CI MinIO? | **No** — AWS + managed tpuf only |
 | What unblocks “program complete”? | EC2 + real S3 + tpuf test key → runbook above → commit live JSON + measured report |
 | Where is the blocked-run evidence? | [OPERATOR_G3_G4_ATTEMPT.md](../../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
