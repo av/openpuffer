@@ -156,6 +156,7 @@ Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only
 
 ```bash
 ./scripts/verify-large-benchmark-program.sh    # all offline gates (preferred)
+./scripts/validate-benchmark-json.sh         # JSON Schema: fixtures + *.example.json
 # or tier-focused:
 ./scripts/test_l2-l3-harness-dry-run.sh
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l2 --skip-g2

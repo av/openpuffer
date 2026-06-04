@@ -159,6 +159,7 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 | [test_l2-l3-harness-dry-run.sh](../scripts/test_l2-l3-harness-dry-run.sh) | One-shot L2+L3 offline harness validation |
 | [test_render-report.sh](../scripts/test_render-report.sh) | Offline render-report merge checks |
 | [test_render-report-measured.sh](../scripts/test_render-report-measured.sh) | Measured-mode schema, interpretation, appendix redaction |
+| [validate-benchmark-json.sh](../scripts/validate-benchmark-json.sh) | JSON Schema for fixtures + `*.example.json` (large-aws, tpuf, ingest) |
 | [test_ingest-timing-schema.sh](../scripts/test_ingest-timing-schema.sh) | `ingest_timing` / batch_runs JSON shape |
 | [test_bench-large-secondary-schema.sh](../scripts/test_bench-large-secondary-schema.sh) | Filter/hybrid/warm fields in bench JSON |
 | [ensure-compose-minio.sh](../scripts/ensure-compose-minio.sh) | Start/wait for compose MinIO on `:9000` (CI schema job) |

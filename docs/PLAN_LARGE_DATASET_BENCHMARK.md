@@ -77,7 +77,7 @@ Before operator spend (G3–G5), run all offline gates in one command:
 | `--with-g2` | Also runs [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) (Docker MinIO; CI parity, slower) |
 | `--skip-facts` | Skip `facts check` (e.g. when facts CLI not installed) |
 
-**Included gates:** `pytest` workloads + tpuf driver + id-overlap; [`scripts/test_render-report.sh`](../scripts/test_render-report.sh) + [`test_render-report-measured.sh`](../scripts/test_render-report-measured.sh); ingest/bench JSON schema tests; `cargo test --test synthetic_workload_gate`; L1 harness dry-run; [`scripts/test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh) (unless `--skip-l2-l3`); `facts check --tags bench-large` and `bench-tpuf`.
+**Included gates:** `pytest` workloads + tpuf driver + id-overlap; [`scripts/test_render-report.sh`](../scripts/test_render-report.sh) + [`test_render-report-measured.sh`](../scripts/test_render-report-measured.sh); [`scripts/validate-benchmark-json.sh`](../scripts/validate-benchmark-json.sh) (JSON Schema for fixtures + `*.example.json`); ingest/bench JSON schema tests; `cargo test --test synthetic_workload_gate`; L1 harness dry-run; [`scripts/test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh) (unless `--skip-l2-l3`); `facts check --tags bench-large` and `bench-tpuf`.
 
 **Operator E2E dry-run** (documents env, fixture report — subset of verify):
 
