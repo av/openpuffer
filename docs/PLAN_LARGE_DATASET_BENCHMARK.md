@@ -186,7 +186,7 @@ Follow [BENCHMARKS.md § 1M ingest cadence](BENCHMARKS.md#1m-ingest-cadence) sca
 | Step | Action |
 |------|--------|
 | 1 | Create S3 bucket in target region (e.g. `us-east-1`); enable versioning optional for forensics. |
-| 2 | Launch **EC2** in **same region** (e.g. `c6i.large`); install release binary or build on host. |
+| 2 | Launch **EC2** in **same region** (e.g. **`m7i.xlarge`**; see [BENCHMARKS.md § G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup)); `./scripts/preflight-aws-ec2.sh`; install release binary or build on host. |
 | 3 | Run `openpuffer serve` with: `--ann-version 3`, `--cache-dir ""` for cold runs, `OPENPUFFER_COLD_S3_CONCURRENCY=32` (tune 32→64 if RTT-bound). |
 | 4 | Optional warm runs: non-empty `--cache-dir` + `POST /v1/namespaces/{ns}/warm` before query phase. |
 | 5 | Enable metrics if comparing operator view: `cargo build --release --features metrics`, scrape `GET /metrics`. |
@@ -519,7 +519,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | Topic | Options / tension | **Recommended default** | Where enforced |
 |-------|-------------------|-------------------------|----------------|
 | **AWS region** | Any S3 region vs tpuf region list | `us-east-1` bucket + EC2; `TURBOPUFFER_REGION=aws-us-east-1` | `large-benchmark-preflight.sh` warns on mismatch |
-| **EC2 instance** | CPU vs cost for decode/rerank | `c6i.large` in same AZ as bucket; label via `OPENPUFFER_BENCH_HOST_LABEL` | Report only |
+| **EC2 instance** | CPU vs cost for decode/rerank | **`m7i.xlarge`** in same AZ as bucket (`c7i.xlarge` / `c6i.large` for L1-only); label via `OPENPUFFER_BENCH_HOST_LABEL` | `preflight-aws-ec2.sh` + report |
 | **Client placement** | localhost `serve` vs remote client | **localhost on bench EC2** (`OPENPUFFER_BENCH_CLIENT_MODE=localhost`) | Report + JSON `notes` |
 | **S3 bucket naming** | Shared vs per-run | `openpuffer-bench-<account>-<region>` dedicated prefix | Operator env |
 | **Namespace isolation** | Date-stamped vs fixed | openpuffer: `bench-large-{num_docs}` (ingest-large); tpuf: `bench-tpuf-YYYY-MM-DD-{tier}` | Scripts / env override |
@@ -556,7 +556,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 |------|:----:|----------|
 | MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` |
 | MinIO G2 CI job | [x] | `.github/workflows/ci.yml` → `g2-minio-correctness`; `67c7050` |
-| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); `8594099` |
+| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); EC2/S3 depth: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
 | A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6` |
 | A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |

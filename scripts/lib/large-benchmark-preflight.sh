@@ -61,10 +61,17 @@ large_preflight_detect_environment() {
 }
 
 large_preflight_validate_s3_env() {
-  : "${OPENPUFFER_S3_ENDPOINT:?preflight: set OPENPUFFER_S3_ENDPOINT (AWS: https://s3.<region>.amazonaws.com)}"
   : "${OPENPUFFER_S3_BUCKET:?preflight: set OPENPUFFER_S3_BUCKET}"
-  : "${OPENPUFFER_S3_ACCESS_KEY:?preflight: set OPENPUFFER_S3_ACCESS_KEY}"
-  : "${OPENPUFFER_S3_SECRET_KEY:?preflight: set OPENPUFFER_S3_SECRET_KEY}"
+  if [[ -z "${OPENPUFFER_S3_ENDPOINT:-}" ]]; then
+    local r="${OPENPUFFER_S3_REGION:-us-east-1}"
+    export OPENPUFFER_S3_ENDPOINT="https://s3.${r}.amazonaws.com"
+    echo "preflight: OPENPUFFER_S3_ENDPOINT unset → ${OPENPUFFER_S3_ENDPOINT}" >&2
+  fi
+  if [[ -z "${OPENPUFFER_S3_ACCESS_KEY:-}" || -z "${OPENPUFFER_S3_SECRET_KEY:-}" ]]; then
+    echo "preflight: OPENPUFFER_S3_ACCESS_KEY/SECRET unset — on EC2 run ./scripts/preflight-aws-ec2.sh first (instance profile)" >&2
+    : "${OPENPUFFER_S3_ACCESS_KEY:?preflight: set OPENPUFFER_S3_ACCESS_KEY or use EC2 instance profile via preflight-aws-ec2.sh}"
+    : "${OPENPUFFER_S3_SECRET_KEY:?preflight: set OPENPUFFER_S3_SECRET_KEY}"
+  fi
   if [[ -z "${OPENPUFFER_S3_REGION:-}" ]]; then
     echo "preflight: OPENPUFFER_S3_REGION unset (defaulting serve/aws CLI to us-east-1)" >&2
   fi
@@ -142,20 +149,24 @@ large_preflight_run_g2_subset() {
 
 large_preflight_print_aws_operator_env() {
   cat <<'EOF'
-Required for live AWS G3 run (same host as openpuffer serve — typically EC2 in bucket region):
-  export OPENPUFFER_S3_ENDPOINT=https://s3.<region>.amazonaws.com
+Required for live AWS G3 run (same host as openpuffer serve — EC2 in bucket region):
   export OPENPUFFER_S3_BUCKET=openpuffer-bench-<account>-<region>
+  export OPENPUFFER_S3_REGION=<region>              # e.g. us-east-1
+  export OPENPUFFER_S3_ENDPOINT=https://s3.<region>.amazonaws.com
+  # Prefer EC2 instance profile (no long-lived keys):
+  ./scripts/preflight-aws-ec2.sh                    # sets keys from role + head-bucket
+  # Or export static keys only on the host (never commit):
   export OPENPUFFER_S3_ACCESS_KEY=...
   export OPENPUFFER_S3_SECRET_KEY=...
-  export OPENPUFFER_S3_REGION=<region>          # e.g. us-east-1
   export OPENPUFFER_ANN_VERSION=3
-  export OPENPUFFER_COLD_S3_CONCURRENCY=32      # try 64 if RTT-bound
+  export OPENPUFFER_COLD_S3_CONCURRENCY=32        # try 64 if RTT-bound
 
 Optional (document in report / JSON notes):
-  export OPENPUFFER_BENCH_HOST_LABEL=c6i.large@us-east-1a
-  export OPENPUFFER_BENCH_CLIENT_MODE=localhost   # serve on same EC2 (recommended)
+  export OPENPUFFER_BENCH_HOST_LABEL=m7i.xlarge@us-east-1a
+  export OPENPUFFER_BENCH_CLIENT_MODE=localhost     # serve on same EC2 (recommended)
 
-EC2: launch in same region as bucket; SSH tunnel if needed; no public ingress required.
+EC2: m7i.xlarge (or c7i.xlarge) same AZ as bucket; IAM role on instance; no keys in git.
+Full checklist: docs/BENCHMARKS.md § G3 — EC2 + AWS S3 operator setup
 After G2 green: ./scripts/run-aws-large-benchmark.sh --tier l1
 EOF
 }

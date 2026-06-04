@@ -67,17 +67,21 @@ See [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-pr
 **G3 one-shot (EC2 + AWS credentials):**
 
 ```bash
-export OPENPUFFER_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
-export OPENPUFFER_S3_BUCKET=openpuffer-bench-...
-export OPENPUFFER_S3_ACCESS_KEY=... OPENPUFFER_S3_SECRET_KEY=...
+export OPENPUFFER_S3_BUCKET=openpuffer-bench-<account>-us-east-1
 export OPENPUFFER_S3_REGION=us-east-1
 export OPENPUFFER_ANN_VERSION=3
 export OPENPUFFER_COLD_S3_CONCURRENCY=32
-# optional: export OPENPUFFER_BENCH_HOST_LABEL=c6i.large@us-east-1a
+
+# On EC2: instance profile + metadata/region/S3 checks (no long-lived keys in shell history)
+./scripts/preflight-aws-ec2.sh
+# Off EC2: set OPENPUFFER_S3_ACCESS_KEY / OPENPUFFER_S3_SECRET_KEY, then:
+# export OPENPUFFER_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
 
 ./scripts/run-aws-large-benchmark.sh --tier l1
 # preflight only: ./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1
 ```
+
+See [§ G3 — EC2 + AWS S3 operator setup](#g3--ec2--aws-s3-operator-setup) for instance type, IAM, security, first-time checklist, and index-lag troubleshooting.
 
 **G4 one-shot (API key in same region as AWS bench):**
 
@@ -119,6 +123,152 @@ python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1 --dry-run
 ```
 
 Tiers: **l1** (100k, default comparison), **l2** (500k), **l3** (1M). Workloads under `benchmarks/workloads/synthetic-128/{l1-100k,l2-500k,l3-1m}/`.
+
+### G3 — EC2 + AWS S3 operator setup
+
+Live G3 comparison JSON (`large-aws-{tier}.json`) must be produced on **real AWS S3** from a host in the **same region** as the bucket. MinIO timings stay in G2/schema examples only.
+
+#### Recommended EC2 instance
+
+| Choice | When to use | Why |
+|--------|-------------|-----|
+| **`m7i.xlarge`** (default) | L1–L3 ingest + bench + `serve` on one host | 4 vCPU Intel Sapphire Rapids, 16 GiB RAM — enough for v3 index builds @ 100k–1M, rerank decode, and parallel cold `GetObject` without swapping |
+| `c7i.xlarge` | Cost-sensitive L1 only | Compute-optimized; slightly less RAM headroom for 1M index objects |
+| `c6i.large` | Minimal L1 smoke | 2 vCPU / 4 GiB — OK for 100k if you accept longer `index_wait_sec`; avoid for L3 |
+
+**Placement:** launch in the **same region and AZ** as the S3 bucket (e.g. `us-east-1` + `us-east-1a`). Record the label in results:
+
+```bash
+export OPENPUFFER_BENCH_HOST_LABEL=m7i.xlarge@us-east-1a   # auto-set by preflight-aws-ec2.sh on EC2
+export OPENPUFFER_BENCH_CLIENT_MODE=localhost                 # serve + curl bench on same instance (recommended)
+```
+
+**Not recommended:** burstable `t3`/`t4g` for index catch-up (CPU credits stall indexer during L1 ingest).
+
+#### S3 bucket (same region)
+
+1. Create a **dedicated** bucket, e.g. `openpuffer-bench-<account-id>-us-east-1`, in the target region (default **`us-east-1`**).
+2. Do **not** reuse production data buckets; comparison writes under `s3://<bucket>/openpuffer/<namespace>/`.
+3. Optional: enable versioning for forensics; lifecycle rule to expire `openpuffer/bench-*` prefixes after N days.
+4. Block public access (account default).
+
+```bash
+export OPENPUFFER_S3_BUCKET=openpuffer-bench-123456789012-us-east-1
+export OPENPUFFER_S3_REGION=us-east-1
+export OPENPUFFER_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
+```
+
+#### IAM — least privilege on the bench bucket only
+
+Attach an **instance profile** to the EC2 role (preferred). The role needs **read/write on the bench bucket only** — not `s3:*` on `*`. Do **not** grant this role read access to production buckets (“bench-only” scope).
+
+Replace `BENCH_BUCKET` and `ACCOUNT_ID`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BenchBucketList",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::BENCH_BUCKET"
+    },
+    {
+      "Sid": "BenchObjectRW",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::BENCH_BUCKET/*"
+    }
+  ]
+}
+```
+
+**Preflight-only** (no ingest): `s3:ListBucket` + `s3:GetBucketLocation` suffice for [`preflight-aws-ec2.sh`](../scripts/preflight-aws-ec2.sh) `head-bucket`. Full G3 ingest/bench requires the object RW statement above.
+
+Trust policy for EC2:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Service": "ec2.amazonaws.com" },
+    "Action": "sts:AssumeRole"
+  }]
+}
+```
+
+#### Security — no keys in git
+
+| Rule | Detail |
+|------|--------|
+| **Never commit** | `OPENPUFFER_S3_*`, `TURBOPUFFER_API_KEY`, or `.env` with secrets |
+| **Prefer instance profile** | IAM role on EC2; [`preflight-aws-ec2.sh`](../scripts/preflight-aws-ec2.sh) exports short-lived keys for `openpuffer serve` via `aws configure export-credentials` |
+| **SSH only** | No public `serve` ingress; bench client hits `127.0.0.1:8080` |
+| **CI** | A6 / nightly stay dry-run; live AWS stays operator-owned |
+| **Artifacts** | `render-report.sh` redacts `OPENPUFFER_S3_SECRET_KEY` in logs |
+
+`openpuffer serve` currently requires explicit `--s3-access-key` / `--s3-secret-key` (static credential pair). On EC2 with a role, run `./scripts/preflight-aws-ec2.sh` before ingest so session keys are populated — do not bake long-lived IAM user keys into AMIs.
+
+#### First-time operator checklist (G3)
+
+| # | Step | Command / note |
+|---|------|----------------|
+| 1 | Local/CI G2 green | `./scripts/run-minio-correctness-gates.sh` |
+| 2 | Clone repo on EC2 | `git clone … && cd openpuffer` |
+| 3 | Toolchain | `dnf install -y gcc curl jq python3 awscli` (or `apt`); `rustup` + `cargo build --release --features integration` |
+| 4 | Create bench bucket + IAM role | Same region as EC2; attach instance profile |
+| 5 | Env | `export OPENPUFFER_S3_BUCKET=… OPENPUFFER_S3_REGION=…` |
+| 6 | EC2 preflight | `./scripts/preflight-aws-ec2.sh` (IMDS, region match, head-bucket, host label) |
+| 7 | Program preflight | `./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1` |
+| 8 | L1 measured run | `./scripts/run-aws-large-benchmark.sh --tier l1` → `benchmarks/results/large-aws-l1.json` |
+| 9 | G4 tpuf (same region) | `export TURBOPUFFER_API_KEY=… TURBOPUFFER_REGION=aws-us-east-1`; `./scripts/run-tpuf-large-benchmark.sh --tier l1` |
+| 10 | Report | Commit JSON; `./scripts/render-report.sh --date $(date +%F)`; update [COMPARISON.md](COMPARISON.md) |
+
+**Wall-clock hints (L1 @ 100k):** ingest upsert ~2–3 min (WAL ~1 commit/s) + index wait often **10–30 min** on `m7i.xlarge` (depends on CPU and S3 PUT rate). Plan **≥45 min** before `bench-large` for first run.
+
+#### Troubleshooting — index lag on real S3
+
+Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_cursor == wal_commit_seq` and `preferred_ann_version == 3`.
+
+| Check | Command | Interpretation |
+|-------|---------|----------------|
+| Meta lag | `curl -s "http://127.0.0.1:8080/v1/namespaces/${NAMESPACE}" \| jq '{index_cursor,wal_commit_seq,unindexed_bytes,preferred_ann_version}'` | `index_cursor < wal_commit_seq` → indexer still draining WAL |
+| S3 index growth | `aws s3 ls "s3://${OPENPUFFER_S3_BUCKET}/openpuffer/${NAMESPACE}/index/" \| wc -l` | Stuck count → indexer not committing; check `serve` logs |
+| CPU | `top` / `htop` on EC2 | 100% CPU + burstable instance → switch to `m7i.xlarge` |
+| Region | `./scripts/preflight-aws-ec2.sh` | EC2 region ≠ bucket region multiplies round-trips |
+| Timeout | `export OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC=3600` (ingest) or `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC=3600` (bench) | L1 default poll timeout 7200s; raise if needed |
+| Re-run ingest poll only | Namespace exists; upsert done | `./scripts/ingest-large.sh --tier l1` (skips if caught up) or `bench-large` index wait |
+| v2 index mistake | Meta `preferred_ann_version` | Must be **3**; `export OPENPUFFER_ANN_VERSION=3` before `serve`; delete namespace and re-ingest if v2 |
+| 503 SlowDown | S3 API errors in logs | Lower parallel index writes; retry; verify IAM not throttling |
+
+**Indexer not running:** `bench-large.sh` starts `openpuffer serve` unless `OPENPUFFER_BENCH_SKIP_SERVE=1`. If you run `serve` manually, keep one process per namespace during index catch-up.
+
+**After catch-up:** confirm `index_cursor_eq_wal_commit_seq: true` in `ingest-large-l1.json` / `large-aws-l1.json` before trusting cold p50.
+
+#### EC2 preflight script
+
+[`scripts/preflight-aws-ec2.sh`](../scripts/preflight-aws-ec2.sh) — validates:
+
+- IMDSv2 instance id, type, AZ, region (when on EC2)
+- `OPENPUFFER_S3_REGION` matches EC2 placement region
+- `aws s3api head-bucket` (or warns if CLI missing)
+- Optional auto `OPENPUFFER_BENCH_HOST_LABEL` / `OPENPUFFER_BENCH_CLIENT_MODE`
+- Instance-profile credential export when keys unset
+
+```bash
+./scripts/preflight-aws-ec2.sh
+source <(./scripts/preflight-aws-ec2.sh --export-creds)   # manual shell bootstrap
+./scripts/preflight-aws-ec2.sh --warn-only                # region mismatch → warning only
+```
+
+[`run-aws-large-benchmark.sh`](../scripts/run-aws-large-benchmark.sh) invokes this automatically before AWS env validation.
 
 ### GitHub Actions — manual dry-run preflight (A6)
 

@@ -83,6 +83,13 @@ if [[ "$SKIP_G2" != "1" ]]; then
   large_preflight_run_g2_subset "$ROOT"
 fi
 
+if [[ -x "$ROOT/scripts/preflight-aws-ec2.sh" ]]; then
+  "$ROOT/scripts/preflight-aws-ec2.sh" || {
+    echo "preflight-aws-ec2 failed (region/metadata/S3); fix or use --skip-g2 only after resolving" >&2
+    exit 1
+  }
+fi
+
 large_preflight_validate_s3_env
 ENV_DETECTED="$(large_preflight_detect_environment)"
 if [[ "$ENV_DETECTED" != "aws-s3" ]]; then
