@@ -61,9 +61,36 @@ class LooResult:
     train_labels: tuple[str, ...]
 
 
+def load_tpuf_reference() -> dict:
+    return json.loads(TPUF_REF.read_text(encoding="utf-8"))
+
+
 def load_tpuf_cold_p50() -> int:
-    data = json.loads(TPUF_REF.read_text(encoding="utf-8"))
-    return int(data["latencies_ms"]["cold"]["p50"])
+    return int(load_tpuf_reference()["latencies_ms"]["cold"]["p50"])
+
+
+def load_tpuf_write_commit_ms_claim() -> int:
+    ref = load_tpuf_reference()
+    write_path = ref.get("write_path") or {}
+    return int(write_path.get("durable_commit_latency_ms_claim", 200))
+
+
+def load_op_ingest_throughput() -> list[tuple[int, float, float]]:
+    """(namespace_docs, ingest_wall_secs, docs_per_sec) for cold tiers with ingest fields."""
+    rows: list[tuple[int, float, float]] = []
+    for path in sorted(RESULTS.glob("op-scaling-*.json")):
+        if "warm" in path.name or path.name == SYNTH128_PATH.name:
+            continue
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if row.get("path") != "cold":
+            continue
+        wall = row.get("ingest_wall_secs")
+        dps = row.get("docs_per_sec")
+        if wall is None or dps is None:
+            continue
+        rows.append((int(row["namespace_docs"]), float(wall), float(dps)))
+    rows.sort(key=lambda t: t[0])
+    return rows
 
 
 def _read_cold_json(path: Path) -> MeasuredPoint | None:
@@ -367,12 +394,25 @@ def operator_verdict_paragraph(snap: ComparisonSnapshot | None = None) -> str:
     ratio_128 = s.extrap_10m_128 / s.tpuf_p50
     ratio_sqrt = s.extrap_10m_sqrt / s.tpuf_p50
     ballpark = ballpark_verdict(s.extrap_10m_sqrt, s.tpuf_p50)
+    tpuf_commit_ms = load_tpuf_write_commit_ms_claim()
+    ingest_rows = load_op_ingest_throughput()
+    ingest_clause = ""
+    if ingest_rows:
+        parts = [
+            f"{fmt_n(n)}={dps:.0f} docs/s ({wall:.0f}s wall)"
+            for n, wall, dps in ingest_rows
+        ]
+        ingest_clause = (
+            f" openpuffer MinIO ingest+index throughput is {', '.join(parts)} "
+            f"(WAL-limited upsert+index wait) vs turbopuffer's published "
+            f"≤~{tpuf_commit_ms} ms durable write-commit latency (not the same throughput model);"
+        )
     return (
         f"openpuffer MinIO cold p50 tiers ({tier_str}) grow with doc count "
         f"(power-law β≈{s.power_beta:.2f}); {s.best_model} extrapolation gives "
         f"~{s.extrap_10m_128:.0f} ms @ 10M×128 (~{ratio_128:.1f}× turbopuffer's official "
         f"{s.tpuf_p50} ms @ 10M×1024 on GCP) and ~{s.extrap_10m_sqrt:.0f} ms with a √dim "
-        f"heuristic (~{ratio_sqrt:.0f}×). {ballpark}. "
+        f"heuristic (~{ratio_sqrt:.0f}×).{ingest_clause} {ballpark}. "
         "Treat as scaling-shape signal only—MinIO vs GCP, 128-d synthetic vs 1024-d embeddings, "
         "sequential cold probes vs 8 QPS×30m; 10M openpuffer is unmeasured."
     )

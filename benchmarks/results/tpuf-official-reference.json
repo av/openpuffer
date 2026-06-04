@@ -57,6 +57,11 @@
       "benchmark_name": "vectors_10m_hot"
     }
   },
+  "write_path": {
+    "source": "turbopuffer.com product docs / COMPARISON.md (2026-06-05)",
+    "durable_commit_latency_ms_claim": 200,
+    "note": "Up to ~200 ms to durable commit per write (latency bound, not openpuffer ~1 WAL commit/s throughput model)"
+  },
   "latencies_ms": {
     "source": "turbopuffer.com homepage calculator (Vector Perf, 2026-06-05 scrape)",
     "cold": {

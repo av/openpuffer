@@ -38,3 +38,4 @@ def test_operator_verdict_paragraph() -> None:
     assert "874" in para
     assert "10M" in para or "10.0M" in para
     assert len(para.split(".")) >= 3
+    assert "200" in para or "docs/s" in para

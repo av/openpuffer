@@ -53,11 +53,35 @@ import sys
 tier, path_kind, bench_raw, harness, out_path, git_commit, ts = sys.argv[1:8]
 bench = json.loads(bench_raw)
 
+
+def percentile_ms(samples: list[int], pct: int) -> int:
+    """Nearest-rank percentile (matches tests/bench_cold.rs and validate-benchmark-json.sh)."""
+    if not samples:
+        return 0
+    sorted_lat = sorted(int(x) for x in samples)
+    n = len(sorted_lat)
+    idx = (n * pct + 99) // 100
+    if idx == 0:
+        idx = 1
+    idx -= 1
+    if idx >= n:
+        idx = n - 1
+    return sorted_lat[idx]
+
+
 docs = int(bench.get("namespace_docs", 0))
 dims = int(bench.get("dimensions", 128))
-p50 = int(bench["p50_query_latency_ms"])
-p90 = int(bench.get("p90_query_latency_ms", p50))
-p99 = int(bench.get("p99_query_latency_ms", p90))
+latencies = bench.get("query_latencies_ms") or []
+if latencies:
+    if len(latencies) != 7:
+        raise SystemExit(f"query_latencies_ms must have 7 samples (got {len(latencies)})")
+    p50 = percentile_ms(latencies, 50)
+    p90 = percentile_ms(latencies, 90)
+    p99 = percentile_ms(latencies, 99)
+else:
+    p50 = int(bench["p50_query_latency_ms"])
+    p90 = int(bench.get("p90_query_latency_ms", p50))
+    p99 = int(bench.get("p99_query_latency_ms", p90))
 ann = int(bench.get("ann_version", 3))
 
 doc_key = {"10k": 10_000, "50k": 50_000, "100k": 100_000, "10k-synthetic128": 10_000}.get(tier)
@@ -81,13 +105,23 @@ artifact = {
     "ann_version": ann,
     "cargo_profile": "release",
     "harness": harness,
-    "query_latencies_ms": bench.get("query_latencies_ms"),
+    "query_latencies_ms": latencies or None,
     "notes": bench.get("notes", f"Unified scaling run {ts} release+v3"),
 }
+ingest_raw = bench.get("ingest_elapsed_secs") or bench.get("ingest_wall_secs")
+if ingest_raw is not None:
+    ingest_wall = float(ingest_raw)
+    if ingest_wall > 0:
+        artifact["ingest_wall_secs"] = round(ingest_wall, 2)
+        artifact["docs_per_sec"] = round(docs / ingest_wall, 2)
+
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(artifact, f, indent=2)
     f.write("\n")
-print(f"run-op-scaling: wrote {out_path} p50={p50} p90={p90} p99={p99}")
+ingest_note = ""
+if "docs_per_sec" in artifact:
+    ingest_note = f" ingest={artifact['ingest_wall_secs']}s {artifact['docs_per_sec']} docs/s"
+print(f"run-op-scaling: wrote {out_path} p50={p50} p90={p90} p99={p99}{ingest_note}")
 PY
 }
 

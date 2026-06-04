@@ -58,6 +58,14 @@
       "type": "integer",
       "minimum": 0
     },
+    "ingest_wall_secs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "docs_per_sec": {
+      "type": "number",
+      "minimum": 0
+    },
     "storage_roundtrips": {
       "type": ["integer", "null"],
       "minimum": 0

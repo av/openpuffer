@@ -350,6 +350,22 @@ def validate_op_scaling_cross_fields(path: Path, data: dict) -> None:
                 raise SystemExit(
                     f"{path}: {key} {actual} != recomputed {expected} from query_latencies_ms"
                 )
+    if data.get("path") == "cold":
+        ingest = data.get("ingest_wall_secs")
+        docs_ps = data.get("docs_per_sec")
+        n_docs = int(data.get("namespace_docs") or 0)
+        if ingest is not None:
+            if docs_ps is None:
+                raise SystemExit(f"{path}: ingest_wall_secs set but docs_per_sec missing")
+            expected_dps = round(n_docs / float(ingest), 2) if ingest > 0 else 0.0
+            if abs(float(docs_ps) - expected_dps) > 0.01:
+                raise SystemExit(
+                    f"{path}: docs_per_sec {docs_ps} != round(namespace_docs/ingest_wall_secs)={expected_dps}"
+                )
+        elif path.name in ("op-scaling-10k.json", "op-scaling-50k.json") and ingest is None:
+            raise SystemExit(
+                f"{path}: {path.name} requires ingest_wall_secs and docs_per_sec"
+            )
 
 
 for path in paths:

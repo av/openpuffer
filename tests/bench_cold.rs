@@ -256,7 +256,9 @@ async fn bench_cold_10k_baseline() {
         None,
     );
     serve.wait_ready().await;
+    let ingest_started = Instant::now();
     index_10k_namespace(&fixture, &serve).await;
+    let ingest_elapsed = ingest_started.elapsed();
 
     let index_prefix = format!("{ROOT_PREFIX}{NAMESPACE}/index/");
     let index_keys =
@@ -315,6 +317,7 @@ async fn bench_cold_10k_baseline() {
         "index_object_count": index_object_count,
         "index_keys_total": index_keys.len(),
         "cold_query_runs": COLD_QUERY_RUNS,
+        "ingest_elapsed_secs": ingest_elapsed.as_secs(),
         "notes": "Probed cold load on MinIO. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_10k_baseline -- --nocapture"
     });
 
@@ -712,6 +715,7 @@ async fn bench_cold_100k_nightly() {
         None,
     );
     serve.wait_ready().await;
+    let ingest_started = Instant::now();
     index_namespace(
         &fixture,
         &serve,
@@ -720,6 +724,7 @@ async fn bench_cold_100k_nightly() {
         Duration::from_secs(900),
     )
     .await;
+    let ingest_elapsed = ingest_started.elapsed();
 
     let index_prefix = format!("{ROOT_PREFIX}{NAMESPACE_100K}/index/");
     let index_keys =
@@ -776,6 +781,7 @@ async fn bench_cold_100k_nightly() {
         "index_object_count": index_object_count,
         "index_keys_total": index_keys.len(),
         "cold_query_runs": COLD_QUERY_RUNS,
+        "ingest_elapsed_secs": ingest_elapsed.as_secs(),
         "notes": "Nightly 100k gate. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_100k_nightly -- --ignored --nocapture"
     });
     println!("{}", serde_json::to_string(&report).expect("bench json"));
