@@ -31,6 +31,9 @@ grep -q 'tpuf official cold p50: 874 ms' "$out" \
 grep -q 'extrap 10M × 128' "$out" \
   || { echo "test_compare-op-scaling-to-tpuf: expected extrap 10M × 128 row" >&2; exit 1; }
 
+grep -q 'Canonical extrapolation model: \*\*linear\*\*' "$out" \
+  || { echo "test_compare-op-scaling-to-tpuf: expected canonical linear model line" >&2; exit 1; }
+
 extrap_line="$(grep '^EXTRAP_JSON=' "$out" || true)"
 if [[ -z "$extrap_line" ]]; then
   echo "test_compare-op-scaling-to-tpuf: expected EXTRAP_JSON machine line" >&2
@@ -48,16 +51,30 @@ extrap_128 = int(data["extrap_10m_128_p50_ms"])
 extrap_1024 = int(data["extrap_10m_1024_heuristic_p50_ms"])
 if tpuf != 874:
     raise SystemExit(f"tpuf_official_cold_p50_ms={tpuf}, want 874")
-# log_linear best-fit on 2026-06-05 tiers → ~2.2s @ 10M×128; prior linear fit → ~80s
-if extrap_128 < 1_000 or extrap_128 > 130_000:
+if data.get("canonical_model") != "linear":
+    raise SystemExit(f"canonical_model={data.get('canonical_model')!r}, want linear")
+if int(data.get("extrap_p50_10m_128_ms", 0)) != extrap_128:
+    raise SystemExit("extrap_p50_10m_128_ms must match extrap_10m_128_p50_ms")
+ratio = float(data.get("ratio_vs_tpuf", 0))
+if ratio < 95 or ratio > 105:
+    raise SystemExit(f"ratio_vs_tpuf={ratio}, want ~100 on 96/412/880 tiers")
+if data.get("confidence") != "low":
+    raise SystemExit(f"confidence={data.get('confidence')!r}, want low")
+# canonical linear on 96/412/880 → ~87s @ 10M×128
+if extrap_128 < 80_000 or extrap_128 > 95_000:
     raise SystemExit(f"extrap_10m_128_p50_ms={extrap_128} out of expected range")
-if extrap_1024 < 4_000 or extrap_1024 > 450_000:
+if extrap_1024 < 200_000 or extrap_1024 > 280_000:
     raise SystemExit(f"extrap_10m_1024_heuristic_p50_ms={extrap_1024} out of expected range")
-if data.get("fit", {}).get("best_model") not in ("linear", "power_law", "log_linear"):
-    raise SystemExit("missing or unknown fit.best_model")
-if data.get("backsolve_n_best_model", 0) < 50_000 or data.get("backsolve_n_best_model", 0) > 250_000:
-    raise SystemExit("backsolve_n_best_model out of expected ~100k range")
-if data["ratio_heuristic_vs_tpuf"] < 2:
+fit = data.get("fit", {})
+if fit.get("canonical_model") != "linear":
+    raise SystemExit("fit.canonical_model must be linear")
+if fit.get("best_model_by_r2") not in ("linear", "power_law", "log_linear"):
+    raise SystemExit("missing or unknown fit.best_model_by_r2")
+if data.get("backsolve_n_canonical_model", 0) < 50_000 or data.get(
+    "backsolve_n_canonical_model", 0
+) > 250_000:
+    raise SystemExit("backsolve_n_canonical_model out of expected ~100k range")
+if data["ratio_heuristic_vs_tpuf"] < 200:
     raise SystemExit("ratio_heuristic_vs_tpuf too low — expected slower than tpuf official")
 models = data.get("models", {})
 if not models or "linear" not in models or "power_law" not in models:
@@ -69,7 +86,8 @@ if not any("SUPERSEDED" in str(n) for n in notes):
     raise SystemExit("expected SUPERSEDED outlier note in EXTRAP_JSON notes")
 print(
     f"test_compare-op-scaling-to-tpuf: EXTRAP_JSON ok "
-    f"(best={data['fit']['best_model']}, 10M×128={extrap_128} ms, heuristic={extrap_1024} ms)"
+    f"(canonical={data['canonical_model']}, 10M×128={extrap_128} ms, "
+    f"ratio_vs_tpuf={ratio}, heuristic={extrap_1024} ms)"
 )
 PY
 

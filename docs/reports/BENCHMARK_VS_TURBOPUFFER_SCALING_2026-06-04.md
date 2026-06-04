@@ -232,8 +232,9 @@ Leave-one-out on a **linear** fit (collapsed tiers) predicts **~770 ms** @ 100k;
 4. **Load model** — 7 sequential cold samples, not **8 QPS × 30 min**; tail latency and queueing differ.
 5. **Doc-count curve for tpuf** — only **one** official cold point at 10M; cannot fit β for turbopuffer from public data.
 6. **500k tier skipped** — MinIO L2 ingest + index ≫ 45 min on dev host; not in fit set.
-7. **Extrapolation to 10M** — unmeasured; model choice swings 10M×128 from **~2 s** (log_linear on older 111/525/813 tiers) to **~87 s** (linear on 96/412/880 @ `7f7c0f5`); `EXTRAP_JSON.notes[]` documents superseded fits.
-8. **100k rerun variance** — ±6% p50 across three runs; not instability at 10× level.
+7. **Extrapolation to 10M** — unmeasured; **canonical linear** fixed in compare script (~**87 s** @ 10M×128 on 96/412/880). Prior auto best-by-R² swung **~2 s** (log_linear on 111/525/813) vs **~87 s**—use `EXTRAP_JSON.canonical_model` only for headlines.
+8. **turbopuffer official** — **one** cold point @ 10M; extrapolation uncertainty dominates any ratio vs **874 ms**.
+9. **100k rerun variance** — ±6% p50 across three runs; not instability at 10× level.
 
 ---
 
@@ -288,8 +289,8 @@ Captured after 100k refresh @ `7f7c0f5` (committed JSON):
 
 ```
 Measured openpuffer cold p50: 10k=96ms, 50k=412ms, 100k=880ms
-Best model: linear — extrap 10M×128 = 87321 ms (~99.9× tpuf 874 ms)
+Canonical model: linear — extrap 10M×128 = 87321 ms (ratio_vs_tpuf ~100×, confidence: low)
 Verdict: ./scripts/print-scaling-verdict.sh — ingest 10k=909 docs/s, 50k=3571, 100k=758
 ```
 
-Full tables: run `make bench-compare-tpuf`. `EXTRAP_JSON` emitted by `compare-op-scaling-to-tpuf.sh`; see `benchmarks/report/compare_op_scaling_to_tpuf.py`.
+Full tables: run `make bench-compare-tpuf`. `EXTRAP_JSON` fields: `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf`, `confidence` (override: `--model=`). See `benchmarks/report/compare_op_scaling_to_tpuf.py`.

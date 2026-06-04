@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from compare_op_scaling_to_tpuf import (
+    CANONICAL_MODEL,
     ballpark_verdict,
     compute_comparison,
     dim_scale_sqrt,
@@ -39,3 +40,14 @@ def test_operator_verdict_paragraph() -> None:
     assert "10M" in para or "10.0M" in para
     assert len(para.split(".")) >= 3
     assert "200" in para or "docs/s" in para
+    assert snap.canonical_model == CANONICAL_MODEL
+    assert "canonical" in para
+    assert snap.ratio_vs_tpuf > 50
+
+
+def test_canonical_model_linear_on_committed_json() -> None:
+    snap = compute_comparison()
+    assert snap.canonical_model == "linear"
+    assert 80_000 <= snap.extrap_10m_128 <= 95_000
+    assert 95 <= snap.ratio_vs_tpuf <= 105
+    assert snap.confidence == "low"

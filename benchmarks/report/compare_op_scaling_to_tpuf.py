@@ -3,13 +3,20 @@
 
 Reads benchmarks/results/tpuf-official-reference.json and op-scaling-*.json (cold),
 fits multiple models (power-law, linear, log-linear), validates with R² and
-leave-one-out (2-point fit → predict held-out tier), extrapolates p50 at 1M/10M,
-applies √dim and linear-dim heuristics toward 10M×1024, back-solves N and ms/doc
-for tpuf cold p50, and prints a markdown appendix snippet.
+leave-one-out (2-point fit → predict held-out tier), extrapolates p50 at 1M/10M
+using a **single canonical model** (default: linear), applies √dim and linear-dim
+heuristics toward 10M×1024, back-solves N and ms/doc for tpuf cold p50, and prints
+a markdown appendix snippet.
+
+Canonical extrapolation uses **linear** by default (not auto best-by-R²). On
+committed tiers 96/412/880 ms, linear has R²≈0.998 vs log_linear≈0.89; prior
+log_linear ~2.2 s @ 10M×128 used superseded 111/525/813 tiers. Override:
+``--model=power_law|log_linear``.
 
 Usage:
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --verdict-only
+  python3 benchmarks/report/compare_op_scaling_to_tpuf.py --model=log_linear
   ./scripts/compare-op-scaling-to-tpuf.sh
   ./scripts/print-scaling-verdict.sh
 """
@@ -32,6 +39,18 @@ N_REF = 10_000_000
 N_1M = 1_000_000
 FIT_DOC_COUNTS = {10_000, 50_000, 100_000}
 SYNTH128_PATH = RESULTS / "op-scaling-10k-synthetic128.json"
+
+# Single canonical extrapolation model for verdict, EXTRAP_JSON, and reports.
+# Justification: on committed 96/412/880 ms tiers, linear R²≈0.998 (iteration 6
+# multi-model fit); log_linear was best only on superseded 111/525/813 sweep.
+CANONICAL_MODEL = "linear"
+CANONICAL_MODEL_JUSTIFICATION = (
+    "linear doc-count extrapolation (fixed default): best R² on committed "
+    "96/412/880 ms tiers; avoids auto-switching to log_linear (~2.5×) when "
+    "tiers refresh. turbopuffer official is ONE point @ 10M — extrap uncertainty "
+    "dominates any ratio vs 874 ms."
+)
+VALID_MODELS = frozenset({"linear", "power_law", "log_linear"})
 
 
 @dataclass(frozen=True)
@@ -311,29 +330,67 @@ def dim_scale_linear(p50_128_ms: float, dims: int = DIM_OP, ref_dims: int = DIM_
 
 
 def pick_best_model(models: list[ModelFit]) -> ModelFit:
+    """Highest R² on collapsed tiers (diagnostic only; not used for canonical extrap)."""
     return max(models, key=lambda m: (m.r2, -m.rmse_ms))
 
 
-def build_extrap_notes(points: list[MeasuredPoint], best: ModelFit) -> list[str]:
+def parse_model_arg(argv: list[str]) -> str | None:
+    for arg in argv:
+        if arg.startswith("--model="):
+            name = arg.split("=", 1)[1].strip()
+            if name not in VALID_MODELS:
+                raise SystemExit(
+                    f"unknown --model={name!r}; choose from {sorted(VALID_MODELS)}"
+                )
+            return name
+    return None
+
+
+def resolve_canonical_model(
+    models: list[ModelFit], override: str | None = None
+) -> ModelFit:
+    name = override or CANONICAL_MODEL
+    for m in models:
+        if m.name == name:
+            return m
+    raise SystemExit(f"canonical model {name!r} missing from fit set")
+
+
+def extrap_confidence() -> str:
+    """tpuf has one official cold point; 10M openpuffer is unmeasured."""
+    return "low"
+
+
+def build_extrap_notes(
+    points: list[MeasuredPoint],
+    canonical: ModelFit,
+    best: ModelFit,
+    extrap_10m_128: float,
+    tpuf_p50: int,
+) -> list[str]:
     """Human-readable caveats for EXTRAP_JSON (outlier history, stability)."""
-    p100 = next((p.p50_ms for p in points if p.n == 100_000 and p.label == "100k"), None)
+    ratio = extrap_10m_128 / tpuf_p50
     notes = [
-        "Fit uses committed op-scaling-*.json (MinIO release+v3). "
-        f"Best model: {best.name}. Not validated on AWS or 1024-d.",
-        "2026-06-05 tier sweep (da45441/9c637d1): cold p50 111/525/813 ms; "
-        "log_linear extrap ~2160 ms @ 10M×128 (~2.5× tpuf 874 ms); √dim ~7×.",
+        CANONICAL_MODEL_JUSTIFICATION,
+        f"Canonical extrap: {canonical.name} → {extrap_10m_128:.0f} ms @ 10M×128 "
+        f"(~{ratio:.1f}× tpuf {tpuf_p50} ms). Not validated on AWS or 1024-d.",
+        f"Diagnostic best-by-R² on collapsed tiers: {best.name} (R²={best.r2:.4f}).",
     ]
-    if p100 is not None and p100 >= 700:
+    if best.name != canonical.name:
+        alt = best.predict(N_REF)
         notes.append(
-            "SUPERSEDED: linear-only fit on older 86/400/824 ms tiers extrapolated "
-            "~81 s @ 10M×128 (~93× slower)—model choice, not a remeasured 100k outlier."
+            f"SUPERSEDED for reports: auto best-model {best.name} would give "
+            f"~{alt:.0f} ms @ 10M×128 (~{alt / tpuf_p50:.1f}× tpuf)—do not mix "
+            "with canonical linear ratio in the same headline."
         )
     notes.extend(
         [
+            "SUPERSEDED: log_linear on 111/525/813 ms sweep → ~2160 ms @ 10M×128 "
+            "(~2.5× tpuf)—tiers refreshed to 96/412/880.",
             "SUPERSEDED: anecdotal ~7 s @ 100k or ~70× @ 10M from debug build or "
             "host contention—not in committed op-scaling JSON.",
-            "100k stability (2026-06-05, three release runs): p50 813 / 857 / 906 ms "
-            "(median 857, σ≈47 ms, ±6% vs median); committed JSON keeps sweep 813 ms.",
+            "100k query_latencies_ms spread 813–900 in latest JSON (p50=880); prior "
+            "stability runs 813/857/906 ms (σ≈47 ms).",
         ]
     )
     return notes
@@ -359,11 +416,13 @@ class ComparisonSnapshot:
     measured_tiers: list[tuple[int, float]]  # (N, p50_ms) primary tiers only
     extrap_10m_128: float
     extrap_10m_sqrt: float
-    best_model: str
+    canonical_model: str
     power_beta: float
+    ratio_vs_tpuf: float
+    confidence: str
 
 
-def compute_comparison() -> ComparisonSnapshot:
+def compute_comparison(model_override: str | None = None) -> ComparisonSnapshot:
     """Load committed JSON, fit models, return summary for verdict/charts."""
     tpuf_p50 = load_tpuf_cold_p50()
     points = load_op_scaling_points()
@@ -373,25 +432,29 @@ def compute_comparison() -> ComparisonSnapshot:
         fit_linear(collapsed),
         fit_log_linear(collapsed),
     ]
-    best = pick_best_model(models)
+    canonical = resolve_canonical_model(models, model_override)
     power = next(m for m in models if m.name == "power_law")
     primary = [(n, ms) for n, ms in collapsed if n in (10_000, 50_000, 100_000)]
     primary.sort(key=lambda t: t[0])
+    extrap_128 = canonical.predict(N_REF)
     return ComparisonSnapshot(
         tpuf_p50=tpuf_p50,
         measured_tiers=primary,
-        extrap_10m_128=best.predict(N_REF),
-        extrap_10m_sqrt=dim_scale_sqrt(best.predict(N_REF)),
-        best_model=best.name,
+        extrap_10m_128=extrap_128,
+        extrap_10m_sqrt=dim_scale_sqrt(extrap_128),
+        canonical_model=canonical.name,
         power_beta=power.params["b"],
+        ratio_vs_tpuf=extrap_128 / tpuf_p50,
+        confidence=extrap_confidence(),
     )
 
 
-def operator_verdict_paragraph(snap: ComparisonSnapshot | None = None) -> str:
+def operator_verdict_paragraph(
+    snap: ComparisonSnapshot | None = None, model_override: str | None = None
+) -> str:
     """Single paragraph for operators (stdout from --verdict-only)."""
-    s = snap or compute_comparison()
+    s = snap or compute_comparison(model_override)
     tier_str = " / ".join(f"{fmt_n(n)}={ms:.0f}ms" for n, ms in s.measured_tiers)
-    ratio_128 = s.extrap_10m_128 / s.tpuf_p50
     ratio_sqrt = s.extrap_10m_sqrt / s.tpuf_p50
     ballpark = ballpark_verdict(s.extrap_10m_sqrt, s.tpuf_p50)
     tpuf_commit_ms = load_tpuf_write_commit_ms_claim()
@@ -409,10 +472,11 @@ def operator_verdict_paragraph(snap: ComparisonSnapshot | None = None) -> str:
         )
     return (
         f"openpuffer MinIO cold p50 tiers ({tier_str}) grow with doc count "
-        f"(power-law β≈{s.power_beta:.2f}); {s.best_model} extrapolation gives "
-        f"~{s.extrap_10m_128:.0f} ms @ 10M×128 (~{ratio_128:.1f}× turbopuffer's official "
-        f"{s.tpuf_p50} ms @ 10M×1024 on GCP) and ~{s.extrap_10m_sqrt:.0f} ms with a √dim "
-        f"heuristic (~{ratio_sqrt:.0f}×).{ingest_clause} {ballpark}. "
+        f"(power-law β≈{s.power_beta:.2f}); canonical {s.canonical_model} extrapolation "
+        f"gives ~{s.extrap_10m_128:.0f} ms @ 10M×128 (~{s.ratio_vs_tpuf:.1f}× turbopuffer's "
+        f"official {s.tpuf_p50} ms @ 10M×1024 on GCP—single tpuf point, {s.confidence} "
+        f"confidence) and ~{s.extrap_10m_sqrt:.0f} ms with a √dim heuristic "
+        f"(~{ratio_sqrt:.0f}×).{ingest_clause} {ballpark}. "
         "Treat as scaling-shape signal only—MinIO vs GCP, 128-d synthetic vs 1024-d embeddings, "
         "sequential cold probes vs 8 QPS×30m; 10M openpuffer is unmeasured."
     )
@@ -444,6 +508,7 @@ def ballpark_verdict(op_equiv_ms: float, tpuf_ms: int) -> str:
 def markdown_appendix(
     points: list[MeasuredPoint],
     models: list[ModelFit],
+    canonical: ModelFit,
     best: ModelFit,
     loo_tiers: list[LooResult],
     loo_4pt: list[LooResult],
@@ -465,9 +530,14 @@ def markdown_appendix(
         lines.append(f"| {p.label} | {p.n:,} | {p.p50_ms:.0f} |")
     lines.extend(["", "| Model | Formula | R² | RMSE (ms) |", "|-------|---------|-----|-----------|"])
     for m in sorted(models, key=lambda x: -x.r2):
-        star = " **best**" if m.name == best.name else ""
+        tags: list[str] = []
+        if m.name == canonical.name:
+            tags.append("canonical")
+        if m.name == best.name:
+            tags.append("best R²")
+        suffix = f" **{', '.join(tags)}**" if tags else ""
         lines.append(
-            f"| {m.name}{star} | {m.formula} | {m.r2:.4f} | {m.rmse_ms:.1f} |"
+            f"| {m.name}{suffix} | {m.formula} | {m.r2:.4f} | {m.rmse_ms:.1f} |"
         )
     lines.extend(
         [
@@ -500,9 +570,10 @@ def markdown_appendix(
     lines.extend(
         [
             "",
-            f"**Best model by R²:** `{best.name}` — {best.formula}",
+            f"**Canonical extrapolation model:** `{canonical.name}` — {canonical.formula}",
+            f"**Best model by R² (diagnostic):** `{best.name}` — {best.formula}",
             "",
-            f"| Extrapolation @ 10M×128 ({best.name}) | {extrap_10m_128:.0f} ms |",
+            f"| Extrapolation @ 10M×128 ({canonical.name}) | {extrap_10m_128:.0f} ms |",
             f"| 10M×1024 (√dim estimate) | {extrap_10m_sqrt:.0f} ms |",
             f"| 10M×1024 (linear-d estimate, ANN theory) | {extrap_10m_linear_d:.0f} ms |",
             f"| tpuf official cold | {tpuf_p50} ms |",
@@ -534,8 +605,9 @@ def markdown_appendix(
 
 
 def main() -> int:
+    model_override = parse_model_arg(sys.argv)
     if "--verdict-only" in sys.argv:
-        print(operator_verdict_paragraph())
+        print(operator_verdict_paragraph(model_override=model_override))
         return 0
 
     tpuf_p50 = load_tpuf_cold_p50()
@@ -548,20 +620,23 @@ def main() -> int:
         fit_log_linear(collapsed),
     ]
     best = pick_best_model(models)
+    canonical = resolve_canonical_model(models, model_override)
     loo_tiers = leave_one_out_2fit_tiers(collapsed)
     loo_4pt = leave_one_out_4point(points)
 
-    extrap_1m = best.predict(N_1M)
-    extrap_10m_128 = best.predict(N_REF)
+    extrap_1m = canonical.predict(N_1M)
+    extrap_10m_128 = canonical.predict(N_REF)
     extrap_10m_sqrt = dim_scale_sqrt(extrap_10m_128)
     extrap_10m_linear_d = dim_scale_linear(extrap_10m_128)
     dim_factor_sqrt = math.sqrt(DIM_REF / DIM_OP)
     dim_factor_linear = DIM_REF / DIM_OP
+    ratio_vs_tpuf = extrap_10m_128 / tpuf_p50
+    confidence = extrap_confidence()
 
     backsolve = {
         m.name: backsolve_n_for_target(m, float(tpuf_p50)) for m in models
     }
-    backsolve_best = backsolve[best.name]
+    backsolve_canonical = backsolve[canonical.name]
 
     print("=== openpuffer scaling → turbopuffer 10M reference ===\n")
     print(f"tpuf official cold p50: {tpuf_p50} ms (10M × 1024, GCP, 8 QPS × 30m)\n")
@@ -575,9 +650,18 @@ def main() -> int:
     print("| Model | Formula | R² | RMSE (ms) |")
     print("|-------|---------|-----|-----------|")
     for m in sorted(models, key=lambda x: -x.r2):
-        mark = " ← best" if m.name == best.name else ""
-        print(f"| {m.name}{mark} | {m.formula} | {m.r2:.4f} | {m.rmse_ms:.1f} |")
+        marks: list[str] = []
+        if m.name == canonical.name:
+            marks.append("canonical")
+        if m.name == best.name:
+            marks.append("best R²")
+        suffix = f" ← {', '.join(marks)}" if marks else ""
+        print(f"| {m.name}{suffix} | {m.formula} | {m.r2:.4f} | {m.rmse_ms:.1f} |")
     print()
+    print(
+        f"Canonical extrapolation model: **{canonical.name}** "
+        f"(override: --model=linear|power_law|log_linear)\n"
+    )
 
     print("### Leave-one-out — 2-point fit → predict 3rd tier (collapsed N)")
     print("| Held out | actual | predicted | error % |")
@@ -598,11 +682,12 @@ def main() -> int:
         )
     print()
 
-    print(f"Best model: **{best.name}** — {best.formula}\n")
+    print(f"Canonical model: **{canonical.name}** — {canonical.formula}")
+    print(f"Best by R² (diagnostic): **{best.name}** — {best.formula}\n")
     print("| Scale | p50 (ms) | Notes |")
     print("|-------|----------|-------|")
-    print(f"| extrap 1M × 128 | **{extrap_1m:.0f}** | {best.name} |")
-    print(f"| extrap 10M × 128 | **{extrap_10m_128:.0f}** | {best.name} |")
+    print(f"| extrap 1M × 128 | **{extrap_1m:.0f}** | {canonical.name} (canonical) |")
+    print(f"| extrap 10M × 128 | **{extrap_10m_128:.0f}** | {canonical.name} (canonical) |")
     print(
         f"| 10M × 1024 (√dim heuristic) | **{extrap_10m_sqrt:.0f}** | "
         f"×{dim_factor_sqrt:.2f} on 10M×128 |"
@@ -618,7 +703,7 @@ def main() -> int:
     print("|--------|-------------|-------------|----------|")
     print(f"| turbopuffer (official) | 10M × 1024 | GCP managed | **{tpuf_p50}** |")
     print(
-        f"| openpuffer (extrapolated) | 10M × 128 | MinIO ({best.name}) | "
+        f"| openpuffer (extrapolated) | 10M × 128 | MinIO ({canonical.name}) | "
         f"**{extrap_10m_128:.0f}** ({fmt_ms(extrap_10m_128)}) |"
     )
     print(
@@ -652,13 +737,14 @@ def main() -> int:
     print("### Are we in the same ballpark vs tpuf 874 ms?")
     print(ballpark_verdict(extrap_10m_sqrt, tpuf_p50))
     print()
-    print(f"Raw 10M×128 / tpuf: {extrap_10m_128 / tpuf_p50:.1f}×")
+    print(f"Canonical 10M×128 / tpuf: {ratio_vs_tpuf:.1f}× (confidence: {confidence})")
     print(f"√dim 10M×1024 / tpuf: {extrap_10m_sqrt / tpuf_p50:.1f}×")
     print(f"Linear-d 10M×1024 / tpuf: {extrap_10m_linear_d / tpuf_p50:.1f}×")
 
     md = markdown_appendix(
         points,
         models,
+        canonical,
         best,
         loo_tiers,
         loo_4pt,
@@ -681,11 +767,18 @@ def main() -> int:
         residuals = [y - (log_a + b * x) for x, y in zip(xs, ys)]
         sigma_log = math.sqrt(sum(r * r for r in residuals) / (len(collapsed) - 2))
 
-    extrap_notes = build_extrap_notes(points, best)
+    extrap_notes = build_extrap_notes(
+        points, canonical, best, extrap_10m_128, tpuf_p50
+    )
     extrap_json = {
+        "canonical_model": canonical.name,
+        "extrap_p50_10m_128_ms": round(extrap_10m_128),
+        "ratio_vs_tpuf": round(ratio_vs_tpuf, 2),
+        "confidence": confidence,
         "notes": extrap_notes,
         "fit": {
-            "best_model": best.name,
+            "canonical_model": canonical.name,
+            "best_model_by_r2": best.name,
             "power_law": power.params,
             "sigma_log": sigma_log,
         },
@@ -706,8 +799,10 @@ def main() -> int:
         "backsolve_n_at_tpuf_p50": {
             k: (round(v) if v and v > 0 else None) for k, v in backsolve.items()
         },
-        "backsolve_n_best_model": (
-            round(backsolve_best) if backsolve_best and backsolve_best > 0 else None
+        "backsolve_n_canonical_model": (
+            round(backsolve_canonical)
+            if backsolve_canonical and backsolve_canonical > 0
+            else None
         ),
         "ms_per_doc_us_extrap_10m": round(ms_per_doc_op * 1e6, 3),
         "ms_per_doc_us_tpuf_10m": round(ms_per_doc_tpuf * 1e6, 3),

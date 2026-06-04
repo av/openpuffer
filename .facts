@@ -607,7 +607,7 @@
 - label: committed op-scaling JSON tiers 10k 50k 100k warm synthetic128 pass validate-benchmark-json and pytest schema gate
   command: ./scripts/test_validate-op-scaling-json.sh && python3 -m pytest benchmarks/report/test_op_scaling_schema.py -q
   tags: [bench-op-scaling, bench, implemented]
-- label: compare-op-scaling-to-tpuf.sh emits EXTRAP_JSON verdict with tpuf 874 ms extrapolation and operator notes
+- label: compare-op-scaling-to-tpuf.sh emits EXTRAP_JSON with canonical_model linear ratio_vs_tpuf and confidence low
   command: ./scripts/test_compare-op-scaling-to-tpuf.sh
   tags: [bench-op-scaling, bench-tpuf, implemented]
 - label: verify-op-scaling-comparison.sh offline gate wired in ci.yml op-scaling-comparison job
