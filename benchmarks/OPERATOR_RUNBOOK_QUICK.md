@@ -10,6 +10,8 @@ One-page checklist for **live** `large-aws-*.json` / `tpuf-*.json`. Full IAM, tr
 | **Dedicated bench bucket** | e.g. `openpuffer-bench-<account>-us-east-1` — never production data. |
 | **EC2 in bucket region** | `m7i.xlarge` in `us-east-1` (default); attach instance profile. |
 | **Local G2 green** | `./scripts/run-minio-correctness-gates.sh` on laptop/CI before AWS ingest. |
+| **Preflight bundle (offline)** | `./scripts/preflight-large-benchmark-all.sh` — AWS cost estimate + tpuf workload/deps (no keys). Add `--skip-overlap` if openpuffer is not running yet. |
+| **Preflight bundle (EC2 live)** | `./scripts/preflight-large-benchmark-all.sh --live --tier l1` after env exports; run again after G3 ingest for overlap (`--skip-key` only checks openpuffer until G4 key is set). |
 
 ## 5-minute env (on EC2)
 
@@ -27,6 +29,15 @@ export OPENPUFFER_S3_REGION=us-east-1
 # export OPENPUFFER_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
 
 ./scripts/preflight-aws-ec2.sh                    # IMDS, region, head-bucket, session keys
+# or all three preflights in one pass (live):
+# ./scripts/preflight-large-benchmark-all.sh --live --tier l1
+```
+
+### Offline preflight (laptop, before EC2)
+
+```bash
+./scripts/preflight-large-benchmark-all.sh              # aws --dry-run + tpuf --skip-key + overlap --skip-key
+./scripts/preflight-large-benchmark-all.sh --skip-overlap   # aws + tpuf only (overlap needs G3 namespace)
 ```
 
 ## L1 measured run (copy-paste)

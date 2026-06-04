@@ -253,8 +253,10 @@ Other harness scripts (`validate-benchmark-json.sh`, `normalize-benchmark-json.s
 | Script | Description |
 |--------|-------------|
 | [install-benchmark-python-deps.sh](../scripts/install-benchmark-python-deps.sh) | One-shot `pip install -r benchmarks/requirements.txt` (pytest, jsonschema, turbopuffer, httpx) |
+| [preflight-large-benchmark-all.sh](../scripts/preflight-large-benchmark-all.sh) | G3+G4+overlap preflights in one pass (`--live` on EC2; default offline `--dry-run` / `--skip-key`) |
 | [preflight-aws-ec2.sh](../scripts/preflight-aws-ec2.sh) | EC2 IMDS, region/AZ, instance profile, S3 `head-bucket` before G3 |
 | [preflight-tpuf.sh](../scripts/preflight-tpuf.sh) | API key, region vs AWS, RTT, cost estimate, results secret scan |
+| [preflight-id-overlap.sh](../scripts/preflight-id-overlap.sh) | Phase 3.3 namespace/index checks before overlap spot-check |
 | [estimate-large-benchmark-cost.sh](../scripts/estimate-large-benchmark-cost.sh) | Order-of-magnitude API volume before live G3/G4 (`--tier`, `--scope`, `--warm`) |
 | [lib/large-benchmark-preflight.sh](../scripts/lib/large-benchmark-preflight.sh) | Shared tier/workload/MinIO→AWS path guards |
 
