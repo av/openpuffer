@@ -279,6 +279,7 @@ def test_build_result_payload_schema() -> None:
         candidates_ratio=0.001,
         recall_at_10=0.99,
     )
+    assert payload["schema_version"] == "large_benchmark_v1"
     assert payload["benchmark"] == "cold_tpuf_l1"
     assert payload["environment"] == "turbopuffer:aws-us-east-1"
     assert payload["tier"] == "l1"

@@ -125,6 +125,7 @@ def test_run_spotcheck_mock_writes_json(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0
     written = json.loads(out.read_text())
+    assert written["schema_version"] == "large_benchmark_v1"
     assert written["mode"] == "mock"
     assert written["summary"]["query_count"] == 10
     assert "openpuffer_ids" in written["queries"][0]

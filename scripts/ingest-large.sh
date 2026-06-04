@@ -27,6 +27,9 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/large-benchmark-json-version.sh
+source "$ROOT/scripts/lib/large-benchmark-json-version.sh"
+large_benchmark_json_schema_version >/dev/null
 # shellcheck source=scripts/lib/ingest-large-retry.sh
 source "$ROOT/scripts/lib/ingest-large-retry.sh"
 # shellcheck source=scripts/lib/large-benchmark-serve-ready.sh
@@ -445,6 +448,7 @@ write_results_json() {
     '{start_batch:$start_batch, skipped_batches:$skipped_batches, total_batches:$total_batches}')"
 
   jq -n \
+    --arg schema_version "$LARGE_BENCHMARK_JSON_SCHEMA_VERSION" \
     --arg benchmark "ingest_large" \
     --arg environment "$env_note" \
     --arg tier "$TIER" \
@@ -482,6 +486,7 @@ write_results_json() {
     --argjson retry_base_ms "${OPENPUFFER_INGEST_RETRY_BASE_MS:-500}" \
     --arg notes "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3" \
     '{
+      schema_version: $schema_version,
       benchmark: $benchmark,
       environment: $environment,
       tier: $tier,

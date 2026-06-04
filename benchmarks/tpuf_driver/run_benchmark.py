@@ -24,7 +24,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKLOADS_DIR = ROOT / "benchmarks" / "workloads"
+sys.path.insert(0, str(ROOT / "benchmarks" / "report"))
 sys.path.insert(0, str(WORKLOADS_DIR))
+
+from schema_version import large_benchmark_json_schema_version  # noqa: E402
 
 import generate_synthetic as gen  # noqa: E402
 
@@ -714,6 +717,7 @@ def build_result_payload(
         f"{' --warm' if ctx.warm_mode else ''}"
     )
     payload: dict[str, Any] = {
+        "schema_version": large_benchmark_json_schema_version(),
         "benchmark": f"cold_tpuf_{ctx.tier}",
         "environment": f"turbopuffer:{ctx.region}",
         "tier": ctx.tier,

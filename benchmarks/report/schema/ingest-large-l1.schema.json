@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": true,
   "required": [
+    "schema_version",
     "benchmark",
     "environment",
     "tier",
@@ -22,6 +23,7 @@
     "ingest_timing"
   ],
   "properties": {
+    "schema_version": { "const": "large_benchmark_v1" },
     "benchmark": { "const": "ingest_large" },
     "environment": { "type": "string", "minLength": 1 },
     "tier": { "enum": ["l1", "l2", "l3"] },

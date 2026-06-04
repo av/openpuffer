@@ -86,6 +86,9 @@ tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
 overlap_validator = Draft202012Validator(json.loads(overlap_schema_path.read_text()))
 
+SCHEMA_VERSION_PATH = Path(op_schema_path).parent / ".." / "LARGE_BENCHMARK_JSON_SCHEMA_VERSION"
+EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION_PATH.resolve().read_text(encoding="utf-8").strip()
+
 TIER_META = {
     "l1": {
         "docs": 100_000,
@@ -132,6 +135,15 @@ def skip_doc_tier_check(path: Path) -> bool:
     """MinIO CI fast-path examples use tier=l1 workload but fewer docs (e.g. 10k)."""
     name = path.name
     return "10k" in name or "schema-minio-10k" in name
+
+
+def validate_schema_version(path: Path, data: dict) -> None:
+    sv = data.get("schema_version")
+    if sv != EXPECTED_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{path}: schema_version {sv!r} != {EXPECTED_SCHEMA_VERSION!r} "
+            "(regenerate with ingest-large / bench-large / tpuf driver / id-overlap)"
+        )
 
 
 def validate_tier_alignment(path: Path, kind: str, data: dict) -> None:
@@ -304,6 +316,7 @@ for path in paths:
         raise SystemExit(f"validate-benchmark-json: invalid JSON {path}: {exc}") from exc
 
     kind = classify(path)
+    validate_schema_version(path, data)
     if kind == "ingest":
         schema_errors(ingest_validator, data, "ingest-large", path)
         validate_ingest_cross_fields(path, data)

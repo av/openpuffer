@@ -1,4 +1,5 @@
 {
+  "schema_version": "large_benchmark_v1",
   "benchmark": "cold_large_l3",
   "environment": "aws-s3",
   "tier": "l3",

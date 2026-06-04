@@ -1,4 +1,5 @@
 {
+  "schema_version": "large_benchmark_v1",
   "benchmark": "cold_tpuf_l1",
   "environment": "turbopuffer:aws-us-east-1",
   "tier": "l1",

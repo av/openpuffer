@@ -1,4 +1,5 @@
 {
+  "schema_version": "large_benchmark_v1",
   "benchmark": "ingest_large",
   "environment": "aws-s3",
   "tier": "l3",

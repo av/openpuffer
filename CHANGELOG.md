@@ -2,6 +2,14 @@
 
 All notable changes to openpuffer are documented here. Versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Large-dataset benchmark JSON
+
+- **`schema_version: "large_benchmark_v1"`** — required on harness result artifacts: `ingest-large-*.json`, `large-aws-*.json`, `tpuf-*.json`, and `id-overlap-*.json` (emitted by `ingest-large.sh`, `bench-large.sh`, `benchmarks/tpuf_driver/run_benchmark.py`, `benchmarks/cross_check/run_spotcheck.py`). Canonical value: [`benchmarks/report/LARGE_BENCHMARK_JSON_SCHEMA_VERSION`](benchmarks/report/LARGE_BENCHMARK_JSON_SCHEMA_VERSION).
+- **Not the workload format** — committed `manifest.json` / `queries.json` under `benchmarks/workloads/synthetic-128/` keep numeric `schema_version: 1` from `generate_synthetic.py`.
+- **Migration:** Re-run the harness or patch existing JSON, e.g. `jq '.schema_version = "large_benchmark_v1"' file.json`. [`scripts/validate-benchmark-json.sh`](scripts/validate-benchmark-json.sh) rejects missing or mismatched `schema_version` on fixtures and `*.example.json`.
+
 ## [0.3.0] — 2026-06-03
 
 Program release: **SPFresh-inspired ANN (opt-in v3)**, **query-driven cold load @ scale**, **recall API**, and **operational bench/metrics**. Built on the 0.2.0 WAL + S3 index layout.

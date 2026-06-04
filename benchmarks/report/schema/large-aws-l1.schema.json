@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": true,
   "required": [
+    "schema_version",
     "benchmark",
     "environment",
     "tier",
@@ -23,6 +24,7 @@
     "cold_query_runs"
   ],
   "properties": {
+    "schema_version": { "const": "large_benchmark_v1" },
     "benchmark": { "type": "string", "pattern": "^cold_large_l[123]$" },
     "environment": { "type": "string", "minLength": 1 },
     "tier": { "enum": ["l1", "l2", "l3"] },

@@ -7,9 +7,16 @@ Shared helpers for benchmarks/cross_check/run_spotcheck.py and pytest (offline/m
 from __future__ import annotations
 
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+_REPORT_DIR = Path(__file__).resolve().parents[1] / "report"
+if str(_REPORT_DIR) not in sys.path:
+    sys.path.insert(0, str(_REPORT_DIR))
+
+from schema_version import large_benchmark_json_schema_version  # noqa: E402
 
 DEFAULT_SPOT_CHECK_COUNT = 10
 
@@ -231,6 +238,7 @@ def build_result_payload(
 ) -> dict[str, Any]:
     summary = summarize_query_results(per_query)
     return {
+        "schema_version": large_benchmark_json_schema_version(),
         "benchmark": "id_overlap_spotcheck",
         "tier": tier,
         "workload_dir": workload_dir,

@@ -19,6 +19,9 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 # shellcheck source=scripts/lib/large-benchmark-serve-ready.sh
 source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
+# shellcheck source=scripts/lib/large-benchmark-json-version.sh
+source "$ROOT/scripts/lib/large-benchmark-json-version.sh"
+large_benchmark_json_schema_version >/dev/null
 
 DRY_RUN=0
 WARM_MODE=0
@@ -790,6 +793,7 @@ done
 [[ -n "${INDEX_OBJECT_COUNT:-}" && "${INDEX_OBJECT_COUNT}" != "null" ]] && validate_argjson_var INDEX_OBJECT_COUNT "${INDEX_OBJECT_COUNT}"
 
 jq -n \
+  --arg schema_version "$LARGE_BENCHMARK_JSON_SCHEMA_VERSION" \
   --arg benchmark "$BENCHMARK_NAME" \
   --arg environment "$BENCH_ENVIRONMENT" \
   --arg tier "$TIER" \
@@ -829,6 +833,7 @@ jq -n \
   --argjson index_object_count "${INDEX_OBJECT_COUNT:-null}" \
   --argjson ingest_summary "$INGEST_SUMMARY_ARGJSON" \
   '{
+    schema_version: $schema_version,
     benchmark: $benchmark,
     environment: $environment,
     tier: $tier,

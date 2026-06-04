@@ -1,4 +1,5 @@
 {
+  "schema_version": "large_benchmark_v1",
   "benchmark": "cold_large_l1",
   "environment": "minio",
   "tier": "l1",
@@ -130,7 +131,7 @@
       "query_name": "filter-priority-between",
       "query_kind": "filter",
       "latency_ms": 826,
-      "candidates_ratio": 0.00009,
+      "candidates_ratio": 9e-05,
       "storage_roundtrips": 3,
       "result_rows": 9,
       "phase": "cold"
@@ -176,7 +177,7 @@
   ],
   "index_keys_total": null,
   "index_object_count": null,
-  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips≤4, recall@10≥0.85, p50<600ms. Warm phase: cache-dir=/tmp/openpuffer-bench-warm-l1-bench-large-100000, POST /warm, 20× eventual. Secondary: 6 filter + 4 hybrid (1× each, strong). Warm secondary: filter+hybrid @ eventual. Regenerate: ./scripts/bench-large.sh --tier l1 --warm",
+  "notes": "A3 bench-large.sh tier=l1; environment=minio; workload queries.json; OPENPUFFER_ANN_VERSION=3. Targets (AWS): storage_roundtrips\u22644, recall@10\u22650.85, p50<600ms. Warm phase: cache-dir=/tmp/openpuffer-bench-warm-l1-bench-large-100000, POST /warm, 20\u00d7 eventual. Secondary: 6 filter + 4 hybrid (1\u00d7 each, strong). Warm secondary: filter+hybrid @ eventual. Regenerate: ./scripts/bench-large.sh --tier l1 --warm",
   "ingest_summary_path": "benchmarks/results/ingest-large-l1-schema-minio.example.json",
   "ingest_elapsed_secs": 21,
   "index_wait_sec": 12,
@@ -446,7 +447,7 @@
       "query_name": "filter-priority-between",
       "query_kind": "filter",
       "latency_ms": 874,
-      "candidates_ratio": 0.00009,
+      "candidates_ratio": 9e-05,
       "storage_roundtrips": null,
       "result_rows": 9,
       "phase": "warm"

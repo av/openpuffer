@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": true,
   "required": [
+    "schema_version",
     "benchmark",
     "tier",
     "workload_dir",
@@ -15,6 +16,7 @@
     "summary"
   ],
   "properties": {
+    "schema_version": { "const": "large_benchmark_v1" },
     "benchmark": { "const": "id_overlap_spotcheck" },
     "tier": { "enum": ["l1", "l2", "l3"] },
     "workload_dir": { "type": "string", "minLength": 1 },
