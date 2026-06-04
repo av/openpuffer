@@ -206,13 +206,26 @@ async fn recall_at_10_on_namespace(serve: &ServeHandle, namespace: &str, docs: u
 }
 
 async fn cold_vector_query_ms(serve: &ServeHandle, namespace: &str) -> (u64, Value) {
+    let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.02).cos()).collect();
+    let query = json!({
+        "rank_by": ["vector", "ANN", "embedding", query_vec],
+        "top_k": 10,
+        "consistency": "strong"
+    });
+    cold_query_with_body_ms(serve, namespace, &query).await
+}
+
+async fn cold_query_with_body_ms(
+    serve: &ServeHandle,
+    namespace: &str,
+    query: &Value,
+) -> (u64, Value) {
     let client = reqwest::Client::new();
     client
         .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
         .send()
         .await
         .expect("cache reset");
-    let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.02).cos()).collect();
     let t0 = Instant::now();
     let resp = client
         .post(format!(
@@ -220,11 +233,7 @@ async fn cold_vector_query_ms(serve: &ServeHandle, namespace: &str) -> (u64, Val
             serve.base_url,
             namespace_path_segment(namespace)
         ))
-        .json(&json!({
-            "rank_by": ["vector", "ANN", "embedding", query_vec],
-            "top_k": 10,
-            "consistency": "strong"
-        }))
+        .json(query)
         .send()
         .await
         .expect("cold query");
@@ -543,9 +552,11 @@ async fn bench_cold_10k_warm_vs_cold() {
 }
 
 /// G2 gate: 10k ingest uses synthetic-128 schema; `/recall` + cold query follow `queries.json`.
+/// Prints JSON baseline (7 cold samples) for `op-scaling-10k-synthetic128.json`.
 #[tokio::test]
 async fn bench_cold_10k_synthetic_128_workload_gate() {
-    let queries = load_queries(&l1_workload_dir());
+    let workload_dir = l1_workload_dir();
+    let queries = load_queries(&workload_dir);
     let dim = queries["dim"].as_u64().expect("dim") as usize;
     let (recall_num, recall_top_k) = recall_defaults(&queries);
     let cold_proto = cold_query_protocol(&queries);
@@ -559,7 +570,7 @@ async fn bench_cold_10k_synthetic_128_workload_gate() {
 
     let fixture = S3Fixture::from_testcontainers().await;
     let listen = format!("127.0.0.1:{}", free_port());
-    let serve = ServeHandle::spawn_with_options(
+    let serve = spawn_bench_serve(
         &fixture,
         &listen,
         Some(PathBuf::from("")),
@@ -609,29 +620,62 @@ async fn bench_cold_10k_synthetic_128_workload_gate() {
         recall_top_k
     );
 
-    client
-        .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
-        .send()
-        .await
-        .expect("cache reset");
-    let resp = client
-        .post(format!(
-            "{}/v2/namespaces/{}/query",
-            serve.base_url,
-            namespace_path_segment(NAMESPACE_SYNTHETIC_128)
-        ))
-        .json(&cold_query)
-        .send()
-        .await
-        .expect("cold query");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = resp.json().await.expect("query json");
-    let roundtrips = body["performance"]["storage_roundtrips"]
+    let mut latencies_ms = Vec::with_capacity(COLD_QUERY_RUNS);
+    let mut last_body = json!(null);
+    for _ in 0..COLD_QUERY_RUNS {
+        let (ms, body) =
+            cold_query_with_body_ms(&serve, NAMESPACE_SYNTHETIC_128, &cold_query).await;
+        latencies_ms.push(ms);
+        last_body = body;
+    }
+    let (p50_query_latency_ms, p90_query_latency_ms, p99_query_latency_ms) =
+        latency_percentiles_ms(&latencies_ms);
+
+    let perf = last_body["performance"].as_object().expect("performance");
+    let storage_roundtrips = perf["storage_roundtrips"]
         .as_u64()
-        .expect("storage_roundtrips");
+        .expect("storage_roundtrips") as u32;
+    let ann_version = ann_version_from_env().unwrap_or(2);
+
+    let report = json!({
+        "benchmark": "cold_10k_synthetic128",
+        "environment": "minio-testcontainers",
+        "workload_dir": "benchmarks/workloads/synthetic-128/l1-100k",
+        "primary_query": vector_spec.get("name").and_then(|v| v.as_str()).unwrap_or("vector-q00"),
+        "ann_version": ann_version,
+        "namespace_docs": DOCS,
+        "dimensions": dim,
+        "cache_dir": "",
+        "consistency": "strong",
+        "storage_roundtrips": storage_roundtrips,
+        "recall_at_10": avg_recall,
+        "p50_query_latency_ms": p50_query_latency_ms,
+        "p90_query_latency_ms": p90_query_latency_ms,
+        "p99_query_latency_ms": p99_query_latency_ms,
+        "query_latencies_ms": latencies_ms,
+        "cold_query_runs": COLD_QUERY_RUNS,
+        "notes": "synthetic-128 G2 gate @ 10k docs; queries.json cold protocol. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_10k_synthetic_128_workload_gate -- --nocapture"
+    });
+
+    println!("{}", serde_json::to_string(&report).expect("synthetic128 json"));
+
+    if std::env::var_os("OPENPUFFER_BENCH_WRITE_BASELINE").is_some() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/results/op-scaling-10k-synthetic128.json");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create benchmarks/results");
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).expect("pretty json"),
+        )
+        .expect("write op-scaling-10k-synthetic128.json");
+        eprintln!("wrote {}", path.display());
+    }
+
     assert!(
-        roundtrips <= 4,
-        "synthetic-128 cold storage_roundtrips {roundtrips} must be ≤ 4"
+        storage_roundtrips <= 4,
+        "synthetic-128 cold storage_roundtrips {storage_roundtrips} must be ≤ 4"
     );
 }
 

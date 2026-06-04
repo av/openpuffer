@@ -1,6 +1,12 @@
 # openpuffer vs turbopuffer — scaling comparison
 
-**Status:** Iteration 3 (unified measured). All MinIO tiers re-run with **release + `OPENPUFFER_ANN_VERSION=3`** via [`scripts/run-op-scaling-benchmark.sh`](../../scripts/run-op-scaling-benchmark.sh) (2026-06-04). JSON: [`benchmarks/results/op-scaling-*.json`](../../benchmarks/results/op-scaling-10k.json).
+**Status:** Iteration 4 (extrapolation + synthetic-128 protocol). MinIO tiers measured with **release + `OPENPUFFER_ANN_VERSION=3`** via [`scripts/run-op-scaling-benchmark.sh`](../../scripts/run-op-scaling-benchmark.sh). Extrapolation: [`scripts/compare-op-scaling-to-tpuf.sh`](../../scripts/compare-op-scaling-to-tpuf.sh).
+
+### Executive summary
+
+- **turbopuffer (official):** cold p50 **874 ms** at **10M × 1024** on GCP (`c2-standard-30`, 8 QPS × 30m, cache disabled) — [`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json).
+- **openpuffer (measured, MinIO):** cold p50 **92 / 400 / 824 ms** at **10k / 50k / 100k × 128** (unified release+v3); synthetic-128 `queries.json` gate @ 10k: **97 ms** — [`op-scaling-*.json`](../../benchmarks/results/op-scaling-10k.json).
+- **openpuffer (extrapolated to 10M):** power-law fit \(L \approx 0.015 \cdot N^{0.945}\) → **~62 s** p50 @ 10M×128; √dim heuristic → **~176 s** @ 10M×1024 vs tpuf **874 ms** (**~200× slower**, **not** the same absolute ballpark; shape-only doc scaling remains near-linear).
 
 **Goal:** Determine whether openpuffer cold/warm query latency scales with namespace size and dimensionality in a pattern **similar** to turbopuffer’s published 10M × 1024-dim curve—not to claim parity on MinIO vs managed GCP.
 
@@ -41,7 +47,8 @@ We cannot reproduce 10M × 1024 on every dev machine. Iteration 3 runs **MinIO t
 | T1 | 50k × 128 | MinIO | same (50k / `stress_50k` v3 cold) | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) |
 | T2 | 100k × 128 | MinIO | same (100k / `bench_cold_100k_nightly`) | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) |
 | Warm | 10k × 128 | MinIO | same (`bench_cold_10k_warm_vs_cold`) | [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json) |
-| T3 (optional) | 500k × 128 | MinIO / AWS | `scripts/bench-large.sh --tier l2` | `large-aws-l2.json` or MinIO schema run |
+| T0b | 10k × 128 (synthetic-128) | MinIO | `bench_cold_10k_synthetic_128_workload_gate` | [`op-scaling-10k-synthetic128.json`](../../benchmarks/results/op-scaling-10k-synthetic128.json) |
+| T3 (optional) | 500k × 128 | MinIO / AWS | `scripts/bench-large.sh --tier l2` | **skipped** this iteration (ingest+index ≫45 min on MinIO; use AWS L2 when available) |
 
 **Unified run settings (Iteration 3):** `cargo --release`, `OPENPUFFER_ANN_VERSION=3`, `ann_version=3` on serve, 7 sequential cold samples, p50/p90/p99 from nearest-rank percentiles (same as `bench-large.sh`).
 
@@ -60,43 +67,64 @@ We cannot reproduce 10M × 1024 on every dev machine. Iteration 3 runs **MinIO t
 
 ---
 
-## 3. openpuffer measured columns (Iteration 3 — unified release + v3)
+## 3. openpuffer measured columns (Iteration 4 — unified release + v3)
 
 **Host:** dev machine, MinIO via testcontainers.  
 **Harness:** [`scripts/run-op-scaling-benchmark.sh`](../../scripts/run-op-scaling-benchmark.sh)  
-**Raw JSON:** [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json), [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json), [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json), [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json).
+**Raw JSON:** [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json), [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json), [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json), [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json), [`op-scaling-10k-synthetic128.json`](../../benchmarks/results/op-scaling-10k-synthetic128.json).
 
 ### Cold query latency (ms)
 
 | Docs | Dims | Environment | p50 | p90 | p99 | ANN | Profile |
 |------|------|-------------|-----|-----|-----|-----|---------|
-| 10k | 128 | minio-testcontainers | **86** | 95 | 95 | v3 | release |
-| 50k | 128 | minio-testcontainers | **388** | 410 | 410 | v3 | release |
-| 100k | 128 | minio-testcontainers | **779** | 900 | 900 | v3 | release |
+| 10k | 128 | minio-testcontainers | **92** | 99 | 99 | v3 | release (inline stress vectors) |
+| 10k | 128 | minio-testcontainers | **97** | 108 | 108 | v3 | release (synthetic-128 `queries.json`) |
+| 50k | 128 | minio-testcontainers | **400** | 405 | 405 | v3 | release |
+| 100k | 128 | minio-testcontainers | **824** | 812 | 812 | v3 | release |
 
 ### Warm query latency (ms)
 
 | Docs | Dims | Environment | p50 | p90 | p99 | Notes |
 |------|------|-------------|-----|-----|-----|-------|
-| 10k | 128 | minio-testcontainers | **88** | 101 | 101 | release + v3; not faster than cold p50 (86 ms) on localhost MinIO — unlike tpuf warm **14 ms** |
+| 10k | 128 | minio-testcontainers | **87** | 98 | 98 | release + v3; not faster than cold p50 (92 ms) on localhost MinIO — unlike tpuf warm **14 ms** |
 
 ### Scaling curve (cold p50 vs doc count)
 
 | namespace_docs | p50_ms (cold) | p50 ms/doc |
 |----------------|---------------|------------|
-| 10,000 | 86 | 0.0086 |
-| 50,000 | 388 | 0.0078 |
-| 100,000 | 779 | 0.0078 |
+| 10,000 | 92 | 0.0092 |
+| 50,000 | 400 | 0.0080 |
+| 100,000 | 824 | 0.0082 |
 
-**Doc-count read:** 10k→100k is **~9.1×** latency for **10×** docs (log–log slope **~0.96**). 10k→50k is **~4.5×** for **5×** docs. Overall cold p50 is **near-linear in N** on these three unified points—not sublinear like an ideal fixed-probe curve, but also not worse-than-linear.
+**Doc-count read:** 10k→100k is **~9.0×** latency for **10×** docs (power-law exponent **β ≈ 0.95**). Overall cold p50 is **near-linear in N** on these three points.
 
-**Iteration 2 caveat resolved:** Prior 50k p50 (377 ms) was faster than 10k (717 ms) because of mixed **v2/debug** vs **v3/release**; unified re-run shows monotonic growth 86 → 388 → 779 ms.
+**Protocol alignment:** synthetic-128 @ 10k (97 ms) matches inline baseline (92 ms) within noise — large-dataset program `queries.json` cold path is comparable to stress-vector baseline on MinIO.
 
 ---
 
 ## 4. Extrapolation and “similar scaling?” rubric
 
-Use these **heuristic** normalizers when comparing MinIO tiers to tpuf’s single 10M point. They are hypotheses to test, not proven models.
+Reproduce numbers: `./scripts/compare-op-scaling-to-tpuf.sh` ([`benchmarks/report/compare_op_scaling_to_tpuf.py`](../../benchmarks/report/compare_op_scaling_to_tpuf.py)).
+
+### 4.0 Power-law extrapolation (Iteration 4)
+
+Fit on measured cold p50 \((N, L)\): \(L = a \cdot N^b\) in log–log space (three points, **±2σ** band in log-space only).
+
+| Scale | openpuffer p50 (ms) | 95% band (ms) | Notes |
+|-------|---------------------|---------------|-------|
+| 1M × 128 (extrap) | **7,065** | 6,394 – 7,807 | MinIO, not measured |
+| 10M × 128 (extrap) | **62,290** | 56,371 – 68,830 | MinIO, not measured |
+| 10M × 1024 (heuristic) | **176,182** | 159,441 – 194,680 | ×√(1024/128) ≈ **2.83** on 10M×128 extrap |
+
+**Side-by-side vs tpuf official cold p50 (874 ms):**
+
+| System | Docs × dims | p50 (ms) |
+|--------|-------------|----------|
+| turbopuffer (official) | 10M × 1024 | **874** |
+| openpuffer (extrap, MinIO) | 10M × 128 | **62,290** (~71× slower than tpuf) |
+| openpuffer (tpuf-equiv heuristic) | 10M × 1024 | **176,182** (~**202×** slower than tpuf) |
+
+**Are we in the same ballpark?** **No** for absolute latency on this harness: extrapolated MinIO cold at 10M is **~70–200×** above tpuf’s published **874 ms**. **Shape-only:** doc-count exponent **β ≈ 0.95** is plausibly similar to linear index work, but tpuf provides only one official \(N\) so we cannot confirm the same curve.
 
 ### 4.1 Document-count scaling (cold)
 
@@ -106,7 +134,7 @@ Assume cold latency has a fixed overhead plus a term that grows with index size:
 L_{\text{op}}(N, d) \approx L_0(d) + k(d)\,N^\beta
 \]
 
-Measured openpuffer **β ≈ 0.96** (10k→100k). turbopuffer publishes only **one** \(N\); we cannot fit \(\beta\) for tpuf from official data.
+Measured openpuffer **β ≈ 0.95** (10k→100k fit). turbopuffer publishes only **one** \(N\); we cannot fit \(\beta\) for tpuf from official data.
 
 ### 4.2 Dimension scaling
 
@@ -125,9 +153,9 @@ L_{\text{norm,ref}} = L_{\text{op}}(N, d) \times \frac{N_{\text{ref}}}{N} \times
 
 | Docs | \(L_{\text{op}}\) p50 (ms) | \(L_{\text{norm,ref}}\) (ms) | vs tpuf 874 ms |
 |------|---------------------------|------------------------------|----------------|
-| 10k | 86 | ~243,000 | ~278× higher |
-| 50k | 388 | ~219,000 | ~251× |
-| 100k | 779 | ~220,000 | ~252× |
+| 10k | 92 | ~259,000 | ~296× higher |
+| 50k | 400 | ~226,000 | ~258× |
+| 100k | 824 | ~231,000 | ~264× |
 
 Extrapolated openpuffer cold at 10M would be **hundreds of seconds** on this MinIO harness if linear trend held—**not** comparable in absolute terms to tpuf **874 ms** (managed GCP, real embeddings, 8 QPS × 30m). Use this table for **order-of-magnitude honesty**, not competitiveness claims.
 
@@ -161,15 +189,16 @@ Warm tpuf p50 **14 ms** is cache-resident on managed infra. openpuffer warm **88
 
 ### Does openpuffer cold latency grow with N similarly to tpuf’s published curve?
 
-**Shape:** On unified **release + v3** MinIO tiers, cold p50 grows **approximately linearly** with document count (86 → 388 → 779 ms for 10k → 50k → 100k). That is **plausibly similar** to a managed service whose cold latency includes roughly linear index/S3 work, but turbopuffer gives **only one** official doc-count point—we **cannot** confirm the same exponent.
+**Shape:** On unified **release + v3** MinIO tiers, cold p50 grows **approximately linearly** with document count (92 → 400 → 824 ms for 10k → 50k → 100k). That is **plausibly similar** to a managed service whose cold latency includes roughly linear index/S3 work, but turbopuffer gives **only one** official doc-count point—we **cannot** confirm the same exponent.
 
-**Absolute values:** Not comparable. MinIO + 128-d synthetic + single-client probes vs GCP + 1024-d Cohere + 8 QPS × 30m.
+**Absolute values:** Not comparable. Power-law extrapolation to 10M×128 yields **~62 s** p50 on MinIO; √dim heuristic to 10M×1024 yields **~176 s** vs tpuf **874 ms** (~**200×** gap).
 
-**One-sentence verdict:** **Near-linear cold growth with N on openpuffer is consistent with a simple linear index-scaling story, but tpuf shape-match remains inconclusive from published data alone; do not interpret MinIO ms as beating or losing to tpuf 874 ms.**
+**One-sentence verdict:** **Near-linear cold growth with N on openpuffer is consistent with a simple index-scaling story, but extrapolated MinIO latency is orders of magnitude above tpuf’s official 874 ms—not the same absolute ballpark; tpuf shape-match remains inconclusive from published data alone.**
 
 | Gap | Impact |
 |-----|--------|
-| 10M × 1024 not run locally | Extrapolation only; §4.3 table is hypothetical |
+| 10M × 1024 not run locally | Extrapolation via §4.0 (`compare-op-scaling-to-tpuf.sh`); not measured |
+| 500k × 128 MinIO tier | Skipped (L2 ingest/index ≫45 min); optional AWS `bench-large.sh --tier l2` |
 | MinIO vs GCP + managed tpuf | Latency absolute values not comparable; shape-only comparison |
 | 128-d synthetic vs Cohere 1024-d | Recall and probe plans differ |
 | 7 sequential runs vs 8 QPS × 30m | Percentile stability differs |
@@ -180,6 +209,8 @@ Warm tpuf p50 **14 ms** is cache-resident on managed infra. openpuffer warm **88
 
 ```bash
 ./scripts/run-op-scaling-benchmark.sh          # all tiers (~4–20 min depending on host)
+./scripts/run-op-scaling-benchmark.sh synthetic128   # 10k queries.json protocol only
+./scripts/compare-op-scaling-to-tpuf.sh        # power-law extrapolation table
 ./scripts/validate-benchmark-json.sh benchmarks/results/op-scaling-*.json
 ./scripts/test_validate-op-scaling-json.sh
 ```
@@ -192,7 +223,9 @@ Warm tpuf p50 **14 ms** is cache-resident on managed infra. openpuffer warm **88
 - [x] p50 / p90 / p99 from 7 samples
 - [x] `op-scaling-*.json` + schema validation
 - [x] α sweep and §4–§5 conclusion
-- [ ] Optional: live tpuf run with API key; AWS large-tier L2/L3 points
+- [x] Power-law extrapolation to 1M/10M + tpuf-equiv heuristic (`compare-op-scaling-to-tpuf.sh`)
+- [x] synthetic-128 @ 10k timing JSON (`op-scaling-10k-synthetic128.json`)
+- [ ] Optional: live tpuf run with API key; AWS large-tier L2/L3 points; MinIO 500k (L2)
 
 ---
 

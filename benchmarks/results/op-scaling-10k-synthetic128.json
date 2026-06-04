@@ -1,0 +1,28 @@
+{
+  "schema_version": "op_scaling_v1",
+  "timestamp_utc": "2026-06-04T23:13:52Z",
+  "git_commit": "382fbda919db36b005f98a04c104e15d465d2dc3",
+  "environment": "minio-testcontainers",
+  "path": "cold",
+  "namespace_docs": 10000,
+  "dimensions": 128,
+  "p50_ms": 97,
+  "p90_ms": 108,
+  "p99_ms": 108,
+  "storage_roundtrips": 3,
+  "recall_at_10": 1.0,
+  "cold_query_runs": 7,
+  "ann_version": 3,
+  "cargo_profile": "release",
+  "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate -- --nocapture",
+  "query_latencies_ms": [
+    100,
+    100,
+    96,
+    88,
+    97,
+    108,
+    87
+  ],
+  "notes": "synthetic-128 G2 gate @ 10k docs; queries.json cold protocol. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_10k_synthetic_128_workload_gate -- --nocapture"
+}

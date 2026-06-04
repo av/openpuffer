@@ -37,9 +37,13 @@ write_op_scaling_json() {
   local path_kind="$2"
   local bench_json="$3"
   local harness="$4"
-  local out="$RESULTS_DIR/op-scaling-${tier_label}.json"
+  local out
   if [[ "$path_kind" == "warm" ]]; then
     out="$RESULTS_DIR/op-scaling-10k-warm.json"
+  elif [[ "$tier_label" == "10k-synthetic128" ]]; then
+    out="$RESULTS_DIR/op-scaling-10k-synthetic128.json"
+  else
+    out="$RESULTS_DIR/op-scaling-${tier_label}.json"
   fi
 
   python3 - "$tier_label" "$path_kind" "$bench_json" "$harness" "$out" "$GIT_COMMIT" "$TIMESTAMP_UTC" <<'PY'
@@ -56,7 +60,7 @@ p90 = int(bench.get("p90_query_latency_ms", p50))
 p99 = int(bench.get("p99_query_latency_ms", p90))
 ann = int(bench.get("ann_version", 3))
 
-doc_key = {"10k": 10_000, "50k": 50_000, "100k": 100_000}.get(tier)
+doc_key = {"10k": 10_000, "50k": 50_000, "100k": 100_000, "10k-synthetic128": 10_000}.get(tier)
 if doc_key and docs != doc_key:
     raise SystemExit(f"namespace_docs {docs} != expected {doc_key} for tier {tier}")
 
@@ -96,6 +100,18 @@ run_tier_10k_cold() {
   json="$(extract_bench_json "$log")"
   write_op_scaling_json 10k cold "$json" \
     "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_10k_baseline -- --nocapture"
+  rm -f "$log"
+}
+
+run_tier_10k_synthetic128() {
+  local log
+  log="$(mktemp)"
+  echo "run-op-scaling: 10k synthetic-128 workload gate..."
+  cargo test --release -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate -- --nocapture 2>&1 | tee "$log"
+  local json
+  json="$(grep -E '"benchmark":"cold_10k_synthetic128"' "$log" | tail -1)"
+  write_op_scaling_json 10k-synthetic128 cold "$json" \
+    "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate -- --nocapture"
   rm -f "$log"
 }
 
@@ -146,6 +162,7 @@ build_release
 ran=0
 run_requested() {
   local tier="$1"
+  shift
   if $want_all; then
     return 0
   fi
@@ -174,10 +191,14 @@ if run_requested warm "$@"; then
   run_tier_10k_warm
   ((ran++)) || true
 fi
+if run_requested synthetic128 "$@"; then
+  run_tier_10k_synthetic128
+  ((ran++)) || true
+fi
 
 if [[ "$ran" -eq 0 ]]; then
   echo "run-op-scaling: no tiers matched args: $*" >&2
-  echo "usage: $0 [10k] [50k] [100k] [warm]" >&2
+  echo "usage: $0 [10k] [50k] [100k] [warm] [synthetic128]" >&2
   exit 1
 fi
 

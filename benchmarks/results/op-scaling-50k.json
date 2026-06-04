@@ -1,14 +1,14 @@
 {
   "schema_version": "op_scaling_v1",
-  "timestamp_utc": "2026-06-04T23:03:32Z",
-  "git_commit": "256d46eeb1e9a4641f7f1278d45b4cbab1ac0fa2",
+  "timestamp_utc": "2026-06-04T23:13:52Z",
+  "git_commit": "382fbda919db36b005f98a04c104e15d465d2dc3",
   "environment": "minio-testcontainers",
   "path": "cold",
   "namespace_docs": 50000,
   "dimensions": 128,
-  "p50_ms": 393,
-  "p90_ms": 435,
-  "p99_ms": 435,
+  "p50_ms": 400,
+  "p90_ms": 434,
+  "p99_ms": 434,
   "storage_roundtrips": 3,
   "recall_at_10": 1.0,
   "cold_query_runs": 7,
@@ -16,13 +16,13 @@
   "cargo_profile": "release",
   "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F large_stress --test stress_50k fifty_thousand_docs_v3_cold_probed_validation -- --ignored --nocapture",
   "query_latencies_ms": [
-    433,
-    435,
-    419,
-    388,
-    393,
-    367,
-    388
+    400,
+    434,
+    424,
+    390,
+    379,
+    412,
+    385
   ],
-  "notes": "Unified scaling run 2026-06-04T23:03:32Z release+v3"
+  "notes": "Unified scaling run 2026-06-04T23:13:52Z release+v3"
 }

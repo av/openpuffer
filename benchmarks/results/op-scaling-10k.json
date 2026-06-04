@@ -1,12 +1,12 @@
 {
   "schema_version": "op_scaling_v1",
-  "timestamp_utc": "2026-06-04T23:03:32Z",
-  "git_commit": "256d46eeb1e9a4641f7f1278d45b4cbab1ac0fa2",
+  "timestamp_utc": "2026-06-04T23:13:52Z",
+  "git_commit": "382fbda919db36b005f98a04c104e15d465d2dc3",
   "environment": "minio-testcontainers",
   "path": "cold",
   "namespace_docs": 10000,
   "dimensions": 128,
-  "p50_ms": 89,
+  "p50_ms": 92,
   "p90_ms": 99,
   "p99_ms": 99,
   "storage_roundtrips": 3,
@@ -16,13 +16,13 @@
   "cargo_profile": "release",
   "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_10k_baseline -- --nocapture",
   "query_latencies_ms": [
-    99,
-    89,
-    89,
-    83,
+    95,
+    93,
     92,
-    74,
-    87
+    99,
+    78,
+    80,
+    84
   ],
   "notes": "Probed cold load on MinIO. Regenerate: OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench bench_cold_10k_baseline -- --nocapture"
 }
