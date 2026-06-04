@@ -405,6 +405,10 @@
 
 # bench-large (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A1–A5, G1/G6)
 
+- label: benchmarks/README.md hub documents directory layout JSON commit policy operator quick-start and script index
+  command: test -f benchmarks/README.md && grep -q 'verify-large-benchmark-program' benchmarks/README.md && grep -q 'run-large-benchmark-program' benchmarks/README.md && grep -q 'large-aws-' benchmarks/README.md && grep -q 'schema-minio' benchmarks/README.md && grep -q 'Do not commit' benchmarks/README.md && grep -q 'benchmarks/README.md' docs/BENCHMARKS.md && grep -q 'benchmarks/README.md' README.md
+  tags: [spec, bench-large, bench-tpuf, implemented]
+
 - label: synthetic-128 L1 workload manifest and queries committed with seed 42 num_docs 100k dim 128 recall_defaults num=20 top_k=10
   command: test -f benchmarks/workloads/synthetic-128/l1-100k/manifest.json && test -f benchmarks/workloads/synthetic-128/l1-100k/queries.json && python3 -c "import json; m=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/manifest.json')); q=json.load(open('benchmarks/workloads/synthetic-128/l1-100k/queries.json')); assert m['seed']==42 and m['num_docs']==100000 and m['dim']==128 and q['recall_defaults']=={'num':20,'top_k':10,'vector_field':'embedding'} and q['cold_query_protocol']['runs']==7"
   tags: [spec, bench-large, implemented]

@@ -83,7 +83,7 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32 # parallel GETs per cold sub-batch (def
 ./scripts/dev-serve.sh
 ```
 
-After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning.
+After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning. Large-dataset comparison harness (workloads, results JSON, operator scripts): [benchmarks/README.md](benchmarks/README.md).
 
 **Recall API** (ANN vs exhaustive on indexed namespace):
 

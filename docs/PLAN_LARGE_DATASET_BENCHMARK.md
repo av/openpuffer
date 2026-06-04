@@ -543,7 +543,7 @@ Ordered work to make this plan one-command reproducible:
 | [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) | G2 MinIO test subset | (no comparison JSON) |
 | [`run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) | G2 → G3 → G4 → 3.3 → G5 dry-run (optional `--warm`, `--measured-report`) | All tier artifacts + report skeleton |
 
-A1–A6 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
+A1–A6 are in repo; operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46). **Unified hub:** [`benchmarks/README.md`](../benchmarks/README.md) (directory layout, JSON commit policy, script index, verify → dry-run → EC2 quick-start). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
 
 Report fixtures (dry-run only, **not** live AWS): `benchmarks/report/fixtures/large-aws-l1.json`, `tpuf-l1.json`. Exemplar layout: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`](reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md) (`NOT MEASURED`).
 

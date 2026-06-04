@@ -2,6 +2,8 @@
 
 Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md). Work is fact-driven: `@spec` facts under `index/ann` and `query/cold` in `.facts` are checked with `facts check --tags cold,ann`.
 
+**Directory hub** (layout, committed vs operator JSON, script index): [`benchmarks/README.md`](../benchmarks/README.md).
+
 For the **large-dataset turbopuffer comparison program** ([PLAN_LARGE_DATASET_BENCHMARK.md](PLAN_LARGE_DATASET_BENCHMARK.md)), run all offline harness gates in one command:
 
 ```bash
