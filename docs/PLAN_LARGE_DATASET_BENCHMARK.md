@@ -729,7 +729,13 @@ Use existing gates from [BENCHMARKS.md](BENCHMARKS.md) at the tier you ran:
 
 After the report is accepted:
 
-- Replace “manual gate pending” / “product reference” rows in [Maturity vs TurboPuffer](COMPARISON.md#maturity-vs-turbopuffer-measured) with measured tpuf + openpuffer AWS numbers.
+```bash
+./scripts/fill-comparison-from-report.sh --report docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md
+```
+
+Refuses `NOT MEASURED` dry-run reports unless `--allow-fixture` (exemplar harness only). Copies the L1 **Results** table (and overlap from **Correctness** when present) into `docs/COMPARISON.md` markers `comparison-l1-*`.
+
+- Replace “manual gate pending” / “product reference” rows in [Maturity vs TurboPuffer](COMPARISON.md#maturity-vs-turbopuffer-measured) with measured tpuf + openpuffer AWS numbers (manual or follow-up edit).
 - Link the report and JSON paths.
 - Keep honest gaps (auth, multi-tenant, true SPFresh, write throughput).
 

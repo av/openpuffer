@@ -66,6 +66,9 @@ step "render-report offline tests"
 ./scripts/test_render-report-measured.sh
 ./scripts/test_render-report-partial.sh
 
+step "fill-comparison-from-report (exemplar dry-run)"
+./scripts/test_fill-comparison-from-report.sh
+
 step "shellcheck benchmark + report/gates scripts"
 ./scripts/test-shellcheck-benchmark-scripts.sh
 

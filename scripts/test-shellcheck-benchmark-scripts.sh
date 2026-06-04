@@ -23,6 +23,8 @@ for pattern in \
   scripts/lib/*large* \
   scripts/lib/estimate-large-benchmark-cost.sh \
   scripts/render-report.sh \
+  scripts/fill-comparison-from-report.sh \
+  scripts/test_fill-comparison-from-report.sh \
   scripts/run-id-overlap* \
   scripts/run-minio-correctness-gates.sh \
   scripts/test_render-report*.sh \

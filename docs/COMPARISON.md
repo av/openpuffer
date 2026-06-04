@@ -50,7 +50,7 @@ Mirrors [PLAN § Next operator actions](PLAN_LARGE_DATASET_BENCHMARK.md#next-ope
 | **2** | **Unset** MinIO dev endpoint (`OPENPUFFER_S3_ENDPOINT`); `./scripts/preflight-aws-ec2.sh` then `./scripts/run-aws-large-benchmark.sh --tier l1` | `benchmarks/results/large-aws-l1.json` (+ ingest sidecar) |
 | **3** | Export `TURBOPUFFER_API_KEY` (test org) and `TURBOPUFFER_REGION=aws-us-east-1`; `./scripts/preflight-tpuf.sh --tier l1` then `./scripts/run-tpuf-large-benchmark.sh --tier l1` | `benchmarks/results/tpuf-l1.json` |
 | **4** | After both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` | `benchmarks/results/id-overlap-l1.json` (Phase 3.3) |
-| **5** | `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); copy measured rows into [§ L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf); add `@spec` facts for live JSON | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
+| **5** | `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); `./scripts/fill-comparison-from-report.sh --report docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md`; add `@spec` facts for live JSON | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` + [§ L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf) |
 
 Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (MinIO endpoint / missing tpuf key). EC2 copy-paste: [OPERATOR_RUNBOOK_QUICK.md](../benchmarks/OPERATOR_RUNBOOK_QUICK.md).
 
@@ -68,15 +68,19 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 ./scripts/run-tpuf-large-benchmark.sh --tier l1   # step 3 (G4)
 ./scripts/run-id-overlap-spotcheck.sh --tier l1   # step 4
 ./scripts/run-large-benchmark-program.sh --tier l1 --measured-report   # step 5 (or render-report.sh)
-# Then fill § L1 measured rows below from the report (Phase 7.3)
+# Then publish § L1 measured rows (Phase 7.3):
+./scripts/fill-comparison-from-report.sh --report docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md
 ```
 
 ---
 
 ### L1 @ 100k — measured rows (AWS + managed tpuf)
 
+<!-- comparison-l1-status:start -->
 **Status:** rows below are **placeholders** until operators commit live `large-aws-l1.json` and `tpuf-l1.json` and accept a Phase 7 report. **Do not** substitute MinIO CI numbers (`nightly-100k.json`, etc.) — those are G2/correctness gates only ([`BENCHMARKS.md`](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46)).
+<!-- comparison-l1-status:end -->
 
+<!-- comparison-l1-rows:start -->
 | Metric | openpuffer (AWS) | turbopuffer | Ratio (op/tpuf) | Source |
 |--------|------------------|-------------|-------------------|--------|
 | Ingest wall time (s) | _pending_ | _pending_ | _pending_ | `large-aws-l1.json` / `tpuf-l1.json` |
@@ -90,8 +94,11 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 | `candidates_ratio` | _pending_ | _pending_ | _pending_ | both where exposed |
 | `index_object_count` | _pending_ | n/a | — | openpuffer S3 listing |
 | Spot-check overlap@10 (10 queries) | _pending_ | _pending_ | — | `id-overlap-l1.json` (Phase 3.3) |
+<!-- comparison-l1-rows:end -->
 
+<!-- comparison-l1-report:start -->
 **Accepted report:** _none yet_ — path will be `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` after first live run ([Phase 7](PLAN_LARGE_DATASET_BENCHMARK.md#phase-7--comparison-report-deliverable)).
+<!-- comparison-l1-report:end -->
 
 **Dry-run table shape (fixtures, for harness review only):** [`scripts/render-report.sh --dry-run`](../scripts/render-report.sh) writes a skeleton under `docs/reports/` using `benchmarks/report/fixtures/` — **not** authoritative for this matrix.
 
