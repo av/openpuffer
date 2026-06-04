@@ -593,7 +593,7 @@ render_results_table() {
 
   local op_p50 op_p95 tpuf_p50 tpuf_p95
   local op_warm_p50 op_warm_p95 tpuf_warm_p50 tpuf_warm_p95
-  local op_recall tpuf_recall op_rt tpuf_rt op_cold tpuf_cold op_ratio tpuf_ratio op_idx tpuf_idx
+  local op_recall tpuf_recall op_rt op_cold op_ratio tpuf_ratio op_idx
   local op_ingest tpuf_ingest op_indexed tpuf_indexed
   local op_index_wait op_batch_p50 tpuf_docs_ps
   local warm_protocol_note=""
@@ -609,13 +609,10 @@ render_results_table() {
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
   tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
   op_rt="$(jq_field "$op_file" '.storage_roundtrips')"
-  tpuf_rt="$(jq_field "$tpuf_file" '.storage_roundtrips')"
   op_cold="$(jq_field "$op_file" '.cold_s3_keys_fetched')"
-  tpuf_cold="$(jq_field "$tpuf_file" '.cold_s3_keys_fetched')"
   op_ratio="$(jq_field "$op_file" '.candidates_ratio')"
   tpuf_ratio="$(jq_field "$tpuf_file" '.candidates_ratio')"
   op_idx="$(jq_field "$op_file" '.index_object_count')"
-  tpuf_idx="$(jq_field "$tpuf_file" '.index_object_count')"
   op_ingest="$(ingest_field "$op_file" 'ingest_elapsed_secs' 'ingest_timing.upsert_wall_sec')"
   tpuf_ingest="$(jq_field "$tpuf_file" '.ingest_elapsed_secs')"
   op_index_wait="$(ingest_field "$op_file" 'index_wait_sec' 'ingest_timing.index_wait_sec')"
@@ -818,7 +815,7 @@ EOF
 
 render_appendix_row() {
   local tier="$1" op_path="$2" tpuf_path="$3"
-  printf '| %s | `%s` | `%s` |\n' "$tier" "${op_path#$ROOT/}" "${tpuf_path#$ROOT/}"
+  printf "| %s | \`%s\` | \`%s\` |\n" "$tier" "${op_path#"$ROOT"/}" "${tpuf_path#"$ROOT"/}"
 }
 
 render_appendix_json_blocks() {
@@ -832,13 +829,13 @@ render_appendix_json_blocks() {
 
 Embedded copies for audit (secrets redacted; large \`cold_runs\` / \`warm_runs\` arrays omitted). Canonical files remain under \`benchmarks/results/\`.
 
-#### openpuffer — \`${op_path#$ROOT/}\`
+#### openpuffer — \`${op_path#"$ROOT"/}\`
 
 \`\`\`json
 ${op_blob}
 \`\`\`
 
-#### turbopuffer — \`${tpuf_path#$ROOT/}\`
+#### turbopuffer — \`${tpuf_path#"$ROOT"/}\`
 
 \`\`\`json
 ${tpuf_blob}

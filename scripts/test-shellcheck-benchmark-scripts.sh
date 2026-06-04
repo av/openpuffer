@@ -20,7 +20,11 @@ for pattern in \
   scripts/*large* \
   scripts/*benchmark* \
   scripts/preflight-* \
-  scripts/lib/*large*; do
+  scripts/lib/*large* \
+  scripts/render-report.sh \
+  scripts/run-id-overlap* \
+  scripts/run-minio-correctness-gates.sh \
+  scripts/test_render-report*.sh; do
   for f in $pattern; do
     [[ -f "$f" ]] || continue
     scripts+=("$f")

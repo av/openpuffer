@@ -64,7 +64,7 @@ step "render-report offline tests"
 ./scripts/test_render-report.sh
 ./scripts/test_render-report-measured.sh
 
-step "shellcheck benchmark harness scripts"
+step "shellcheck benchmark + report/gates scripts"
 ./scripts/test-shellcheck-benchmark-scripts.sh
 
 step "ingest/bench JSON schema tests"
