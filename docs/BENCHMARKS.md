@@ -221,7 +221,7 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32
 # preflight only: ./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1
 ```
 
-See [§ G3 — EC2 + AWS S3 operator setup](#g3--ec2--aws-s3-operator-setup) for instance type, IAM, security, first-time checklist, and index-lag troubleshooting.
+See [§ G3 — EC2 + AWS S3 operator setup](#g3-ec2-aws-s3-operator-setup) for instance type, IAM, security, first-time checklist, and index-lag troubleshooting.
 
 **G4 one-shot (API key in same region as AWS bench):**
 
@@ -235,7 +235,7 @@ export TURBOPUFFER_BENCH_DELETE_FIRST=1   # clear namespace before ingest (re-ru
 # preflight only: ./scripts/run-tpuf-large-benchmark.sh --preflight-only --tier l1
 ```
 
-See [§ G4 — turbopuffer operator setup](#g4--turbopuffer-operator-setup) for test org, billing guardrails, and artifact redaction.
+See [§ G4 — turbopuffer operator setup](#g4-turbopuffer-operator-setup) for test org, billing guardrails, and artifact redaction.
 
 Shared S3/tpuf/workload checks live in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh). `bench-large.sh` refuses to write `large-aws-*.json` from a MinIO endpoint unless `OPENPUFFER_BENCH_ALLOW_MINIO_RESULTS=1` or the results path contains `minio` / `example` / `schema`.
 
@@ -280,7 +280,7 @@ Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only
 
 **Index timeouts:** when `OPENPUFFER_INGEST_INDEX_TIMEOUT_SEC` / `OPENPUFFER_BENCH_INDEX_TIMEOUT_SEC` / `TURBOPUFFER_BENCH_INDEX_TIMEOUT_SEC` are unset, harnesses pick tier defaults above (`large_preflight_tier_index_timeout_sec` in [`scripts/lib/large-benchmark-preflight.sh`](../scripts/lib/large-benchmark-preflight.sh)). Raise on slow hosts or if `index_cursor` lags after ingest.
 
-**Cost / API volume (tpuf):** same cold/filter/hybrid query count as L1; recall billing scales with docs ([§ G4 billing](#billing-and-cost-guardrails-l1--l2--l3)). L3 optional `recall_defaults.num=10` with methodology note in the report.
+**Cost / API volume (tpuf):** same cold/filter/hybrid query count as L1; recall billing scales with docs ([§ G4 billing](#billing-and-cost-guardrails-l1-l2-l3)). L3 optional `recall_defaults.num=10` with methodology note in the report.
 
 **End-to-end dry-run (offline):**
 
@@ -629,7 +629,7 @@ Manual live comparison (G3→G4→G5) via Actions is **opt-in** and **off by def
 3. Leave **`enable_live_run`** = `false` first run → validates secrets only (no spend).
 4. Set **`enable_live_run`** = `true` only after EC2/region/fairness review (prefer **self-hosted runner** in `OPENPUFFER_S3_REGION` over `ubuntu-latest`).
 
-Workflow: [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml). EC2 + instance profile remains the recommended path: [§ G3 — EC2 + AWS S3](#g3--ec2--aws-s3-operator-setup).
+Workflow: [`.github/workflows/benchmark-large-live.yml`](../.github/workflows/benchmark-large-live.yml). EC2 + instance profile remains the recommended path: [§ G3 — EC2 + AWS S3](#g3-ec2-aws-s3-operator-setup).
 
 ### GitHub Actions — nightly regression (G6)
 
@@ -783,7 +783,7 @@ When gates fail or latencies look wrong, work in this order ([full detail in pla
 
 | Symptom | Check | Fix |
 |---------|-------|-----|
-| `storage_roundtrips > 4`, `cold_s3_keys_fetched` ≫ probed clusters | `performance.ann_probed_clusters`, `OPENPUFFER_ANN_*_PROBE`, `preferred_ann_version`; optional `GET /metrics` if built with `--features metrics` ([§ Optional Prometheus scrape](#optional-prometheus-scrape-during-bench-large-openpuffer-only)) | Re-index with v3; tune probes; see [ANN probe tuning](#ann-probe-tuning-serve--indexer) |
+| `storage_roundtrips > 4`, `cold_s3_keys_fetched` ≫ probed clusters | `performance.ann_probed_clusters`, `OPENPUFFER_ANN_*_PROBE`, `preferred_ann_version`; optional `GET /metrics` if built with `--features metrics` ([§ Optional Prometheus scrape](#optional-prometheus-scrape-during-bench-large-openpuffer-only)) | Re-index with v3; tune probes; see [ANN probe tuning](#ann-probe-tuning-serve-indexer) |
 
 #### 5.3 High latency, low roundtrips
 
@@ -958,7 +958,7 @@ Non-ignored bench tests: `bench_cold_10k_baseline`, `bench_cold_10k_warm_vs_cold
 
 ### Nightly (100k + lib ignored) — job `bench-100k`
 
-Scheduled **03:00 UTC** in `nightly-stress.yml` (parallel with `large-dataset-program`; see [§ G6 nightly job map](#github-actions--nightly-regression-g6)):
+Scheduled **03:00 UTC** in `nightly-stress.yml` (parallel with `large-dataset-program`; see [§ G6 nightly job map](#github-actions-nightly-regression-g6)):
 
 ```bash
 cargo test --release -F bench --test bench_cold -- --ignored --nocapture
@@ -1013,7 +1013,7 @@ Prints diffable JSON with `"benchmark": "cold_50k_v3"`. Typical dev machine (**r
 |--------|----------------------------------------|
 | **WAL commit ordering** | Each batch is one durable WAL segment; the server enforces **~1 commit/s/namespace** via `min_commit_interval` ([ARCHITECTURE.md § limits](ARCHITECTURE.md#limits)). `wal_commit_seq` advances **monotonically** with commits. Overlapping upserts still serialize at the commit lock but add retry/CAS noise and do not increase sustainable throughput — they only obscure which batch advanced `wal_commit_seq`. |
 | **Indexer lag observability** | `index_cursor` trails `wal_commit_seq` while the background indexer drains WAL. Sequential ingest + manifest sleep keeps **batch N → commit N → (optional) lag N** aligned with `ingest_timing.batch_runs[]`, [`diagnose-index-lag.sh`](../scripts/diagnose-index-lag.sh), and **`OPENPUFFER_INGEST_START_BATCH`** resume (1-based batch index after a failed POST). Parallel ingest would mix lag across commits and make “upsert done, indexer behind” vs “batch 7 failed” indistinguishable without extra instrumentation. |
-| **Benchmark comparability** | Large-tier JSON records per-batch latency and `ingest_batches_per_sec` under the documented cadence. Changing client parallelism without server support would skew `ingest_elapsed_secs` vs tpuf without changing the WAL-limited story ([§ Phase 4 metrics](#phase-4--metrics-matrix)). |
+| **Benchmark comparability** | Large-tier JSON records per-batch latency and `ingest_batches_per_sec` under the documented cadence. Changing client parallelism without server support would skew `ingest_elapsed_secs` vs tpuf without changing the WAL-limited story ([§ Phase 4 metrics](#phase-4-metrics-matrix)). |
 
 **Operational default:** generator order `batch-00001.json` … `batch-NNNNN.json`, **~1.1s** sleep between batches (manifest `ingest_cadence.sleep_seconds_between_batches`), same as [§ 1M ingest cadence](#1m-ingest-cadence).
 
@@ -1148,4 +1148,4 @@ facts check --tags bench-tpuf          # turbopuffer driver + comparison merge (
 facts ll --tags spec          # list program spec facts
 ```
 
-Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` (32) and `bench-tpuf` (15) cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `validate-benchmark-json.sh` (four L1 JSON schemas), `verify-large-benchmark-program.sh`, `preflight-aws-ec2.sh` / `preflight-tpuf.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, `id-overlap-l1.example.json`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program--operator-runbook-phases-46). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
+Large-tier comparison program ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md)): `@spec` facts under tags `bench-large` (32) and `bench-tpuf` (15) cover `generate_synthetic.py`, `ingest-large.sh`, `bench-large.sh`, `validate-benchmark-json.sh` (four L1 JSON schemas), `verify-large-benchmark-program.sh`, `preflight-aws-ec2.sh` / `preflight-tpuf.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-minio-correctness-gates.sh`, `tpuf_driver/run_benchmark.py`, `id-overlap-l1.example.json`, and `render-report.sh`. Operator procedures: [§ Phases 4–6 runbook](#large-dataset-program-operator-runbook-phases-4-6). Live `benchmarks/results/large-aws-*.json` / `tpuf-*.json` on AWS remain manual until operators run ingest + bench.
