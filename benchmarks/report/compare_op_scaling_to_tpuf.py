@@ -285,6 +285,31 @@ def pick_best_model(models: list[ModelFit]) -> ModelFit:
     return max(models, key=lambda m: (m.r2, -m.rmse_ms))
 
 
+def build_extrap_notes(points: list[MeasuredPoint], best: ModelFit) -> list[str]:
+    """Human-readable caveats for EXTRAP_JSON (outlier history, stability)."""
+    p100 = next((p.p50_ms for p in points if p.n == 100_000 and p.label == "100k"), None)
+    notes = [
+        "Fit uses committed op-scaling-*.json (MinIO release+v3). "
+        f"Best model: {best.name}. Not validated on AWS or 1024-d.",
+        "2026-06-05 tier sweep (da45441/9c637d1): cold p50 111/525/813 ms; "
+        "log_linear extrap ~2160 ms @ 10M×128 (~2.5× tpuf 874 ms); √dim ~7×.",
+    ]
+    if p100 is not None and p100 >= 700:
+        notes.append(
+            "SUPERSEDED: linear-only fit on older 86/400/824 ms tiers extrapolated "
+            "~81 s @ 10M×128 (~93× slower)—model choice, not a remeasured 100k outlier."
+        )
+    notes.extend(
+        [
+            "SUPERSEDED: anecdotal ~7 s @ 100k or ~70× @ 10M from debug build or "
+            "host contention—not in committed op-scaling JSON.",
+            "100k stability (2026-06-05, three release runs): p50 813 / 857 / 906 ms "
+            "(median 857, σ≈47 ms, ±6% vs median); committed JSON keeps sweep 813 ms.",
+        ]
+    )
+    return notes
+
+
 def fmt_ms(ms: float) -> str:
     if ms >= 10_000:
         return f"{ms / 1000:.1f}s ({ms:.0f} ms)"
@@ -558,7 +583,9 @@ def main() -> int:
         residuals = [y - (log_a + b * x) for x, y in zip(xs, ys)]
         sigma_log = math.sqrt(sum(r * r for r in residuals) / (len(collapsed) - 2))
 
+    extrap_notes = build_extrap_notes(points, best)
     extrap_json = {
+        "notes": extrap_notes,
         "fit": {
             "best_model": best.name,
             "power_law": power.params,

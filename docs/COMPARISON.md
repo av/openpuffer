@@ -74,7 +74,7 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 
 ### Scaling vs turbopuffer official (MinIO extrapolation)
 
-Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Latest measured cold p50 **111 / 525 / 813 ms**; four-point fit (best **log_linear**) extrapolates **~2.2 s** @ 10M×128 vs tpuf **874 ms** (~2.5×); √dim @ 10M×1024 **~6.1 s** (~7×). Back-solve **~99–137k docs** for 874 ms (model-dependent). **Not** a measured 10M head-to-head. Report: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md`](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md). Reproduce: `make bench-compare-tpuf`.
+Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Latest measured cold p50 **111 / 525 / 813 ms** (100k stability: **813 / 857 / 906**, σ≈47 ms); four-point fit (best **log_linear**) extrapolates **~2.2 s** @ 10M×128 vs tpuf **874 ms** (~**2.5×**, not prior **~70×** / **~81 s** linear-fit story); √dim @ 10M×1024 **~6.1 s** (~7×). **Low confidence** for 10M extrap and tpuf shape (single tpuf point). **Not** validated on AWS or 1024-d. Report: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md`](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md). Reproduce: `make bench-compare-tpuf`.
 
 ---
 

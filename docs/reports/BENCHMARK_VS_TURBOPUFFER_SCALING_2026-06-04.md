@@ -10,7 +10,22 @@
 
 **openpuffer cold p50 on MinIO is still slower than turbopuffer’s published 10M GCP number**, but a fresh **2026-06-05** tier sweep (git `da45441`) shows **sub-linear tail at 100k** (813 ms measured vs ~1054 ms from a 10k+50k linear hold-out) and a **log-linear** four-point fit extrapolates **~2.2 s** cold p50 @ **10M × 128** vs turbopuffer **874 ms** @ **10M × 1024** (~**2.5×** on doc count alone; **~7×** with √dim heuristic to 1024-d). That extrapolation is **illustrative**—only three doc-count tiers exist, 10k/50k moved **+29% / +31%** vs the prior committed run, and environment/dimensionality/fleet differ.
 
-**One-sentence answer:** Measured tiers **111 / 525 / 813 ms** (10k / 50k / 100k) grow roughly with doc count (β ≈ 0.91); extrapolated 10M×128 is **~2.2 s** on this harness vs tpuf **874 ms**—still **not** parity on absolute latency, with **100k faster than a naive linear bridge from 10k+50k** (index objects 72 → 236 → 269; see § scaling tail).
+**One-sentence answer:** Measured tiers **111 / 525 / 813 ms** (10k / 50k / 100k) grow roughly with doc count (β ≈ 0.91); extrapolated 10M×128 is **~2.2 s** on this harness vs tpuf **874 ms** (~**2.5×**, not **~70×**)—still **not** parity on AWS/1024-d/10M measured terms, with **100k faster than a naive linear bridge from 10k+50k** (index objects 72 → 236 → 269; see § scaling tail).
+
+**Superseded (do not cite):** linear-only fit on older **86/400/824 ms** tiers → **~81 s** @ 10M (~**93×** slower); anecdotal **~7 s** @ 100k from debug build or contention.
+
+---
+
+## Confidence
+
+| Claim | Confidence | Why |
+|-------|------------|-----|
+| Measured cold p50 @ 10k–100k × 128 (MinIO) | **High** | Committed `op-scaling-*.json`; release+v3; CI schema gate |
+| 100k sub-linear vs 10k+50k bridge | **Medium** | LOO + bounded `index_object_count`; see § 100k stability |
+| Extrapolated 10M × 128 (~2.2 s, ~2.5× tpuf) | **Low** | Unmeasured; log_linear vs prior linear swings **~2 s** vs **~80 s** |
+| √dim / linear-d @ 10M × 1024 (~7× / ~20×) | **Low** | Heuristics; 128-d synthetic only on openpuffer |
+| turbopuffer doc-count scaling shape | **Low** | Single official cold point at 10M |
+| Head-to-head parity @ 10M | **None** here | MinIO vs GCP; different QPS model |
 
 ---
 
@@ -44,7 +59,19 @@
 
 **Scaling read (10k → 100k):** **~7.3×** latency for **10×** docs → power-law **β ≈ 0.91**; per-doc p50 **~0.008 ms/doc** at 100k.
 
-**Index objects (bench harness, not in `op-scaling-*.json`):** `index_object_count` **72 / 236 / 269** @ 10k / 50k / 100k on this run (all &lt; 500 cap).
+### 100k tier stability (2026-06-05)
+
+Three `run-op-scaling-benchmark.sh 100k` runs (release, same harness):
+
+| Run | p50 (ms) |
+|-----|----------|
+| Tier sweep (`9c637d1`, committed) | **813** |
+| Stability rerun 1 | **857** |
+| Stability rerun 2 | **906** |
+
+**Variance:** min **813**, max **906**, median **857**, σ≈**47 ms** (~±6% vs median). Jitter is host/MinIO noise and per-run ingest layout, not the superseded ~7 s outlier. Extrapolation uses committed sweep **813 ms**.
+
+**Index objects (bench harness, not in `op-scaling-*.json`):** `index_object_count` **72 / 236 / 269** @ 10k / 50k / 100k on tier sweep (all &lt; 500 cap).
 
 **Official turbopuffer reference (not re-measured here):**
 
@@ -96,7 +123,8 @@ Hold-out from a **linear** fit on collapsed tiers predicts **~1054 ms** @ 100k; 
 4. **Load model** — 7 sequential cold samples, not **8 QPS × 30 min**; tail latency and queueing differ.
 5. **Doc-count curve for tpuf** — only **one** official cold point at 10M; cannot fit β for turbopuffer from public data.
 6. **500k tier skipped** — MinIO L2 ingest + index ≫ 45 min on dev host; not in fit set.
-7. **Extrapolation to 10M** — unmeasured; model choice (log_linear vs prior linear fit) swings 10M×128 from **~2 s** to **~80 s** across runs—report both measured tiers and `make bench-compare-tpuf` output, not a single SLO.
+7. **Extrapolation to 10M** — unmeasured; model choice (log_linear vs prior linear fit) swings 10M×128 from **~2 s** to **~80 s**—prior **~81 s / ~93×** narrative is **superseded** by the 2026-06-05 sweep; `EXTRAP_JSON.notes[]` documents this.
+8. **100k rerun variance** — ±6% p50 across three runs; not instability at 10× level.
 
 ---
 

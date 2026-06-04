@@ -62,6 +62,11 @@ if data["ratio_heuristic_vs_tpuf"] < 2:
 models = data.get("models", {})
 if not models or "linear" not in models or "power_law" not in models:
     raise SystemExit("expected models.linear and models.power_law in EXTRAP_JSON")
+notes = data.get("notes")
+if not isinstance(notes, list) or len(notes) < 2:
+    raise SystemExit("expected notes[] with stability/outlier caveats in EXTRAP_JSON")
+if not any("SUPERSEDED" in str(n) for n in notes):
+    raise SystemExit("expected SUPERSEDED outlier note in EXTRAP_JSON notes")
 print(
     f"test_compare-op-scaling-to-tpuf: EXTRAP_JSON ok "
     f"(best={data['fit']['best_model']}, 10M×128={extrap_128} ms, heuristic={extrap_1024} ms)"
