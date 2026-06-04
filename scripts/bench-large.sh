@@ -17,6 +17,8 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/large-benchmark-serve-ready.sh
+source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 
 DRY_RUN=0
 WARM_MODE=0
@@ -220,6 +222,7 @@ run_dry_run() {
   echo "  cold_runs=${COLD_RUNS} primary_query=${PRIMARY_QUERY_NAME}"
   echo "  recall_num=${RECALL_NUM} index_timeout=${INDEX_TIMEOUT_SEC}s"
   echo "  enforce_gates=${ENFORCE_GATES} ann_version=${ANN_VERSION} warm_mode=${WARM_MODE}"
+  echo "  serve_ready_timeout=$(large_benchmark_serve_ready_timeout_sec)s poll=$(large_benchmark_serve_ready_poll_interval_sec)s"
   if [[ "$WARM_MODE" == "1" ]]; then
     echo "  warm_runs=${WARM_RUNS} warm_consistency=${WARM_CONSISTENCY} warm_top_k=${WARM_QUERY_TOP_K}"
     echo "  warm_cache_dir=$(default_warm_cache_dir)"
@@ -259,17 +262,6 @@ run_dry_run() {
   large_preflight_aws_time_estimate "$TIER"
   echo "Full run after ingest: export OPENPUFFER_S3_* then ./scripts/bench-large.sh --tier ${TIER}"
   exit 0
-}
-
-wait_for_health() {
-  for _ in $(seq 1 120); do
-    if curl -sf "${BASE_URL}/health" >/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "serve did not become healthy on ${BASE_URL}/health" >&2
-  return 1
 }
 
 verify_namespace_meta() {

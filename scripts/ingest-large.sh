@@ -28,6 +28,8 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 # shellcheck source=scripts/lib/ingest-large-retry.sh
 source "$ROOT/scripts/lib/ingest-large-retry.sh"
+# shellcheck source=scripts/lib/large-benchmark-serve-ready.sh
+source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -167,6 +169,7 @@ run_dry_run() {
   echo "  seed=${MANIFEST_SEED} embedding_fn=${MANIFEST_EMBEDDING_FN} id_scheme=${MANIFEST_ID_SCHEME}"
   echo "  listen=${LISTEN} ann_version=${ANN_VERSION}"
   echo "  index_timeout=${INDEX_TIMEOUT_SEC}s delete_first=${DELETE_FIRST}"
+  echo "  serve_ready_timeout=$(large_benchmark_serve_ready_timeout_sec)s poll=$(large_benchmark_serve_ready_poll_interval_sec)s"
   echo "  start_batch=${START_BATCH} retry_max=${OPENPUFFER_INGEST_RETRY_MAX:-6} retry_base_ms=${OPENPUFFER_INGEST_RETRY_BASE_MS:-500}"
   if [[ -n "$mf" ]]; then
     echo "  manifest=${mf}"
@@ -180,17 +183,6 @@ run_dry_run() {
   fi
   large_preflight_aws_time_estimate "$TIER"
   exit 0
-}
-
-wait_for_health() {
-  for _ in $(seq 1 120); do
-    if curl -sf "${BASE_URL}/health" >/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "serve did not become healthy on ${BASE_URL}/health" >&2
-  return 1
 }
 
 verify_namespace_meta() {

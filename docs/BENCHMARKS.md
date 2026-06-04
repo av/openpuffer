@@ -301,6 +301,8 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 
 **Indexer not running:** `bench-large.sh` starts `openpuffer serve` unless `OPENPUFFER_BENCH_SKIP_SERVE=1`. If you run `serve` manually, keep one process per namespace during index catch-up.
 
+**Serve not ready before upsert/query:** `ingest-large.sh` / `bench-large.sh` poll `GET /health` or `GET /v1/ready` (either HTTP 2xx) via [`scripts/lib/large-benchmark-serve-ready.sh`](../scripts/lib/large-benchmark-serve-ready.sh). Defaults: `OPENPUFFER_SERVE_READY_TIMEOUT_SEC=120`, `OPENPUFFER_SERVE_READY_POLL_SEC=0.5`. On timeout the error includes last probe status and whether the background `serve` PID is still alive.
+
 **After catch-up:** confirm `index_cursor_eq_wal_commit_seq: true` in `ingest-large-l1.json` / `large-aws-l1.json` before trusting cold p50.
 
 #### EC2 preflight script

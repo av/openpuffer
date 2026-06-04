@@ -74,6 +74,7 @@ step "ingest/bench JSON schema tests"
 ./scripts/test_ingest-timing-schema.sh
 ./scripts/test_ingest-large-retry.sh
 ./scripts/test_bench-large-secondary-schema.sh
+./scripts/test_large-benchmark-serve-ready.sh
 
 step "synthetic_workload_gate (fixture vectors + recall_defaults)"
 cargo test --test synthetic_workload_gate -q
