@@ -110,6 +110,34 @@ git add -f benchmarks/results/tpuf-l1.json benchmarks/results/id-overlap-l1.json
 
 **MinIO schema runs** must keep `environment=minio` and filenames like `large-aws-l1-schema-minio.example.json` — safe for CI and schema facts; **never** paste MinIO latencies into [docs/COMPARISON.md](../docs/COMPARISON.md).
 
+## JSON formatting & git diff
+
+Committed benchmark JSON should be **canonical pretty-print** so `git diff` shows semantic changes only (not whitespace, key order drift, or missing final newlines).
+
+| Mechanism | Role |
+|-----------|------|
+| [`.gitattributes`](../.gitattributes) | `text eol=lf` on all `benchmarks/**/*.json`; `linguist-generated` + `merge=union` on regenerated workload `queries.json` / `manifest.json`; `merge=union` on fixtures and `*.example.json` for parallel tier edits; schemas use normal merge |
+| [`scripts/normalize-benchmark-json.sh`](../scripts/normalize-benchmark-json.sh) | Rewrite (or `--check`) with **jq** (`--indent 2 --ascii-output`) except **`queries.json`**, which uses **Python** `json.dumps` to match [`generate_synthetic.py`](workloads/generate_synthetic.py) float formatting |
+
+Before committing new or edited benchmark JSON:
+
+```bash
+./scripts/normalize-benchmark-json.sh benchmarks/report/fixtures/large-aws-l1.json
+# or normalize the default tracked set:
+./scripts/normalize-benchmark-json.sh
+
+./scripts/normalize-benchmark-json.sh --check   # CI gate (subset in test_normalize-benchmark-json.sh)
+```
+
+After regenerating workloads:
+
+```bash
+python3 benchmarks/workloads/generate_synthetic.py --tier l1
+./scripts/normalize-benchmark-json.sh benchmarks/workloads/synthetic-128/l1-100k/
+```
+
+**Do not** run jq directly on `queries.json` — jq reformats floats (e.g. `5.56e-05` vs `0.0000556…`) and produces noisy diffs. Use the normalize script or the generator only.
+
 ## Operator quick-start
 
 Three steps: **verify locally** → **dry-run the program** → **live on EC2** (AWS + tpuf creds).
@@ -200,6 +228,7 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 | [test_render-report.sh](../scripts/test_render-report.sh) | Offline render-report merge checks |
 | [test_render-report-measured.sh](../scripts/test_render-report-measured.sh) | Measured-mode schema, interpretation, appendix redaction |
 | [validate-benchmark-json.sh](../scripts/validate-benchmark-json.sh) | JSON Schema for fixtures + `*.example.json` (large-aws, tpuf, ingest, id-overlap) |
+| [normalize-benchmark-json.sh](../scripts/normalize-benchmark-json.sh) | Canonical jq/Python pretty-print for committed benchmark JSON (`--check` for CI) |
 | [check-benchmark-artifacts.sh](../scripts/check-benchmark-artifacts.sh) | Git policy: live `large-aws-*` must be `environment=aws-s3`; MinIO only in `*-schema-minio*` / legacy snapshots |
 | [test_ingest-timing-schema.sh](../scripts/test_ingest-timing-schema.sh) | `ingest_timing` / batch_runs JSON shape |
 | [test_bench-large-secondary-schema.sh](../scripts/test_bench-large-secondary-schema.sh) | Filter/hybrid/warm fields in bench JSON |

@@ -131,7 +131,7 @@
       "query_name": "filter-priority-between",
       "query_kind": "filter",
       "latency_ms": 826,
-      "candidates_ratio": 9e-05,
+      "candidates_ratio": 0.00009,
       "storage_roundtrips": 3,
       "result_rows": 9,
       "phase": "cold"
@@ -447,7 +447,7 @@
       "query_name": "filter-priority-between",
       "query_kind": "filter",
       "latency_ms": 874,
-      "candidates_ratio": 9e-05,
+      "candidates_ratio": 0.00009,
       "storage_roundtrips": null,
       "result_rows": 9,
       "phase": "warm"

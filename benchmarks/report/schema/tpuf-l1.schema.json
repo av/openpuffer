@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openpuffer.dev/benchmarks/report/schema/tpuf-l1.schema.json",
-  "title": "turbopuffer tpuf benchmark JSON (L1–L3)",
+  "title": "turbopuffer tpuf benchmark JSON (L1\u2013L3)",
   "description": "Schema for benchmarks/results/tpuf-{l1,l2,l3}*.json and report fixtures (run_benchmark.py output). Tier-specific benchmark id and doc counts are cross-checked in validate-benchmark-json.sh.",
   "type": "object",
   "additionalProperties": true,
@@ -27,80 +27,250 @@
     "cold_query_runs"
   ],
   "properties": {
-    "schema_version": { "const": "large_benchmark_v1" },
-    "generated_at": { "$ref": "#/$defs/utcTimestamp" },
-    "started_at": { "$ref": "#/$defs/utcTimestamp" },
-    "finished_at": { "$ref": "#/$defs/utcTimestamp" },
-    "benchmark": { "type": "string", "pattern": "^cold_tpuf_l[123]$" },
+    "schema_version": {
+      "const": "large_benchmark_v1"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "started_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "finished_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "benchmark": {
+      "type": "string",
+      "pattern": "^cold_tpuf_l[123]$"
+    },
     "environment": {
       "type": "string",
       "pattern": "^turbopuffer:"
     },
-    "tier": { "enum": ["l1", "l2", "l3"] },
-    "workload_dir": { "type": "string", "minLength": 1 },
-    "namespace": { "type": "string", "minLength": 1 },
-    "primary_query": { "type": "string", "minLength": 1 },
-    "namespace_docs": { "type": "integer", "minimum": 1 },
-    "dimensions": { "type": "integer", "minimum": 1 },
-    "seed": { "type": "integer" },
-    "embedding_fn": { "type": "string", "minLength": 1 },
-    "cache_dir": { "type": ["string", "null"] },
-    "consistency": { "type": "string" },
-    "tpuf_region": { "type": "string", "minLength": 1 },
-    "preferred_ann_version": { "type": ["integer", "null"] },
-    "index_cursor_eq_wal_commit_seq": { "type": ["boolean", "null"] },
-    "index_up_to_date": { "type": "boolean" },
-    "index_status": { "type": "string" },
-    "approx_row_count": { "type": ["integer", "null"], "minimum": 0 },
-    "storage_roundtrips": { "type": ["integer", "null"] },
-    "cold_s3_keys_fetched": { "type": ["integer", "null"] },
-    "s3_get_count": { "type": ["integer", "null"] },
-    "s3_get_count_note": { "type": "string" },
-    "p50_query_latency_ms": { "type": "number", "minimum": 0 },
-    "p95_query_latency_ms": { "type": "number", "minimum": 0 },
-    "p50_warm_query_latency_ms": { "type": ["number", "null"], "minimum": 0 },
-    "p95_warm_query_latency_ms": { "type": ["number", "null"], "minimum": 0 },
-    "warm_query_runs": { "type": ["integer", "null"], "minimum": 0 },
-    "warm_consistency": { "type": ["string", "null"] },
-    "warm_protocol": { "type": "string" },
-    "candidates_ratio": { "type": ["number", "null"] },
-    "recall_at_10": { "type": "number", "minimum": 0, "maximum": 1 },
-    "cold_query_runs": { "type": "integer", "minimum": 1 },
+    "tier": {
+      "enum": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "workload_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "namespace": {
+      "type": "string",
+      "minLength": 1
+    },
+    "primary_query": {
+      "type": "string",
+      "minLength": 1
+    },
+    "namespace_docs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dimensions": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "embedding_fn": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cache_dir": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "consistency": {
+      "type": "string"
+    },
+    "tpuf_region": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preferred_ann_version": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "index_cursor_eq_wal_commit_seq": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "index_up_to_date": {
+      "type": "boolean"
+    },
+    "index_status": {
+      "type": "string"
+    },
+    "approx_row_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "storage_roundtrips": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cold_s3_keys_fetched": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "s3_get_count": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "s3_get_count_note": {
+      "type": "string"
+    },
+    "p50_query_latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "p95_query_latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "p50_warm_query_latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "p95_warm_query_latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "warm_query_runs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "warm_consistency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "warm_protocol": {
+      "type": "string"
+    },
+    "candidates_ratio": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "recall_at_10": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "cold_query_runs": {
+      "type": "integer",
+      "minimum": 1
+    },
     "cold_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/cold_run" }
+      "items": {
+        "$ref": "#/$defs/cold_run"
+      }
     },
     "filter_query_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/secondary_query_run" }
+      "items": {
+        "$ref": "#/$defs/secondary_query_run"
+      }
     },
     "hybrid_query_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/secondary_query_run" }
+      "items": {
+        "$ref": "#/$defs/secondary_query_run"
+      }
     },
     "warm_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/warm_run" }
+      "items": {
+        "$ref": "#/$defs/warm_run"
+      }
     },
     "warm_filter_query_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/secondary_query_run" }
+      "items": {
+        "$ref": "#/$defs/secondary_query_run"
+      }
     },
     "warm_hybrid_query_runs": {
       "type": "array",
-      "items": { "$ref": "#/$defs/secondary_query_run" }
+      "items": {
+        "$ref": "#/$defs/secondary_query_run"
+      }
     },
-    "index_keys_total": { "type": ["integer", "null"] },
-    "index_object_count": { "type": ["integer", "null"] },
-    "ingest_elapsed_secs": { "type": "number", "minimum": 0 },
-    "ingest_docs_per_sec": { "type": "number", "minimum": 0 },
-    "ingest_rows_written": { "type": "integer", "minimum": 0 },
-    "ingest_status": { "type": "string" },
-    "ingest_failures": { "type": "array" },
-    "ingest_resume": { "type": "object" },
-    "ingest_retry": { "type": "object" },
-    "ingest_batches": { "type": "array" },
-    "notes": { "type": "string" }
+    "index_keys_total": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "index_object_count": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ingest_elapsed_secs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "ingest_docs_per_sec": {
+      "type": "number",
+      "minimum": 0
+    },
+    "ingest_rows_written": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ingest_status": {
+      "type": "string"
+    },
+    "ingest_failures": {
+      "type": "array"
+    },
+    "ingest_resume": {
+      "type": "object"
+    },
+    "ingest_retry": {
+      "type": "object"
+    },
+    "ingest_batches": {
+      "type": "array"
+    },
+    "notes": {
+      "type": "string"
+    }
   },
   "$defs": {
     "utcTimestamp": {
@@ -110,32 +280,73 @@
     "cold_run": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["run", "latency_ms"],
+      "required": [
+        "run",
+        "latency_ms"
+      ],
       "properties": {
-        "run": { "type": "integer", "minimum": 1 },
-        "query_name": { "type": "string" },
-        "latency_ms": { "type": "number", "minimum": 0 }
+        "run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "query_name": {
+          "type": "string"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
     "secondary_query_run": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["query_name", "query_kind", "latency_ms"],
+      "required": [
+        "query_name",
+        "query_kind",
+        "latency_ms"
+      ],
       "properties": {
-        "query_name": { "type": "string" },
-        "query_kind": { "enum": ["filter", "hybrid"] },
-        "latency_ms": { "type": "number", "minimum": 0 },
-        "phase": { "enum": ["cold", "warm"] }
+        "query_name": {
+          "type": "string"
+        },
+        "query_kind": {
+          "enum": [
+            "filter",
+            "hybrid"
+          ]
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "phase": {
+          "enum": [
+            "cold",
+            "warm"
+          ]
+        }
       }
     },
     "warm_run": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["run", "latency_ms"],
+      "required": [
+        "run",
+        "latency_ms"
+      ],
       "properties": {
-        "run": { "type": "integer", "minimum": 1 },
-        "query_name": { "type": "string" },
-        "latency_ms": { "type": "number", "minimum": 0 }
+        "run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "query_name": {
+          "type": "string"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     }
   }

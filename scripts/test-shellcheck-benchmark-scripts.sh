@@ -26,7 +26,9 @@ for pattern in \
   scripts/run-id-overlap* \
   scripts/run-minio-correctness-gates.sh \
   scripts/test_render-report*.sh \
-  scripts/validate-benchmark-json.sh; do
+  scripts/validate-benchmark-json.sh \
+  scripts/normalize-benchmark-json.sh \
+  scripts/test_normalize-benchmark-json.sh; do
   for f in $pattern; do
     [[ -f "$f" ]] || continue
     scripts+=("$f")

@@ -1,0 +1,14 @@
+# Benchmark JSON — LF endings and diff-friendly merges (see benchmarks/README.md § JSON formatting)
+benchmarks/**/*.json text eol=lf
+
+# Deterministic workload blobs (regenerate: benchmarks/workloads/generate_synthetic.py)
+benchmarks/workloads/synthetic-128/**/queries.json linguist-generated merge=union
+benchmarks/workloads/synthetic-128/**/manifest.json linguist-generated merge=union
+
+# Exemplars / fixtures: disjoint tier or field edits can land on different lines
+benchmarks/results/*.example.json merge=union
+benchmarks/report/fixtures/*.json merge=union
+benchmarks/cross_check/fixtures/*.json merge=union
+
+# JSON Schemas — hand-edited; normal merge (no linguist-generated, no union)
+benchmarks/report/schema/*.json -linguist-generated
