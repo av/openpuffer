@@ -1,5 +1,11 @@
 //! Cold-query benchmarks (MinIO testcontainers). Run: `cargo test -F bench --test bench_cold`.
 //!
+//! Large-dataset comparison program:
+//! [`docs/PLAN_LARGE_DATASET_BENCHMARK.md`](../docs/PLAN_LARGE_DATASET_BENCHMARK.md). G2 MinIO gate
+//! `bench_cold_10k_synthetic_128_workload_gate` uses the committed **synthetic-128** workload
+//! ([`benchmarks/workloads/synthetic-128/`](../benchmarks/workloads/synthetic-128/),
+//! `queries.json` cold protocol). Baseline/warm/100k nightly tests use inline stress vectors.
+//!
 //! `bench_cold_10k_baseline` indexes 10k × 128-dim vectors, runs a cold vector query
 //! (`--cache-dir=""`), prints a JSON baseline report, and optionally writes
 //! `benchmarks/results/baseline-10k.json` when `OPENPUFFER_BENCH_WRITE_BASELINE=1`.
