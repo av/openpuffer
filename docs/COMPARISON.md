@@ -52,7 +52,7 @@ Mirrors [PLAN § Next operator actions](PLAN_LARGE_DATASET_BENCHMARK.md#next-ope
 | **4** | After both namespaces are indexed: `./scripts/run-id-overlap-spotcheck.sh --tier l1` | `benchmarks/results/id-overlap-l1.json` (Phase 3.3) |
 | **5** | `./scripts/run-large-benchmark-program.sh --tier l1 --measured-report` (or `render-report.sh` without `--dry-run`); copy measured rows into [§ L1 measured rows](#l1--100k--measured-rows-aws--managed-tpuf); add `@spec` facts for live JSON | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` |
 
-Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (MinIO endpoint / missing tpuf key).
+Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (MinIO endpoint / missing tpuf key). EC2 copy-paste: [OPERATOR_RUNBOOK_QUICK.md](../benchmarks/OPERATOR_RUNBOOK_QUICK.md).
 
 **Regenerate report skeleton (fixtures only — not comparison numbers):**
 

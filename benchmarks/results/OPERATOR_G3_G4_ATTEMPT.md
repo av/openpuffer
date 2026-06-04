@@ -1,5 +1,16 @@
 # Operator log: live G3/G4 attempt (2026-06-04)
 
+## Retry — iteration 48 (`5627247`)
+
+| Check | Result |
+|-------|--------|
+| `OPENPUFFER_S3_ENDPOINT` | `http://127.0.0.1:9000` → **minio** |
+| `./scripts/run-aws-large-benchmark.sh --tier l1 --preflight-only` | G2 subset OK; **exit 1** — endpoint not AWS |
+| Live `./scripts/run-aws-large-benchmark.sh --tier l1` | **Skipped** (MinIO only) |
+| Deliverable | [OPERATOR_RUNBOOK_QUICK.md](../OPERATOR_RUNBOOK_QUICK.md) EC2 one-pager |
+
+---
+
 Session goal: run **G3** live AWS L1 (`large-aws-l1.json`) per `docs/PLAN_LARGE_DATASET_BENCHMARK.md`. Offline harness already complete at `bfaec74` — do not re-run `verify-large-benchmark-program.sh` for this unit.
 
 ## Environment detected (this host)

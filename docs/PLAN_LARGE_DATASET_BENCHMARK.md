@@ -50,7 +50,7 @@ Verify locally: `./scripts/verify-large-benchmark-program.sh` (optional `--with-
 
 Operator table (same steps 1–5): [COMPARISON.md § Operator checklist](COMPARISON.md#operator-checklist-live-g3g5).
 
-Blocked-run log: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (`bfaec74` session — MinIO endpoint, no tpuf key).
+Blocked-run log: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) (`bfaec74` / `5627247` — MinIO endpoint, no tpuf key). EC2 one-pager: [benchmarks/OPERATOR_RUNBOOK_QUICK.md](../benchmarks/OPERATOR_RUNBOOK_QUICK.md).
 
 ---
 
