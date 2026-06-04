@@ -5,6 +5,7 @@
 //!
 //! HTTP routes (turbopuffer-compatible):
 //!   GET  /health                    — `?deep=1` probes S3 (HeadBucket + openpuffer/ read)
+//!   GET  /v1/ready                  — traffic readiness (S3 configured and reachable)
 //!   GET  /metrics                   — Prometheus text (`--features metrics`; cold/ANN counters)
 //!   GET  /v1/namespaces
 //!   GET  /v1/namespaces/{name}      — metadata (row count, index_status, unindexed_bytes, …)

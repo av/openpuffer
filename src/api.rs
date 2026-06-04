@@ -4,6 +4,7 @@ use crate::limits::{self, validate_namespace_name};
 use crate::models::{
     validate_doc_id, ApiErrorResponse, ColdPlanDebugResponse, Document, ExportRequest,
     ExportResponse, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest,
+    ReadyResponse,
     RecallRequest, RecallResponse, WriteRequest,
 };
 use crate::schema::{
@@ -54,7 +55,8 @@ fn json_rejection_response(err: JsonRejection) -> axum::response::Response {
 
 pub fn router(state: AppState) -> Router {
     let r = Router::new()
-        .route("/health", get(health));
+        .route("/health", get(health))
+        .route("/v1/ready", get(ready));
 
     #[cfg(feature = "metrics")]
     let r = r.route("/metrics", get(prometheus_metrics));
@@ -168,6 +170,33 @@ async fn health(
                     status: "degraded",
                     s3: Some("unavailable"),
                     deep: Some(true),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Readiness for load balancers and benchmark harnesses: S3 must be configured and reachable.
+async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    match state.storage.deep_health_probe().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                status: "ok",
+                ready: true,
+                s3: Some("ok"),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("ready S3 probe failed: {e:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ReadyResponse {
+                    status: "not_ready",
+                    ready: false,
+                    s3: Some("unavailable"),
                 }),
             )
                 .into_response()

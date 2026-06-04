@@ -706,13 +706,15 @@ impl ServeHandle {
     pub async fn wait_ready(&self) {
         let client = reqwest::Client::new();
         for _ in 0..60 {
-            if let Ok(resp) = client
-                .get(format!("{}/health", self.base_url))
-                .send()
-                .await
-            {
-                if resp.status() == StatusCode::OK {
-                    return;
+            for path in ["/v1/ready", "/health"] {
+                if let Ok(resp) = client
+                    .get(format!("{}{}", self.base_url, path))
+                    .send()
+                    .await
+                {
+                    if resp.status() == StatusCode::OK {
+                        return;
+                    }
                 }
             }
             sleep(Duration::from_millis(250)).await;

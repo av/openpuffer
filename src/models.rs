@@ -240,6 +240,15 @@ pub struct HealthResponse {
     pub deep: Option<bool>,
 }
 
+/// `GET /v1/ready` — traffic readiness (S3 configured and reachable).
+#[derive(Debug, Serialize)]
+pub struct ReadyResponse {
+    pub status: &'static str,
+    pub ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3: Option<&'static str>,
+}
+
 /// Background indexer state for a namespace (turbopuffer `index_status` subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

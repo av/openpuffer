@@ -98,6 +98,7 @@ Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/v1/ready
 curl -s "http://127.0.0.1:8080/health?deep=1"
 ```
 
@@ -211,7 +212,8 @@ Integration coverage: `corrupt_wal_segment_on_minio_fail_and_skip_policies` in `
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Readiness |
+| GET | `/health` | Liveness (always `ok` unless `?deep=1`) |
+| GET | `/v1/ready` | Traffic readiness — S3 configured and reachable (`503` if not) |
 | GET | `/metrics` | Prometheus scrape (`--features metrics`) |
 | GET | `/v1/namespaces` | List namespaces + metadata |
 | GET | `/health?deep=1` | S3 probe (`HeadBucket` + `openpuffer/` read); `degraded` if down |

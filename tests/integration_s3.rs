@@ -1560,6 +1560,17 @@ async fn deep_health_and_namespace_metadata_fields() {
     assert_eq!(hv["s3"].as_str(), Some("ok"));
     assert_eq!(hv["deep"].as_bool(), Some(true));
 
+    let ready = client
+        .get(format!("{}/v1/ready", serve.base_url))
+        .send()
+        .await
+        .expect("v1 ready");
+    assert_eq!(ready.status(), StatusCode::OK);
+    let rv: Value = ready.json().await.expect("ready json");
+    assert_eq!(rv["status"].as_str(), Some("ok"));
+    assert_eq!(rv["ready"].as_bool(), Some(true));
+    assert_eq!(rv["s3"].as_str(), Some("ok"));
+
     let meta_resp = client
         .get(format!("{base_url}/v1/namespaces/{ns}", base_url = serve.base_url))
         .send()

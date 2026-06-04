@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Poll openpuffer serve until HTTP readiness before upsert/query (ingest-large, bench-large).
-# Probes GET /health and GET /v1/ready — either returning 2xx is sufficient.
+# Probes GET /health (shallow liveness) and GET /v1/ready (S3 HeadBucket + openpuffer/ read).
+# Either returning HTTP 2xx is sufficient; prefer /v1/ready when you need storage-backed traffic.
 # Source from ingest-large.sh / bench-large.sh — do not execute directly.
 
 # Last failed probe (for diagnostics).
@@ -38,13 +39,13 @@ large_benchmark_serve_probe_url() {
   return 1
 }
 
-# Either /health or /v1/ready succeeding counts as ready.
+# /v1/ready first (S3-backed readiness), then shallow /health.
 large_benchmark_serve_is_ready() {
   local base_url="${1%/}"
-  if large_benchmark_serve_probe_url "${base_url}/health"; then
+  if large_benchmark_serve_probe_url "${base_url}/v1/ready"; then
     return 0
   fi
-  if large_benchmark_serve_probe_url "${base_url}/v1/ready"; then
+  if large_benchmark_serve_probe_url "${base_url}/health"; then
     return 0
   fi
   return 1
