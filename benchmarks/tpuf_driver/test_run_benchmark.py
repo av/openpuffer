@@ -280,6 +280,9 @@ def test_build_result_payload_schema() -> None:
         recall_at_10=0.99,
     )
     assert payload["schema_version"] == "large_benchmark_v1"
+    assert payload["generated_at"].endswith("Z")
+    assert payload["started_at"].endswith("Z")
+    assert payload["finished_at"] == payload["generated_at"]
     assert payload["benchmark"] == "cold_tpuf_l1"
     assert payload["environment"] == "turbopuffer:aws-us-east-1"
     assert payload["tier"] == "l1"

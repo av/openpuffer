@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "benchmarks" / "report"))
 sys.path.insert(0, str(WORKLOADS_DIR))
 
 from schema_version import large_benchmark_json_schema_version  # noqa: E402
+from utc_timestamps import benchmark_run_timestamps, utc_now_iso  # noqa: E402
 
 import generate_synthetic as gen  # noqa: E402
 
@@ -157,6 +158,7 @@ class RunContext:
     warm_consistency: str
     filter_specs: tuple[dict[str, Any], ...]
     hybrid_specs: tuple[dict[str, Any], ...]
+    started_at: str | None = None
 
 
 def repo_relative(path: str) -> Path:
@@ -693,6 +695,7 @@ def build_result_payload(
     warm_runs: list[dict[str, Any]] | None = None,
     warm_p50_ms: int | None = None,
     warm_p95_ms: int | None = None,
+    started_at: str | None = None,
 ) -> dict[str, Any]:
     indexed = index_meta.get("status") == "up-to-date"
     warm_note = ""
@@ -784,6 +787,9 @@ def build_result_payload(
                 "warm_runs": warm_runs,
             }
         )
+    payload.update(
+        benchmark_run_timestamps(started_at=started_at or ctx.started_at)
+    )
     return payload
 
 
@@ -881,6 +887,7 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
     client = Turbopuffer(region=ctx.region, api_key=api_key)
     ns = client.namespace(ctx.namespace)
     ingest_stats: dict[str, Any] | None = None
+    ctx.started_at = utc_now_iso()
 
     try:
         if not ctx.skip_ingest:

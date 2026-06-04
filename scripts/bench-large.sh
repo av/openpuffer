@@ -21,6 +21,8 @@ source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 # shellcheck source=scripts/lib/large-benchmark-json-version.sh
 source "$ROOT/scripts/lib/large-benchmark-json-version.sh"
+# shellcheck source=scripts/lib/benchmark-utc-timestamp.sh
+source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
 large_benchmark_json_schema_version >/dev/null
 
 DRY_RUN=0
@@ -642,6 +644,7 @@ large_preflight_validate_tier_workload "$TIER" "$ROOT"
 large_preflight_ann_version
 init_run_context
 BENCH_ENVIRONMENT="${OPENPUFFER_BENCH_ENVIRONMENT:-$(large_preflight_detect_environment)}"
+BENCHMARK_STARTED_AT="$(benchmark_utc_now)"
 
 echo "bench-large: tier=${TIER} namespace=${NAMESPACE} docs=${DOCS}"
 echo "  workload=${WORKLOAD_DIR} query=${PRIMARY_QUERY_NAME}"
@@ -792,8 +795,14 @@ done
 [[ -n "${INDEX_KEYS_TOTAL:-}" && "${INDEX_KEYS_TOTAL}" != "null" ]] && validate_argjson_var INDEX_KEYS_TOTAL "${INDEX_KEYS_TOTAL}"
 [[ -n "${INDEX_OBJECT_COUNT:-}" && "${INDEX_OBJECT_COUNT}" != "null" ]] && validate_argjson_var INDEX_OBJECT_COUNT "${INDEX_OBJECT_COUNT}"
 
+BENCHMARK_FINISHED_AT="$(benchmark_utc_now)"
+BENCHMARK_GENERATED_AT="$BENCHMARK_FINISHED_AT"
+
 jq -n \
   --arg schema_version "$LARGE_BENCHMARK_JSON_SCHEMA_VERSION" \
+  --arg generated_at "$BENCHMARK_GENERATED_AT" \
+  --arg started_at "${BENCHMARK_STARTED_AT:-$BENCHMARK_FINISHED_AT}" \
+  --arg finished_at "$BENCHMARK_FINISHED_AT" \
   --arg benchmark "$BENCHMARK_NAME" \
   --arg environment "$BENCH_ENVIRONMENT" \
   --arg tier "$TIER" \
@@ -834,6 +843,9 @@ jq -n \
   --argjson ingest_summary "$INGEST_SUMMARY_ARGJSON" \
   '{
     schema_version: $schema_version,
+    generated_at: $generated_at,
+    started_at: $started_at,
+    finished_at: $finished_at,
     benchmark: $benchmark,
     environment: $environment,
     tier: $tier,

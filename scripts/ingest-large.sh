@@ -34,6 +34,8 @@ large_benchmark_json_schema_version >/dev/null
 source "$ROOT/scripts/lib/ingest-large-retry.sh"
 # shellcheck source=scripts/lib/large-benchmark-serve-ready.sh
 source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
+# shellcheck source=scripts/lib/benchmark-utc-timestamp.sh
+source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -439,6 +441,11 @@ write_results_json() {
   local env_note="${INGEST_ENVIRONMENT:-}"
   [[ -z "$env_note" ]] && env_note="$(large_preflight_detect_environment 2>/dev/null || echo "unknown")"
 
+  local finished_at generated_at started_at
+  finished_at="$(benchmark_utc_now)"
+  generated_at="$finished_at"
+  started_at="${BENCHMARK_STARTED_AT:-$finished_at}"
+
   local failures_json resume_json
   failures_json="$(ingest_large_failures_json)"
   resume_json="$(jq -cn \
@@ -449,6 +456,9 @@ write_results_json() {
 
   jq -n \
     --arg schema_version "$LARGE_BENCHMARK_JSON_SCHEMA_VERSION" \
+    --arg generated_at "$generated_at" \
+    --arg started_at "$started_at" \
+    --arg finished_at "$finished_at" \
     --arg benchmark "ingest_large" \
     --arg environment "$env_note" \
     --arg tier "$TIER" \
@@ -487,6 +497,9 @@ write_results_json() {
     --arg notes "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3" \
     '{
       schema_version: $schema_version,
+      generated_at: $generated_at,
+      started_at: $started_at,
+      finished_at: $finished_at,
       benchmark: $benchmark,
       environment: $environment,
       tier: $tier,
@@ -551,6 +564,7 @@ large_preflight_validate_tier_workload "$TIER" "$ROOT"
 
 init_run_context
 MF="$(manifest_path)"
+BENCHMARK_STARTED_AT="$(benchmark_utc_now)"
 
 echo "ingest-large: tier=${TIER} namespace=${NAMESPACE} docs=${NUM_DOCS}"
 if [[ -n "$MF" ]]; then

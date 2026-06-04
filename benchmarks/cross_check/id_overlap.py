@@ -17,6 +17,7 @@ if str(_REPORT_DIR) not in sys.path:
     sys.path.insert(0, str(_REPORT_DIR))
 
 from schema_version import large_benchmark_json_schema_version  # noqa: E402
+from utc_timestamps import benchmark_run_timestamps  # noqa: E402
 
 DEFAULT_SPOT_CHECK_COUNT = 10
 
@@ -235,10 +236,12 @@ def build_result_payload(
     openpuffer_namespace: str | None = None,
     turbopuffer_namespace: str | None = None,
     notes: str | None = None,
+    started_at: str | None = None,
 ) -> dict[str, Any]:
     summary = summarize_query_results(per_query)
     return {
         "schema_version": large_benchmark_json_schema_version(),
+        **benchmark_run_timestamps(started_at=started_at),
         "benchmark": "id_overlap_spotcheck",
         "tier": tier,
         "workload_dir": workload_dir,

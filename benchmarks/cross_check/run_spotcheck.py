@@ -27,6 +27,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "benchmarks" / "cross_check"))
+sys.path.insert(0, str(ROOT / "benchmarks" / "report"))
+
+from utc_timestamps import utc_now_iso  # noqa: E402
 
 import id_overlap as xcheck  # noqa: E402
 
@@ -115,6 +118,8 @@ def run_live(
         f"bench-tpuf-{date.today().isoformat()}-{tier}",
     )
 
+    started_at = utc_now_iso()
+
     api_key = os.environ.get("TURBOPUFFER_API_KEY")
     if not api_key:
         raise SystemExit(
@@ -176,6 +181,7 @@ def run_live(
         mode="live",
         openpuffer_namespace=op_ns,
         turbopuffer_namespace=tpuf_ns,
+        started_at=started_at,
     )
 
 

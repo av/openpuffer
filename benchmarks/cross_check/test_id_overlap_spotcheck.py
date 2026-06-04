@@ -76,6 +76,8 @@ def test_mock_payload_matches_production_schema() -> None:
         queries=queries,
     )
     assert payload["mode"] == "mock"
+    assert payload["generated_at"].endswith("Z")
+    assert payload["finished_at"] == payload["generated_at"]
     assert len(payload["queries"]) == 10
     row0 = payload["queries"][0]
     for key in (
@@ -126,6 +128,8 @@ def test_run_spotcheck_mock_writes_json(tmp_path: Path) -> None:
     assert proc.returncode == 0
     written = json.loads(out.read_text())
     assert written["schema_version"] == "large_benchmark_v1"
+    assert written["generated_at"].endswith("Z")
+    assert written["finished_at"] == written["generated_at"]
     assert written["mode"] == "mock"
     assert written["summary"]["query_count"] == 10
     assert "openpuffer_ids" in written["queries"][0]

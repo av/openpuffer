@@ -63,5 +63,8 @@
   "ingest_elapsed_secs": 95.2,
   "ingest_docs_per_sec": 1050.4,
   "ingest_rows_written": 100000,
-  "notes": "fixture for render-report tests"
+  "notes": "fixture for render-report tests",
+  "generated_at": "2026-06-04T00:10:00Z",
+  "started_at": "2026-06-04T00:00:00Z",
+  "finished_at": "2026-06-04T00:10:00Z"
 }

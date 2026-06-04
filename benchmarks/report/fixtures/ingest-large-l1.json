@@ -40,5 +40,8 @@
     },
     "batch_runs": []
   },
-  "notes": "fixture for render-report ingest timing rows"
+  "notes": "fixture for render-report ingest timing rows",
+  "generated_at": "2026-06-04T00:10:00Z",
+  "started_at": "2026-06-04T00:00:00Z",
+  "finished_at": "2026-06-04T00:10:00Z"
 }

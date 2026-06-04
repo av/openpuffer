@@ -1,7 +1,7 @@
 # Comparison report assets (A5)
 
 - **Fixtures:** `fixtures/large-aws-l1.json`, `fixtures/tpuf-l1.json`, `fixtures/ingest-large-l1.json` — offline inputs for `scripts/render-report.sh --dry-run` (L1-shaped; same schema as L2/L3 live artifacts).
-- **JSON Schema (L1–L3):** `schema/large-aws-l1.schema.json`, `schema/tpuf-l1.schema.json`, `schema/ingest-large-l1.schema.json`, `schema/id-overlap-l1.schema.json` — one schema per artifact type with required `schema_version: "large_benchmark_v1"` (see [`LARGE_BENCHMARK_JSON_SCHEMA_VERSION`](LARGE_BENCHMARK_JSON_SCHEMA_VERSION)), `tier` ∈ {l1,l2,l3}, tier-specific `benchmark` ids (`cold_large_l*`, `cold_tpuf_l*`, `ingest_large`, `id_overlap_spotcheck`), and doc counts enforced in [`scripts/validate-benchmark-json.sh`](../../scripts/validate-benchmark-json.sh).
+- **JSON Schema (L1–L3):** `schema/large-aws-l1.schema.json`, `schema/tpuf-l1.schema.json`, `schema/ingest-large-l1.schema.json`, `schema/id-overlap-l1.schema.json` — one schema per artifact type with required `schema_version: "large_benchmark_v1"` (see [`LARGE_BENCHMARK_JSON_SCHEMA_VERSION`](LARGE_BENCHMARK_JSON_SCHEMA_VERSION)), ISO8601 UTC timestamps (`generated_at`, `started_at`, `finished_at` with `Z` suffix), `tier` ∈ {l1,l2,l3}, tier-specific `benchmark` ids (`cold_large_l*`, `cold_tpuf_l*`, `ingest_large`, `id_overlap_spotcheck`), and doc counts enforced in [`scripts/validate-benchmark-json.sh`](../../scripts/validate-benchmark-json.sh).
 - **Tier reference:**
 
 | Tier | Docs | Workload dir | openpuffer `benchmark` | tpuf `benchmark` |

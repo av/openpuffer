@@ -91,5 +91,8 @@
       }
     ]
   },
-  "notes": "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3"
+  "notes": "A2 ingest-large.sh; upsert cadence from manifest ingest_cadence; index poll until cursor==wal_commit_seq and preferred_ann_version==3",
+  "generated_at": "2026-06-04T00:10:00Z",
+  "started_at": "2026-06-04T00:00:00Z",
+  "finished_at": "2026-06-04T00:10:00Z"
 }

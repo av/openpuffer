@@ -81,6 +81,9 @@ ingest_schema_path = Path(sys.argv[3])
 overlap_schema_path = Path(sys.argv[4])
 paths = [Path(p) for p in sys.argv[5:]]
 
+sys.path.insert(0, str(op_schema_path.parent.parent))
+from utc_timestamps import validate_benchmark_timestamps
+
 op_validator = Draft202012Validator(json.loads(op_schema_path.read_text()))
 tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
@@ -144,6 +147,13 @@ def validate_schema_version(path: Path, data: dict) -> None:
             f"{path}: schema_version {sv!r} != {EXPECTED_SCHEMA_VERSION!r} "
             "(regenerate with ingest-large / bench-large / tpuf driver / id-overlap)"
         )
+
+
+def validate_utc_timestamps(path: Path, data: dict) -> None:
+    try:
+        validate_benchmark_timestamps(data)
+    except ValueError as exc:
+        raise SystemExit(f"{path}: {exc}") from exc
 
 
 def validate_tier_alignment(path: Path, kind: str, data: dict) -> None:
@@ -317,6 +327,7 @@ for path in paths:
 
     kind = classify(path)
     validate_schema_version(path, data)
+    validate_utc_timestamps(path, data)
     if kind == "ingest":
         schema_errors(ingest_validator, data, "ingest-large", path)
         validate_ingest_cross_fields(path, data)

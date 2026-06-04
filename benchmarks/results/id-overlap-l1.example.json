@@ -461,5 +461,8 @@
     "min_overlap_at_k": 0.5,
     "max_overlap_at_k": 0.9
   },
-  "notes": "Offline mock for render-report and pytest; not measured against live engines."
+  "notes": "Offline mock for render-report and pytest; not measured against live engines.",
+  "generated_at": "2026-06-04T00:10:00Z",
+  "started_at": "2026-06-04T00:00:00Z",
+  "finished_at": "2026-06-04T00:10:00Z"
 }

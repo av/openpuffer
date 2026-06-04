@@ -33,7 +33,8 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 | Date | Commit | Description |
 |------|--------|-------------|
-| 2026-06-04 | (this commit) | **`schema_version: large_benchmark_v1`** on all harness result JSON (ingest/bench/tpuf/id-overlap); JSON Schemas + fixtures/examples + `validate-benchmark-json.sh`; migration note in root `CHANGELOG.md` |
+| 2026-06-04 | (this commit) | **UTC timestamps** (`generated_at`, `started_at`, `finished_at` with `Z` suffix) on all harness result JSON; `benchmarks/report/utc_timestamps.py` + `scripts/lib/benchmark-utc-timestamp.sh`; drivers use `date -u` / `datetime.now(timezone.utc)`; `validate-benchmark-json.sh` Z-suffix gate |
+| 2026-06-04 | `29f50fb` | **`schema_version: large_benchmark_v1`** on all harness result JSON (ingest/bench/tpuf/id-overlap); JSON Schemas + fixtures/examples + `validate-benchmark-json.sh`; migration note in root `CHANGELOG.md` |
 | 2026-06-04 | (see git log) | **Python deps consolidation:** `benchmarks/requirements.txt`; `install-benchmark-python-deps.sh`; CI dispatch/live/nightly; `tpuf_driver/requirements.txt` shim |
 | 2026-06-04 | `9d5b87b` | **Harness audit (operator handoff):** `verify-large-benchmark-program.sh` exit 0 @ `9670556`; PLAN status + checklist harness-complete statement; no live G3/G4 on MinIO/no-tpuf host |
 | 2026-06-04 | `9670556` | Git policy for live results JSON (`check-benchmark-artifacts.sh` in verify gate) |

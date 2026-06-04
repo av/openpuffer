@@ -490,5 +490,8 @@
       "result_rows": 10,
       "phase": "warm"
     }
-  ]
+  ],
+  "generated_at": "2026-06-04T00:10:00Z",
+  "started_at": "2026-06-04T00:00:00Z",
+  "finished_at": "2026-06-04T00:10:00Z"
 }
