@@ -109,7 +109,7 @@ redact_text() {
 import re, sys
 text = sys.stdin.read()
 patterns = [
-    (r"tpuf_[A-Za-z0-9_-]+", "[REDACTED_TPUF_KEY]"),
+    (r"tpuf_(?!driver)[A-Za-z0-9_-]{8,}", "[REDACTED_TPUF_KEY]"),
     (r"sk-[A-Za-z0-9]{16,}", "[REDACTED_SECRET_KEY]"),
     (r"(?i)(api[_-]?key|secret[_-]?key|access[_-]?key)\s*[:=]\s*\S+", r"\1=[REDACTED]"),
     (r"OPENPUFFER_S3_SECRET_KEY=\S+", "OPENPUFFER_S3_SECRET_KEY=[REDACTED]"),
@@ -123,7 +123,106 @@ sys.stdout.write(text)
 
 redact_json_file() {
   local path="$1"
-  jq -c . "$path" | redact_text
+  appendix_json_compact "$path" | redact_text
+}
+
+# Compact JSON for appendix: drop large run arrays, keep summary metrics.
+appendix_json_compact() {
+  local path="$1"
+  jq -c '
+    del(.cold_runs, .warm_runs)
+    | if .ingest_timing then .ingest_timing |= del(.batch_runs) else . end
+  ' "$path"
+}
+
+scan_artifact_secrets() {
+  local path="$1"
+  if ! python3 - "$path" <<'PY'; then
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+if re.search(r"tpuf_(?!driver)[A-Za-z0-9_-]{8,}", text):
+    sys.exit(1)
+if "TURBOPUFFER_API_KEY=" in text or "OPENPUFFER_S3_SECRET_KEY=" in text:
+    sys.exit(1)
+PY
+    echo "render-report: possible secret in ${path} — scrub before report/commit" >&2
+    return 1
+  fi
+  return 0
+}
+
+validate_measured_json_pair() {
+  local tier="$1" op_file="$2" tpuf_file="$3"
+  python3 - "$tier" "$op_file" "$tpuf_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+tier, op_path, tpuf_path = sys.argv[1:4]
+
+OP_REQUIRED = (
+    "benchmark", "tier", "environment", "workload_dir", "namespace",
+    "namespace_docs", "dimensions", "seed", "embedding_fn",
+    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
+    "index_cursor_eq_wal_commit_seq",
+)
+TPUF_REQUIRED = (
+    "benchmark", "tier", "environment", "workload_dir", "namespace",
+    "namespace_docs", "dimensions", "seed", "embedding_fn",
+    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
+    "index_up_to_date",
+)
+MATCH_KEYS = ("tier", "namespace_docs", "dimensions", "seed", "embedding_fn")
+
+def load(path: str) -> dict:
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit(f"render-report: missing JSON: {path}")
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"render-report: invalid JSON {path}: {exc}") from exc
+
+def require(data: dict, keys: tuple, label: str, path: str) -> None:
+    missing = [k for k in keys if k not in data or data[k] is None]
+    if missing:
+        raise SystemExit(
+            f"render-report: {label} schema missing fields in {path}: {', '.join(missing)}"
+        )
+
+op = load(op_path)
+tpuf = load(tpuf_path)
+require(op, OP_REQUIRED, "openpuffer", op_path)
+require(tpuf, TPUF_REQUIRED, "turbopuffer", tpuf_path)
+
+if str(op.get("tier")) != tier:
+    raise SystemExit(
+        f"render-report: openpuffer tier={op.get('tier')!r} does not match --tier {tier}"
+    )
+if str(tpuf.get("tier")) != tier:
+    raise SystemExit(
+        f"render-report: turbopuffer tier={tpuf.get('tier')!r} does not match --tier {tier}"
+    )
+
+for key in MATCH_KEYS:
+    if op.get(key) != tpuf.get(key):
+        raise SystemExit(
+            f"render-report: workload mismatch on {key}: openpuffer={op.get(key)!r} "
+            f"turbopuffer={tpuf.get(key)!r}"
+        )
+
+op_env = str(op.get("environment", ""))
+if "minio" in op_env.lower():
+    print(
+        f"render-report: warning openpuffer environment={op_env!r} "
+        "(not aws-s3; measured COMPARISON rows expect live AWS JSON)",
+        file=sys.stderr,
+    )
+
+print(f"render-report: schema OK tier={tier} op={op_path} tpuf={tpuf_path}", file=sys.stderr)
+PY
 }
 
 json_path_for_tier() {
@@ -277,9 +376,129 @@ render_executive_summary() {
 - **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio ${ratio}).
 ${warm_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
 - **Self-host vs managed:** openpuffer exposes S3 cold-path metrics (\`storage_roundtrips\`, \`cold_s3_keys_fetched\`); turbopuffer is managed (those fields n/a).
-- _Interpretation (edit after review):_ see [COMPARISON.md](../COMPARISON.md) § measured maturity and plan §6.2 outcome table.
+- _Auto-interpretation:_ see [Comparison interpretation (tier ${tier})](#comparison-interpretation-tier-${tier}) below; edit after operator review. [COMPARISON.md](../COMPARISON.md) § measured maturity.
 
 EOF
+}
+
+render_comparison_interpretation() {
+  local tier="$1" op_file="$2" tpuf_file="$3"
+  python3 - "$tier" "$op_file" "$tpuf_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+tier, op_path, tpuf_path = sys.argv[1:4]
+op = json.loads(Path(op_path).read_text())
+tpuf = json.loads(Path(tpuf_path).read_text())
+RECALL_GATE = 0.85
+
+
+def fnum(data, key):
+    v = data.get(key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def latency_line(label, op_ms, tpuf_ms):
+    if op_ms is None or tpuf_ms is None or tpuf_ms <= 0:
+        return None
+    ratio = op_ms / tpuf_ms
+    if ratio < 0.95:
+        verdict = f"openpuffer **{tpuf_ms / op_ms:.2f}× faster** than turbopuffer"
+    elif ratio <= 2.0:
+        verdict = (
+            f"openpuffer **{ratio:.2f}× slower** than turbopuffer "
+            "(within ~2× — competitive for self-hosted per plan §6.2)"
+        )
+    else:
+        verdict = (
+            f"openpuffer **{ratio:.2f}× slower** than turbopuffer "
+            "(**>2×** — investigate S3 RTT, probe clamp, rerank, indexer lag per plan §6.2)"
+        )
+    return (
+        f"- **{label}:** {verdict} "
+        f"({op_ms:.0f} ms openpuffer vs {tpuf_ms:.0f} ms turbopuffer; ratio {ratio:.2f}× op/tpuf)."
+    )
+
+
+def ingest_line():
+    op_ingest = fnum(op, "ingest_elapsed_secs")
+    if op_ingest is None and op.get("ingest_timing"):
+        op_ingest = fnum(op["ingest_timing"], "upsert_wall_sec")
+    tpuf_ingest = fnum(tpuf, "ingest_elapsed_secs")
+    if op_ingest is None or tpuf_ingest is None or tpuf_ingest <= 0:
+        return None
+    ratio = op_ingest / tpuf_ingest
+    return (
+        f"- **Ingest upsert wall:** openpuffer {op_ingest:.1f}s vs turbopuffer {tpuf_ingest:.1f}s "
+        f"(ratio {ratio:.2f}× op/tpuf). openpuffer WAL-limited (~1 commit/s) — "
+        "not apples-to-apples with tpuf batch ingest (plan §6.2)."
+    )
+
+
+def recall_lines():
+    op_r = fnum(op, "recall_at_10")
+    tpuf_r = fnum(tpuf, "recall_at_10")
+    if op_r is None or tpuf_r is None:
+        return ["- **Recall@10:** missing in one or both JSON files."]
+    lines = [
+        f"- **Recall@10:** openpuffer {op_r:.3f} vs turbopuffer {tpuf_r:.3f} "
+        f"(delta {op_r - tpuf_r:+.3f})."
+    ]
+    if op_r < RECALL_GATE:
+        lines.append(
+            f"  - **Warning:** openpuffer recall {op_r:.3f} below large-tier gate (≥{RECALL_GATE})."
+        )
+    if tpuf_r < RECALL_GATE:
+        lines.append(
+            f"  - **Warning:** turbopuffer recall {tpuf_r:.3f} below driver gate (≥{RECALL_GATE})."
+        )
+    delta = op_r - tpuf_r
+    if delta < -0.02:
+        lines.append(
+            "  - **Warning:** openpuffer recall materially below turbopuffer "
+            "(>0.02) — tune probes/rerank; simpler v3 ANN vs managed SPFresh is expected on some workloads (plan §6.2)."
+        )
+    elif abs(delta) <= 0.02:
+        lines.append(
+            "  - Recall within ±0.02 on synthetic data — strong signal; validate on real embeddings before product claims."
+        )
+    elif delta > 0.02:
+        lines.append(
+            "  - openpuffer recall above turbopuffer on this run — treat as synthetic-workload signal only."
+        )
+    return lines
+
+
+print(f"## Comparison interpretation (tier {tier})")
+print()
+print("Auto-generated from merged JSON (measured mode). Ratios use **op/tpuf** (>1 means openpuffer slower or higher).")
+print()
+for line in (
+    latency_line("Cold query p50", fnum(op, "p50_query_latency_ms"), fnum(tpuf, "p50_query_latency_ms")),
+    latency_line("Cold query p95", fnum(op, "p95_query_latency_ms"), fnum(tpuf, "p95_query_latency_ms")),
+    latency_line(
+        "Warm query p50",
+        fnum(op, "p50_warm_query_latency_ms"),
+        fnum(tpuf, "p50_warm_query_latency_ms"),
+    ),
+    latency_line(
+        "Warm query p95",
+        fnum(op, "p95_warm_query_latency_ms"),
+        fnum(tpuf, "p95_warm_query_latency_ms"),
+    ),
+    ingest_line(),
+):
+    if line:
+        print(line)
+for line in recall_lines():
+    print(line)
+print()
+PY
 }
 
 render_methodology_skeleton() {
@@ -602,6 +821,32 @@ render_appendix_row() {
   printf '| %s | `%s` | `%s` |\n' "$tier" "${op_path#$ROOT/}" "${tpuf_path#$ROOT/}"
 }
 
+render_appendix_json_blocks() {
+  local tier="$1" op_path="$2" tpuf_path="$3"
+  local op_blob tpuf_blob
+  op_blob="$(redact_json_file "$op_path")"
+  tpuf_blob="$(redact_json_file "$tpuf_path")"
+
+  cat <<EOF
+### Redacted JSON snapshot @ tier ${tier}
+
+Embedded copies for audit (secrets redacted; large \`cold_runs\` / \`warm_runs\` arrays omitted). Canonical files remain under \`benchmarks/results/\`.
+
+#### openpuffer — \`${op_path#$ROOT/}\`
+
+\`\`\`json
+${op_blob}
+\`\`\`
+
+#### turbopuffer — \`${tpuf_path#$ROOT/}\`
+
+\`\`\`json
+${tpuf_blob}
+\`\`\`
+
+EOF
+}
+
 run_dry_run_banner() {
   echo "render-report dry-run: date=${REPORT_DATE} output=${OUTPUT}" >&2
   echo "  commit=${COMMIT_SHORT} fixtures=${FIXTURES_DIR}" >&2
@@ -631,6 +876,11 @@ main() {
       echo "missing turbopuffer JSON for tier ${tier} (expected tpuf-${tier}.json)" >&2
       missing=1
       continue
+    fi
+    if [[ "$DRY_RUN" == "0" ]]; then
+      validate_measured_json_pair "$tier" "$op_path" "$tpuf_path"
+      scan_artifact_secrets "$op_path" || exit 1
+      scan_artifact_secrets "$tpuf_path" || exit 1
     fi
     echo "  tier=${tier} op=${op_path} tpuf=${tpuf_path}" >&2
   done
@@ -666,6 +916,10 @@ EOF
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
       render_results_table "$tier" "$op_path" "$tpuf_path"
       render_secondary_query_table "$tier" "$op_path" "$tpuf_path"
+      if [[ "$DRY_RUN" == "0" ]]; then
+        render_comparison_interpretation "$tier" "$op_path" "$tpuf_path"
+        echo ""
+      fi
       overlap_path="$(resolve_overlap_json "$tier")"
       render_correctness_section "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       echo ""
@@ -678,6 +932,12 @@ EOF
       render_appendix_row "$tier" "$op_path" "$tpuf_path"
     done
     echo ""
+    for tier in $tiers; do
+      op_path="$(resolve_input_json op "$tier")"
+      tpuf_path="$(resolve_input_json tpuf "$tier")"
+      [[ -f "$op_path" && -f "$tpuf_path" ]] || continue
+      render_appendix_json_blocks "$tier" "$op_path" "$tpuf_path"
+    done
     echo "_End of report._"
   } | redact_text >"$OUTPUT"
 

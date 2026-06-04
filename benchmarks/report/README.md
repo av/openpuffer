@@ -6,5 +6,9 @@
 
 ```bash
 ./scripts/test_render-report.sh
+./scripts/test_render-report-measured.sh   # schema + interpretation + appendix redaction
 ./scripts/render-report.sh --dry-run --tier l1
+./scripts/render-report.sh --tier l1 --date YYYY-MM-DD   # measured (requires live JSON)
 ```
+
+**Measured mode** (no `--dry-run`): validates both JSON files exist, checks required schema fields and workload alignment, scans for secrets before merge, emits **Comparison interpretation** (latency/recall deltas per plan §6.2), and embeds redacted JSON snapshots in the appendix.

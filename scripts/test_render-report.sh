@@ -45,8 +45,9 @@ grep -q "Ingest docs/s" "$OUT"
 grep -q "Batch upsert p50" "$OUT"
 grep -q "110" "$OUT"
 grep -q "8" "$OUT"
+grep -q "tpuf_driver/run_benchmark.py" "$OUT"
 
-if grep -E 'tpuf_[A-Za-z0-9]|tpuf_deadbeef' "$OUT"; then
+if grep -E 'tpuf_deadbeef|TURBOPUFFER_API_KEY=tpuf_' "$OUT"; then
   echo "FAIL: report leaked API key material" >&2
   exit 1
 fi

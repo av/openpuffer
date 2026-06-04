@@ -45,7 +45,9 @@ jobs:
         run: python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
 
       - name: render-report offline tests
-        run: ./scripts/test_render-report.sh
+        run: |
+          ./scripts/test_render-report.sh
+          ./scripts/test_render-report-measured.sh
 
       - name: ingest-large dry-run
         run: ./scripts/ingest-large.sh --tier ${{ inputs.tier }} --dry-run

@@ -546,7 +546,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | **G2** correctness | Done (MinIO) | `scripts/run-minio-correctness-gates.sh`, `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_*`; CI `g2-minio-correctness`; commits `5972ab7`, `67c7050`, `ef4fa97` |
 | **G3** AWS scale proof | Harness only | `scripts/run-aws-large-benchmark.sh`, `bench-large.sh`; **no** `large-aws-l1.json` (live AWS); MinIO shape: `large-aws-l1-schema-minio.example.json` (`bd449b6`) |
 | **G4** tpuf baseline | Harness only | `scripts/run-tpuf-large-benchmark.sh`, `benchmarks/tpuf_driver/run_benchmark.py`; fact `eos`; **no** live `tpuf-l1.json` |
-| **G5** report | Skeleton only | `scripts/render-report.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
+| **G5** report | Skeleton + measured harness | `scripts/render-report.sh` (schema validation, interpretation, appendix redaction), `test_render-report-measured.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
 | **G6** regression | Done (dry-run CI + nightly) | `.github/workflows/benchmark-large-dispatch.yml` (manual A6); `.github/workflows/nightly-stress.yml` job `large-dataset-program` (G2 MinIO + `run-large-benchmark-program.sh --dry-run`); `facts check --tags bench-large,bench-tpuf` |
 | Phase 3.3 overlap | Harness only | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; mock fixture; live `id-overlap-l1.json` pending |
 | Phase 7 COMPARISON | Placeholders | `docs/COMPARISON.md` L1 table — explicit “pending live JSON” (`5ec9851`) |
@@ -564,7 +564,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6` |
 | A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |
 | A4 `tpuf_driver/run_benchmark.py` | [x] | fact `uod`; `08e66ce` |
-| A5 `render-report.sh` | [x] | fact `ved`; `59f5822` |
+| A5 `render-report.sh` | [x] | fact `ved`; measured-mode hardening (schema, interpretation, appendix redaction) |
 | G3 `run-aws-large-benchmark.sh` | [x] harness / [ ] live | fact `bue`; `a1b34cc`; **no** `benchmarks/results/large-aws-l1.json` |
 | G4 `run-tpuf-large-benchmark.sh` | [x] harness / [ ] live | fact `eos`; `95197a9`; **no** `benchmarks/results/tpuf-l1.json` |
 | A6 `benchmark-large-dispatch.yml` | [x] | `1902c62`; dry-run ingest/bench/tpuf/id-overlap + `facts check`; run-aws dry-run in workflow |

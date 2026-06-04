@@ -336,7 +336,7 @@ Print tier estimate: `./scripts/preflight-tpuf.sh --tier l1` (add `--warm` for w
 
 | Surface | Redaction |
 |---------|-----------|
-| **Reports** | [`render-report.sh`](../scripts/render-report.sh) redacts `tpuf_*`, `TURBOPUFFER_API_KEY=`, and `OPENPUFFER_S3_SECRET_KEY=` in markdown |
+| **Reports** | [`render-report.sh`](../scripts/render-report.sh) (measured mode) validates JSON schema + workload alignment, blocks merge if secrets remain in artifacts, auto-writes comparison interpretation (plan §6.2), and embeds redacted JSON in the appendix; redacts `tpuf_*` keys, `TURBOPUFFER_API_KEY=`, `OPENPUFFER_S3_SECRET_KEY=` |
 | **JSON results** | `tpuf-*.json` must **not** contain API keys (driver never writes them). Before `git add`: `./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json` |
 | **Shell history** | Prefer env exports on EC2; do not echo keys in `notes` fields |
 
@@ -389,6 +389,7 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
    - `pytest benchmarks/workloads/test_generate_synthetic.py`
    - `pytest benchmarks/tpuf_driver/test_run_benchmark.py`
    - [`scripts/test_render-report.sh`](../scripts/test_render-report.sh)
+   - [`scripts/test_render-report-measured.sh`](../scripts/test_render-report-measured.sh) (fixture merge simulating live G5)
    - [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) / [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--dry-run` for the selected tier
    - [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--dry-run` (wraps tpuf driver)
    - [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--dry-run`
