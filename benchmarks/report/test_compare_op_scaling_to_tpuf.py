@@ -37,6 +37,8 @@ def test_operator_verdict_paragraph() -> None:
     snap = compute_comparison()
     para = operator_verdict_paragraph(snap)
     assert "874" in para
+    assert "not comparable" in para.lower()
+    assert "100.0k" in para or "100k" in para.lower()
     assert "10M" in para or "10.0M" in para
     assert len(para.split(".")) >= 3
     assert "200" in para or "docs/s" in para

@@ -455,6 +455,19 @@ def operator_verdict_paragraph(
     """Single paragraph for operators (stdout from --verdict-only)."""
     s = snap or compute_comparison(model_override)
     tier_str = " / ".join(f"{fmt_n(n)}={ms:.0f}ms" for n, ms in s.measured_tiers)
+    p100 = next((ms for n, ms in s.measured_tiers if n == 100_000), None)
+    ratio_100k_tpuf = (p100 / s.tpuf_p50) if p100 is not None else None
+    coincidence = ""
+    if p100 is not None:
+        ratio_note = (
+            f" (~{ratio_100k_tpuf:.2f}×)" if ratio_100k_tpuf is not None else ""
+        )
+        coincidence = (
+            f"Critical: openpuffer measured {fmt_n(100_000)}×128 cold p50 "
+            f"~{p100:.0f} ms is the same order of magnitude as turbopuffer official "
+            f"{s.tpuf_p50} ms @ 10M×1024{ratio_note}—**not comparable** "
+            f"(100× fewer docs, 8× fewer dims, MinIO vs GCP fleet, different load); "
+        )
     ratio_sqrt = s.extrap_10m_sqrt / s.tpuf_p50
     ballpark = ballpark_verdict(s.extrap_10m_sqrt, s.tpuf_p50)
     tpuf_commit_ms = load_tpuf_write_commit_ms_claim()
@@ -471,14 +484,13 @@ def operator_verdict_paragraph(
             f"≤~{tpuf_commit_ms} ms durable write-commit latency (not the same throughput model);"
         )
     return (
-        f"openpuffer MinIO cold p50 tiers ({tier_str}) grow with doc count "
-        f"(power-law β≈{s.power_beta:.2f}); canonical {s.canonical_model} extrapolation "
-        f"gives ~{s.extrap_10m_128:.0f} ms @ 10M×128 (~{s.ratio_vs_tpuf:.1f}× turbopuffer's "
-        f"official {s.tpuf_p50} ms @ 10M×1024 on GCP—single tpuf point, {s.confidence} "
-        f"confidence) and ~{s.extrap_10m_sqrt:.0f} ms with a √dim heuristic "
-        f"(~{ratio_sqrt:.0f}×).{ingest_clause} {ballpark}. "
-        "Treat as scaling-shape signal only—MinIO vs GCP, 128-d synthetic vs 1024-d embeddings, "
-        "sequential cold probes vs 8 QPS×30m; 10M openpuffer is unmeasured."
+        f"{coincidence}if doc-count scaling on this harness held to 10M, canonical "
+        f"{s.canonical_model} extrapolation gives ~{s.extrap_10m_128:.0f} ms @ 10M×128 "
+        f"(~{s.ratio_vs_tpuf:.1f}× tpuf—{s.confidence} confidence, unmeasured); "
+        f"tiers ({tier_str}) imply power-law β≈{s.power_beta:.2f}, "
+        f"√dim heuristic ~{s.extrap_10m_sqrt:.0f} ms (~{ratio_sqrt:.0f}×).{ingest_clause} "
+        f"{ballpark}. Treat as scaling-shape signal only—do not read 100k≈874 ms as parity; "
+        "10M openpuffer is unmeasured."
     )
 
 

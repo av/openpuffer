@@ -613,6 +613,9 @@
 - label: verify-op-scaling-comparison.sh offline gate wired in ci.yml op-scaling-comparison job
   command: test -x scripts/verify-op-scaling-comparison.sh && grep -q op-scaling-comparison .github/workflows/ci.yml && grep -q verify-op-scaling-comparison.sh .github/workflows/ci.yml && ./scripts/verify-op-scaling-comparison.sh >/dev/null
   tags: [bench-op-scaling, bench, implemented]
+- label: op-scaling 100k×128 MinIO cold p50 is within 2× of tpuf official 10M×1024 cold p50 (order of magnitude; not comparable—different N, D, backend)
+  command: python3 -c "import json; op=json.load(open(\"benchmarks/results/op-scaling-100k.json\"))[\"p50_ms\"]; tp=json.load(open(\"benchmarks/results/tpuf-official-reference.json\"))[\"latencies_ms\"][\"cold\"][\"p50\"]; r=max(op,tp)/min(op,tp); assert r<=2.0, f\"ratio {r:.3f} op={op} tp={tp}\""
+  tags: [spec, bench-op-scaling, bench-tpuf]
 
 # bench-op-scaling live
 - label: live tpuf scaling probe JSON benchmarks/results/tpuf-scaling-10k-live.json at 10k docs when TURBOPUFFER_API_KEY set

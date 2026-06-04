@@ -6,11 +6,19 @@
 
 ---
 
+> ### ⚠️ Critical insight — same latency, different scale (NOT comparable)
+>
+> At **100k × 128** on MinIO, openpuffer measured cold **p50 ≈ 880 ms** is almost exactly turbopuffer’s official **874 ms** at **10M × 1024** on GCP—**same order of magnitude**, but **not** an apples-to-apples comparison: **100×** fewer documents, **8×** fewer dimensions, self-hosted MinIO vs managed fleet, and a different load model (7 sequential probes vs **8 QPS × 30 min**).
+>
+> **If** cold p50 scaled linearly with doc count on this harness, **10M × 128** extrapolates to **~87 s** (~**100×** tpuf **874 ms**)—openpuffer does **not** scale like turbopuffer’s published fleet curve. **Alternative reading:** tpuf’s **874 ms** may reflect fleet optimizations (NVMe/cache hierarchy, SPFresh at 10M) absent in self-hosted MinIO at **100k**.
+
+---
+
 ## Executive summary
 
-**openpuffer cold p50 on MinIO is still slower than turbopuffer’s published 10M GCP number.** A **2026-06-05** refresh @ git `7f7c0f5` (p90/p99 + ingest in `op-scaling-*.json`) measures **96 / 412 / 880 ms** @ 10k / 50k / 100k. A **linear** four-point fit extrapolates **~87 s** cold p50 @ **10M × 128** vs turbopuffer **874 ms** @ **10M × 1024** (~**100×**; **~283×** with √dim heuristic to 1024-d). Prior **log-linear ~2.2 s** narrative used an older **111 / 525 / 813** sweep—**superseded** by this commit set. Extrapolation remains **illustrative** (MinIO vs GCP, 128-d vs 1024-d).
+**Do not equate 100k ≈ 874 ms with parity.** Measured openpuffer **880 ms** @ **100k × 128** (MinIO) matches tpuf official **874 ms** @ **10M × 1024** (GCP) only as a **coincidence of magnitude**—different **N**, **D**, and backend. A **2026-06-05** refresh @ git `7f7c0f5` (p90/p99 + ingest in `op-scaling-*.json`) measures **96 / 412 / 880 ms** @ 10k / 50k / 100k. **Linear** extrapolation to **10M × 128** gives **~87 s** cold p50 vs tpuf **874 ms** (~**100×**; **~283×** with √dim heuristic to 1024-d)—if scaling holds, openpuffer does **not** track tpuf’s fleet scaling. Prior **log-linear ~2.2 s** narrative used an older **111 / 525 / 813** sweep—**superseded**. Extrapolation remains **illustrative** (MinIO vs GCP, 128-d vs 1024-d).
 
-**One-sentence answer:** Measured tiers **96 / 412 / 880 ms** (10k / 50k / 100k; git `7f7c0f5`) grow roughly with doc count (β ≈ 0.95); **linear** extrapolation gives **~87 s** cold p50 @ **10M × 128** vs tpuf **874 ms** (~**100×**)—**not** parity on AWS/1024-d/10M measured terms; 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
+**One-sentence answer:** **100k p50 ~880 ms ≈ tpuf 874 ms @ 10M is not comparable**; measured tiers **96 / 412 / 880 ms** grow with doc count (β ≈ 0.95); **linear** extrapolation → **~87 s** @ **10M × 128** (~**100×** tpuf)—**not** parity on AWS/1024-d/10M; 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
 
 **Superseded (do not cite):** linear-only fit on older **86/400/824 ms** tiers → **~81 s** @ 10M (~**93×** slower); anecdotal **~7 s** @ 100k from debug build or contention.
 
@@ -20,6 +28,7 @@
 
 | Claim | Confidence | Why |
 |-------|------------|-----|
+| 100k×128 p50 ~880 ms ≈ tpuf 874 ms @ 10M×1024 (order of magnitude) | **High** (numbers) / **N/A** (parity) | Committed JSON; **not** comparable workloads |
 | Measured cold p50 @ 10k–100k × 128 (MinIO) | **High** | Committed `op-scaling-*.json`; release+v3; CI schema gate |
 | 100k sub-linear vs 10k+50k bridge | **Medium** | LOO + bounded `index_object_count`; see § 100k stability |
 | Extrapolated 10M × 128 (~87 s, ~100× tpuf) | **Low** | Unmeasured; model choice (linear best R² on 96/412/880) |
@@ -60,6 +69,19 @@
 **Warm @ 10k:** p50 **81 ms** ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json)).
 
 **Scaling read (10k → 100k):** **~9.2×** latency for **10×** docs → power-law **β ≈ 0.95**; per-doc p50 **~0.0088 ms/doc** at 100k.
+
+### Same latency, different scale
+
+| Row | openpuffer (measured) | turbopuffer (official) | Comparable? |
+|-----|------------------------|-------------------------|-------------|
+| **Same latency, different scale** | **~880 ms** cold p50 @ **100k × 128** MinIO | **874 ms** cold p50 @ **10M × 1024** GCP | **No** — **100×** docs, **8×** dims, different backend & load |
+| Doc count | 100,000 | 10,000,000 | — |
+| Dimensions | 128 (synthetic) | 1024 (Cohere Wikipedia) | — |
+| Environment | `minio-testcontainers` | `c2-standard-30`, `gcp-us-central1` | — |
+| Load model | 7 sequential cold probes | **8 QPS × 30 min** | — |
+| Linear extrap @ 10M×128 (if β holds) | **~87 s** (~**100×** tpuf) | **874 ms** (measured @ 10M) | Extrap only; unmeasured on openpuffer |
+
+**Takeaway:** Matching **~880 ms** vs **874 ms** does **not** imply openpuffer is “as fast as tpuf at 10M”; it highlights that **per-doc cold work** on MinIO at **100k** is already in the same **millisecond band** as tpuf’s **10M** marketing number—while **doc-count extrapolation** diverges sharply (~**100×** at 10M if linear).
 
 ---
 
