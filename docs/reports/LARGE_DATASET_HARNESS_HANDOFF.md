@@ -3,7 +3,8 @@
 **Date:** 2026-06-04  
 **Program:** [PLAN_LARGE_DATASET_BENCHMARK.md](../PLAN_LARGE_DATASET_BENCHMARK.md) — apples-to-apples openpuffer vs managed turbopuffer on a shared synthetic workload (L1 default: **100k × 128-dim** cosine).  
 **Status:** **Offline harness COMPLETE** · **Live G3–G5 PENDING** (credentials + EC2)  
-**Offline harness:** no remaining gaps  
+**Final verify (session end):** `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`779508a`** (2026-06-04T03:47:30Z; G2 skipped — pass `--with-g2` for MinIO Docker parity)  
+**Offline harness:** no remaining gaps
 **Harness TODO sweep:** complete @ `1dc58b2` (2026-06-04) — no offline PLAN `[ ]` items; PLAN/BENCHMARKS have no `TODO`/`FIXME`/`defer`; remaining checklist `[ ]` is live G3–G5 only.  
 **Git tag (milestone):** `large-dataset-harness-v1` → `c7f66a3` (annotated, 2026-06-04) — offline harness complete; live G3–G5 remains operator-run.
 
@@ -16,7 +17,7 @@ All PLAN [verification checklist](../PLAN_LARGE_DATASET_BENCHMARK.md#verificatio
 Re-verified on this branch (harness TODO sweep, 2026-06-04):
 
 ```bash
-./scripts/verify-large-benchmark-program.sh   # exit 0 @ 8a56cbd (2026-06-04T03:06:38Z; G2 skipped — pass --with-g2 for MinIO Docker parity)
+./scripts/verify-large-benchmark-program.sh   # exit 0 @ 779508a (2026-06-04T03:47:30Z; G2 skipped — pass --with-g2 for MinIO Docker parity)
 ```
 
 No further offline harness implementation is planned before operator live G3–G5.
@@ -41,7 +42,7 @@ This PR-equivalent handoff documents a **timeboxed implementation** (~60 harness
 
 | Track | State |
 |-------|--------|
-| Harness (A1–A6, G2, G6, schemas, operators) | **Done** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ `8a56cbd` (2026-06-04T03:06:38Z; G2 optional, not run) |
+| Harness (A1–A6, G2, G6, schemas, operators) | **Done** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ `779508a` (2026-06-04T03:47:30Z; G2 optional, not run) |
 | Live measurement (G3 `large-aws-l1.json`, G4 `tpuf-l1.json`, 3.3 overlap, G5 measured) | **Blocked** — see [§ Blocked on credentials](#blocked-on-credentials) |
 
 **One command before any cloud spend:**
@@ -180,7 +181,7 @@ Detailed diagram and script names: [PLAN § Architecture](../PLAN_LARGE_DATASET_
 
 **Included gates (non-exhaustive):** pytest (workloads, tpuf driver, id-overlap); `test_render-report*.sh`; `validate-benchmark-json.sh`; `cargo test --test synthetic_workload_gate`; L1/L2/L3 harness dry-runs; `facts check --tags bench-large` / `bench-tpuf`; shellcheck; `check-benchmark-artifacts.sh`.
 
-**Last full audit (iteration 100, post-tag HEAD):** 2026-06-04T03:06:38Z, git **`8a56cbd`** (`large-dataset-harness-v1` + HANDOFF tag note), exit **0** (offline harness; G2 optional — add `--with-g2` for MinIO Docker parity with CI).
+**Last full audit (session end, pre-6am deadline):** 2026-06-04T03:47:30Z, git **`779508a`**, exit **0** (offline harness; G2 optional — add `--with-g2` for MinIO Docker parity with CI). Milestone tag **`large-dataset-harness-v1`** remains @ `c7f66a3`.
 
 ### Optional: `--with-g2` (Docker MinIO G2 / CI parity)
 
