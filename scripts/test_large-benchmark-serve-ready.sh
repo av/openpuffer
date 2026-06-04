@@ -104,7 +104,9 @@ grep -q 'within 2s' "$ROOT/.tmp-serve-ready-fail.txt" \
 rm -f "$ROOT/.tmp-serve-ready-fail.txt"
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -x scripts/lib/large-benchmark-serve-ready.sh
+  shellcheck -x \
+    scripts/lib/large-benchmark-exit-codes.sh \
+    scripts/lib/large-benchmark-serve-ready.sh
 fi
 
 grep -q 'large-benchmark-serve-ready.sh' scripts/ingest-large.sh \

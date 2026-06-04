@@ -1,11 +1,12 @@
 # shellcheck shell=bash
 # Poll openpuffer serve until HTTP readiness before upsert/query (ingest-large, bench-large).
-
-# shellcheck source=scripts/lib/large-benchmark-exit-codes.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/large-benchmark-exit-codes.sh"
 # Probes GET /health (shallow liveness) and GET /v1/ready (S3 HeadBucket + openpuffer/ read).
 # Either returning HTTP 2xx is sufficient; prefer /v1/ready when you need storage-backed traffic.
 # Source from ingest-large.sh / bench-large.sh — do not execute directly.
+
+_LARGE_BENCHMARK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/large-benchmark-exit-codes.sh
+source "${_LARGE_BENCHMARK_LIB_DIR}/large-benchmark-exit-codes.sh"
 
 # Last failed probe (for diagnostics).
 SERVE_READY_LAST_ENDPOINT=""

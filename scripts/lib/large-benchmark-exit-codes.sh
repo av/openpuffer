@@ -3,6 +3,7 @@
 # Source from operator scripts; see benchmarks/README.md § Exit codes.
 # Do not execute directly.
 
+# shellcheck disable=SC2168
 [[ -n "${_LARGE_BENCHMARK_EXIT_CODES_LOADED:-}" ]] && return 0
 _LARGE_BENCHMARK_EXIT_CODES_LOADED=1
 
