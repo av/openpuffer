@@ -151,8 +151,11 @@ Three steps: **verify locally** → **dry-run the program** → **live on EC2** 
 ### 1. Verify harness (no cloud spend)
 
 ```bash
+make bench-verify
+# same as:
 ./scripts/verify-large-benchmark-program.sh
-# optional: --with-g2 (MinIO Docker G2), --skip-l2-l3 (faster L1-only)
+# optional: make bench-verify VERIFY_FLAGS="--skip-l2-l3"  # faster L1-only
+# optional: make bench-g2-minio   # MinIO G2 only (Docker; not part of bench-verify)
 ```
 
 Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/bench schema tests, `synthetic_workload_gate`, and L1–L3 harness dry-runs. Same gate as CI [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml).
@@ -160,10 +163,14 @@ Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/be
 ### 2. Program dry-run (no credentials)
 
 ```bash
+make bench-dry-run
+# or a single tier plan:
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l1
 ```
 
-Prints the full G2→G3→G4→overlap→report plan and writes fixture-based report skeleton. Per-step dry-runs: `ingest-large.sh`, `bench-large.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-id-overlap-spotcheck.sh`, `render-report.sh --dry-run`.
+`make bench-dry-run` runs L1 per-script dry-runs plus L2/L3 via [`test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh). No pytest, cargo tests, or facts — faster than `bench-verify`.
+
+Per-step dry-runs: `ingest-large.sh`, `bench-large.sh`, `run-aws-large-benchmark.sh`, `run-tpuf-large-benchmark.sh`, `run-id-overlap-spotcheck.sh`, `render-report.sh --dry-run`.
 
 ### 3. Live comparison on EC2
 
@@ -193,8 +200,9 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 
 ### Orchestration
 
-| Script | Description |
-|--------|-------------|
+| Entry | Description |
+|-------|-------------|
+| [Makefile](../Makefile) | `make bench-verify`, `make bench-dry-run`, `make bench-g2-minio` |
 | [verify-large-benchmark-program.sh](../scripts/verify-large-benchmark-program.sh) | Offline gate: pytest + dry-runs + optional G2 + facts |
 | [run-large-benchmark-program.sh](../scripts/run-large-benchmark-program.sh) | Chain G2→G3→G4→overlap→G5; `--dry-run`, `--measured-report`, `--warm` |
 | [run-aws-large-benchmark.sh](../scripts/run-aws-large-benchmark.sh) | G3: G2 subset → AWS S3 → ingest-large → bench-large → `large-aws-{tier}.json` |

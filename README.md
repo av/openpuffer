@@ -85,6 +85,16 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32 # parallel GETs per cold sub-batch (def
 
 After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning. Large-dataset comparison harness (workloads, results JSON, operator scripts): [benchmarks/README.md](benchmarks/README.md).
 
+**Benchmark program (Makefile):**
+
+```bash
+make bench-verify      # offline harness gate (same as CI dispatch)
+make bench-dry-run     # harness dry-run only (L1–L3; no cloud spend)
+make bench-g2-minio    # optional G2 MinIO correctness (Docker; slow)
+```
+
+See [benchmarks/README.md](benchmarks/README.md) for EC2 live runs and artifact commit policy.
+
 **Recall API** (ANN vs exhaustive on indexed namespace):
 
 ```bash
