@@ -7,6 +7,7 @@ Large-dataset **openpuffer vs turbopuffer** comparison assets, workloads, and re
 ```
 benchmarks/
 ├── README.md                 ← this hub
+├── specs/tpuf/               # vendored tpuf-benchmark website TOML (10M × 1024)
 ├── requirements.txt          # consolidated Python deps (all harness modules)
 ├── workloads/
 │   ├── generate_synthetic.py # deterministic manifest + queries + spot_check
@@ -76,6 +77,8 @@ Git policy is enforced at **write time** (preflight guards), **add time** (`.git
 | `results/baseline-10k.json` | Legacy 10k MinIO baseline (`environment=minio-testcontainers`) |
 | `results/cold-50k-v3.json` | Legacy 50k v3 cold gate snapshot |
 | `results/nightly-100k.json` | Nightly 100k MinIO snapshot |
+| `results/tpuf-official-reference.json` | Official tpuf 10M×1024 homepage latencies + spec pointers (scaling comparison) |
+| `specs/tpuf/vector-10m-{cold,hot}.toml` | Vendored from [tpuf-benchmark/website](https://github.com/turbopuffer/tpuf-benchmark/tree/main/benchmarks/website) |
 | `results/*-schema-minio*.example.json` | MinIO **shape** exemplars (`environment=minio`) |
 | `results/ingest-large-*-schema-minio*.example.json` | Ingest sidecars for schema examples |
 | `results/large-aws-l{2,3}.example.json`, `tpuf-l{2,3}.example.json`, `ingest-large-l{2,3}.example.json` | L2/L3 schema placeholders (`environment=aws-s3` or `turbopuffer:*`) |

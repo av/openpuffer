@@ -1,0 +1,74 @@
+{
+  "schema_version": "tpuf_official_reference_v1",
+  "captured_at": "2026-06-05",
+  "description": "Official turbopuffer website calculator numbers and tpuf-benchmark specs for 10M × 1024-dim vector ANN. Used as the fixed reference for openpuffer scaling comparison (not re-run without TURBOPUFFER_API_KEY).",
+  "sources": [
+    {
+      "id": "homepage_calculator",
+      "url": "https://turbopuffer.com",
+      "note": "Vector Perf tab: 1024 dimensions, 10M docs, ~40GB; Approach (8 QPS with topk=10); links tpuf-benchmark"
+    },
+    {
+      "id": "tpuf_benchmark_readme",
+      "url": "https://github.com/turbopuffer/tpuf-benchmark/blob/main/README.md",
+      "note": "Infrastructure: c2-standard-30 on GCP us-central1; region gcp-us-central1"
+    },
+    {
+      "id": "vector_10m_cold_toml",
+      "url": "https://github.com/turbopuffer/tpuf-benchmark/blob/main/benchmarks/website/vector-10m-cold.toml",
+      "in_repo_copy": "benchmarks/specs/tpuf/vector-10m-cold.toml"
+    },
+    {
+      "id": "vector_10m_hot_toml",
+      "url": "https://github.com/turbopuffer/tpuf-benchmark/blob/main/benchmarks/website/vector-10m-hot.toml",
+      "in_repo_copy": "benchmarks/specs/tpuf/vector-10m-hot.toml"
+    }
+  ],
+  "infrastructure": {
+    "client_host": "c2-standard-30",
+    "cloud": "gcp",
+    "region": "gcp-us-central1",
+    "zone_note": "tpuf-benchmark README: all website benchmarks on c2-standard-30 in GCP us-central1"
+  },
+  "workload": {
+    "document_count": 10000000,
+    "dimensions": 1024,
+    "approx_storage_gb": 40,
+    "distance_metric": "cosine_distance",
+    "embedding_source": "Cohere/wikipedia-2023-11-embed-multilingual-v3",
+    "query_vectors": "pseudorandom (benchmark datasource random)"
+  },
+  "query_protocol": {
+    "query_type": "vector_ann",
+    "top_k": 10,
+    "qps": 8,
+    "duration": "30m",
+    "namespaces": 1,
+    "cold": {
+      "disable_cache": true,
+      "spec_file": "benchmarks/specs/tpuf/vector-10m-cold.toml",
+      "benchmark_name": "vectors_10m_cold"
+    },
+    "warm": {
+      "warm_cache": true,
+      "wait_for_cache_hit_ratio": 1.0,
+      "disable_cache": false,
+      "spec_file": "benchmarks/specs/tpuf/vector-10m-hot.toml",
+      "benchmark_name": "vectors_10m_hot"
+    }
+  },
+  "latencies_ms": {
+    "source": "turbopuffer.com homepage calculator (Vector Perf, 2026-06-05 scrape)",
+    "cold": {
+      "p50": 874,
+      "p90": 1214,
+      "p99": 1686
+    },
+    "warm": {
+      "p50": 14,
+      "p90": 17,
+      "p99": 27
+    }
+  },
+  "comparison_report": "docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md"
+}
