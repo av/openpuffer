@@ -56,10 +56,27 @@ Output: `benchmarks/results/tpuf-l1.json` (schema aligned with `large-aws-l1.jso
 | `TURBOPUFFER_BENCH_DELETE_FIRST` | `1` | `delete_all` before ingest (re-runs) |
 | `TURBOPUFFER_BENCH_SKIP_DELETE` | — | Keep namespace after run (debug; ongoing storage cost) |
 | `TURBOPUFFER_BENCH_ENFORCE_GATES` | `1` | Fail if recall@10 &lt; 0.85 or not indexed |
+| `TURBOPUFFER_INGEST_START_BATCH` | `1` | Resume ingest at this **1-based** batch (after prior batches succeeded) |
+| `TURBOPUFFER_INGEST_RETRY_MAX` | `6` | Max attempts per upsert batch (transient API errors only) |
+| `TURBOPUFFER_INGEST_RETRY_BASE_MS` | `500` | Exponential backoff base (ms) |
+| `TURBOPUFFER_INGEST_RETRY_MAX_MS` | `30000` | Backoff cap (ms) |
+
+### Ingest retry / resume (production)
+
+Mirrors [`scripts/ingest-large.sh`](../../scripts/ingest-large.sh): transient **429**, **5xx**, connection resets, and timeouts are retried with exponential backoff. On exhaustion the driver writes **partial** `tpuf-{tier}.json` with `ingest_failures`, `ingest_status: failed`, and `ingest_resume.next_batch`, then exits non-zero.
+
+```bash
+# Re-run from batch 6 after batches 1–5 succeeded (same namespace; keep DELETE_FIRST=0 if resuming)
+export TURBOPUFFER_BENCH_DELETE_FIRST=0
+export TURBOPUFFER_INGEST_START_BATCH=6
+python3 benchmarks/tpuf_driver/run_benchmark.py --tier l1
+```
+
+Use `TURBOPUFFER_BENCH_DELETE_FIRST=0` when resuming so prior rows are not wiped. Batch size stays **10k** per workload `manifest.json`.
 
 ## Protocol
 
-1. **Ingest** — 10k-row `namespace.write(upsert_columns=…)` batches from `generate_synthetic.py`
+1. **Ingest** — 10k-row `namespace.write(upsert_columns=…)` batches from `generate_synthetic.py` (retry/resume above)
 2. **Index gate** — poll `metadata()` until `index.status == up-to-date` and row count ≥ tier docs
 3. **Cold queries** — 7× vector ANN (`consistency: strong`), record `client_total_ms` when present
 4. **Filter + hybrid** — all `filter_queries` / `hybrid_queries` from `queries.json` (1× each, strong); per-query latency in `filter_query_runs` / `hybrid_query_runs`

@@ -291,9 +291,12 @@ Symptom: `ingest-large.sh` or `bench-large.sh` times out waiting for `index_curs
 | Re-run ingest poll only | Namespace exists; upsert done | `./scripts/ingest-large.sh --tier l1` (skips if caught up) or `bench-large` index wait |
 | v2 index mistake | Meta `preferred_ann_version` | Must be **3**; `export OPENPUFFER_ANN_VERSION=3` before `serve`; delete namespace and re-ingest if v2 |
 | 503 SlowDown | S3 API errors in logs | Lower parallel index writes; retry; verify IAM not throttling |
-| Upsert batch failed mid-ingest | `ingest-large-*.json` → `ingest_failures`, `ingest_status` | Transient 5xx/429/connection reset retried automatically; on exhaustion set `OPENPUFFER_INGEST_START_BATCH=<n>` (1-based batch to run next) and re-run same tier |
+| Upsert batch failed mid-ingest (openpuffer) | `ingest-large-*.json` → `ingest_failures`, `ingest_status` | Transient 5xx/429/connection reset retried automatically; on exhaustion set `OPENPUFFER_INGEST_START_BATCH=<n>` (1-based batch to run next) and re-run same tier |
+| Upsert batch failed mid-ingest (tpuf) | `tpuf-*.json` → `ingest_failures`, `ingest_status` | Transient 429/5xx/connection/timeout retried in `run_benchmark.py`; on exhaustion set `TURBOPUFFER_INGEST_START_BATCH=<n>`, `TURBOPUFFER_BENCH_DELETE_FIRST=0`, re-run G4 |
 
-**Ingest resume / retry env (production S3):** `OPENPUFFER_INGEST_START_BATCH` (default `1`), `OPENPUFFER_INGEST_RETRY_MAX` (default `6`), `OPENPUFFER_INGEST_RETRY_BASE_MS` (default `500`), `OPENPUFFER_INGEST_RETRY_MAX_MS` (default `30000`). Batch size remains **10k** per workload `manifest.json` (`batch_size: 10000`).
+**Ingest resume / retry env (production S3 — openpuffer):** `OPENPUFFER_INGEST_START_BATCH` (default `1`), `OPENPUFFER_INGEST_RETRY_MAX` (default `6`), `OPENPUFFER_INGEST_RETRY_BASE_MS` (default `500`), `OPENPUFFER_INGEST_RETRY_MAX_MS` (default `30000`). Batch size remains **10k** per workload `manifest.json` (`batch_size: 10000`).
+
+**Ingest resume / retry env (turbopuffer — G4):** `TURBOPUFFER_INGEST_START_BATCH`, `TURBOPUFFER_INGEST_RETRY_MAX`, `TURBOPUFFER_INGEST_RETRY_BASE_MS`, `TURBOPUFFER_INGEST_RETRY_MAX_MS` (same defaults). See [`benchmarks/tpuf_driver/README.md`](../benchmarks/tpuf_driver/README.md).
 
 **Indexer not running:** `bench-large.sh` starts `openpuffer serve` unless `OPENPUFFER_BENCH_SKIP_SERVE=1`. If you run `serve` manually, keep one process per namespace during index catch-up.
 
@@ -563,7 +566,7 @@ Expected **~1 WAL commit/s** per namespace — do not compare ingest wall time t
 
 | Issue | Action |
 |-------|--------|
-| 429 / rate limit | Smaller write concurrency; SDK backoff |
+| 429 / rate limit | Driver retries with exponential backoff; resume with `TURBOPUFFER_INGEST_START_BATCH` if exhausted |
 | High cold p50 | Closer `TURBOPUFFER_REGION`; same host as openpuffer bench |
 | Recall cost | Reduce `recall_defaults.num` on large namespaces |
 

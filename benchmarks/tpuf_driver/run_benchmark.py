@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -39,6 +40,81 @@ TIER_INDEX_TIMEOUT_SEC: dict[str, int] = {
     "l3": 14400,
 }
 RECALL_GATE = 0.85
+
+# Ingest retry/resume (mirrors scripts/lib/ingest-large-retry.sh + OPENPUFFER_INGEST_*).
+DEFAULT_INGEST_RETRY_MAX = 6
+DEFAULT_INGEST_RETRY_BASE_MS = 500
+DEFAULT_INGEST_RETRY_MAX_MS = 30_000
+
+
+def ingest_retry_max_attempts() -> int:
+    return max(1, int(os.environ.get("TURBOPUFFER_INGEST_RETRY_MAX", DEFAULT_INGEST_RETRY_MAX)))
+
+
+def ingest_retry_base_ms() -> int:
+    return max(1, int(os.environ.get("TURBOPUFFER_INGEST_RETRY_BASE_MS", DEFAULT_INGEST_RETRY_BASE_MS)))
+
+
+def ingest_retry_max_ms() -> int:
+    return max(
+        ingest_retry_base_ms(),
+        int(os.environ.get("TURBOPUFFER_INGEST_RETRY_MAX_MS", DEFAULT_INGEST_RETRY_MAX_MS)),
+    )
+
+
+def parse_ingest_start_batch() -> int:
+    raw = os.environ.get("TURBOPUFFER_INGEST_START_BATCH", "1")
+    try:
+        start = int(raw)
+    except ValueError as exc:
+        raise SystemExit(
+            f"TURBOPUFFER_INGEST_START_BATCH must be a positive integer (got: {raw!r})"
+        ) from exc
+    if start < 1:
+        raise SystemExit(
+            f"TURBOPUFFER_INGEST_START_BATCH must be a positive integer (got: {start})"
+        )
+    return start
+
+
+def ingest_batch_count(num_docs: int, batch_size: int) -> int:
+    if batch_size < 1:
+        return 0
+    return (num_docs + batch_size - 1) // batch_size
+
+
+def retry_backoff_sec(attempt: int) -> int:
+    """Exponential backoff in seconds: base_ms * 2^(attempt-1), capped at max_ms."""
+    attempt = max(1, attempt)
+    base_ms = ingest_retry_base_ms()
+    max_ms = ingest_retry_max_ms()
+    delay_ms = min(max_ms, base_ms * (2 ** (attempt - 1)))
+    return max(1, int(math.ceil(delay_ms / 1000.0)))
+
+
+def is_transient_api_error(exc: BaseException) -> bool:
+    """Return True when a turbopuffer write failure is worth retrying."""
+    try:
+        from turbopuffer import (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    except ImportError:
+        return False
+
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in (429, 500, 502, 503, 504)
+    return False
+
+
+def api_error_status_code(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    return int(status) if status is not None else None
 
 
 def default_index_timeout_sec(tier: str) -> int:
@@ -149,21 +225,154 @@ def wait_until_indexed(ns: Any, *, expected_docs: int, timeout_sec: int) -> dict
     )
 
 
-def ingest_workload(ns: Any, cfg: gen.WorkloadConfig) -> dict[str, Any]:
+class IngestBatchError(RuntimeError):
+    """Raised when an ingest batch fails after retries (carries resume metadata)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        batch_num: int,
+        batch_index: int,
+        failures: list[dict[str, Any]],
+        partial: dict[str, Any],
+        resume: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.batch_num = batch_num
+        self.batch_index = batch_index
+        self.failures = failures
+        self.partial = partial
+        self.resume = resume
+
+
+def write_batch_with_retry(
+    ns: Any,
+    kwargs: dict[str, Any],
+    *,
+    batch_num: int,
+    batch_total: int,
+) -> Any:
+    max_attempts = ingest_retry_max_attempts()
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return ns.write(**kwargs)
+        except BaseException as exc:  # noqa: BLE001 — turbopuffer SDK errors
+            last_exc = exc
+            if is_transient_api_error(exc) and attempt < max_attempts:
+                backoff = retry_backoff_sec(attempt)
+                status = api_error_status_code(exc)
+                print(
+                    f"  batch {batch_num}/{batch_total}: transient failure "
+                    f"(attempt {attempt}/{max_attempts}, status={status}); "
+                    f"retry in {backoff}s",
+                    file=sys.stderr,
+                )
+                time.sleep(backoff)
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("write_batch_with_retry: no attempts made")
+
+
+def ingest_workload(
+    ns: Any,
+    cfg: gen.WorkloadConfig,
+    *,
+    start_batch: int = 1,
+) -> dict[str, Any]:
+    total_batches = ingest_batch_count(cfg.num_docs, cfg.batch_size)
+    if start_batch > total_batches:
+        raise SystemExit(
+            f"TURBOPUFFER_INGEST_START_BATCH={start_batch} exceeds batch count {total_batches}"
+        )
+
     t0 = time.monotonic()
     total_rows = 0
     batches: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    skipped_batches = 0
+
     for batch_index, start, count in gen.iter_batches(cfg):
+        batch_num = batch_index + 1
+        if batch_num < start_batch:
+            skipped_batches += 1
+            continue
+
         kwargs = gen.turbopuffer_write_kwargs(
             cfg, start, count, include_schema=batch_index == 0
         )
         batch_t0 = time.monotonic()
-        resp = ns.write(**kwargs)
+        try:
+            resp = write_batch_with_retry(
+                ns,
+                kwargs,
+                batch_num=batch_num,
+                batch_total=total_batches,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            transient = is_transient_api_error(exc)
+            failures.append(
+                {
+                    "batch": batch_num,
+                    "batch_index": batch_index,
+                    "start": start,
+                    "count": count,
+                    "attempt": ingest_retry_max_attempts(),
+                    "status_code": api_error_status_code(exc),
+                    "transient": transient,
+                    "message": (
+                        f"write failed after retries "
+                        f"(resume with TURBOPUFFER_INGEST_START_BATCH={batch_num})"
+                    ),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            elapsed = time.monotonic() - t0
+            partial = {
+                "ingest_elapsed_secs": round(elapsed, 2),
+                "ingest_docs_per_sec": round(total_rows / elapsed, 2) if elapsed > 0 else 0.0,
+                "ingest_rows_written": total_rows,
+                "ingest_batches": batches,
+                "ingest_status": "failed",
+                "ingest_failures": failures,
+                "ingest_resume": {
+                    "start_batch": start_batch,
+                    "skipped_batches": skipped_batches,
+                    "total_batches": total_batches,
+                    "next_batch": batch_num,
+                },
+                "ingest_retry": {
+                    "max_attempts": ingest_retry_max_attempts(),
+                    "base_backoff_ms": ingest_retry_base_ms(),
+                },
+            }
+            print(
+                f"  batch {batch_num}/{total_batches}: FAILED ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            print(
+                f"  resume: TURBOPUFFER_INGEST_START_BATCH={batch_num} "
+                f"python3 benchmarks/tpuf_driver/run_benchmark.py --tier …",
+                file=sys.stderr,
+            )
+            raise IngestBatchError(
+                str(exc),
+                batch_num=batch_num,
+                batch_index=batch_index,
+                failures=failures,
+                partial=partial,
+                resume=partial["ingest_resume"],
+            ) from exc
+
         batch_ms = int((time.monotonic() - batch_t0) * 1000)
         affected = int(getattr(resp, "rows_affected", count) or count)
         total_rows += affected
         batches.append(
             {
+                "batch": batch_num,
                 "batch_index": batch_index,
                 "start": start,
                 "count": count,
@@ -171,13 +380,31 @@ def ingest_workload(ns: Any, cfg: gen.WorkloadConfig) -> dict[str, Any]:
                 "wall_ms": batch_ms,
             }
         )
+        print(f"  batch {batch_num}/{total_batches} start={start} count={count} {batch_ms}ms")
+
     elapsed = time.monotonic() - t0
-    return {
+    result: dict[str, Any] = {
         "ingest_elapsed_secs": round(elapsed, 2),
         "ingest_docs_per_sec": round(total_rows / elapsed, 2) if elapsed > 0 else 0.0,
         "ingest_rows_written": total_rows,
         "ingest_batches": batches,
+        "ingest_status": "ok",
+        "ingest_failures": failures,
+        "ingest_resume": {
+            "start_batch": start_batch,
+            "skipped_batches": skipped_batches,
+            "total_batches": total_batches,
+        },
+        "ingest_retry": {
+            "max_attempts": ingest_retry_max_attempts(),
+            "base_backoff_ms": ingest_retry_base_ms(),
+        },
     }
+    if start_batch > 1:
+        print(
+            f"  resumed from batch {start_batch} (skipped {skipped_batches} prior batches)"
+        )
+    return result
 
 
 def inject_vector_placeholder(value: Any, vector: list[float]) -> Any:
@@ -529,6 +756,15 @@ def build_result_payload(
                 "ingest_rows_written": ingest_stats["ingest_rows_written"],
             }
         )
+        for key in (
+            "ingest_status",
+            "ingest_failures",
+            "ingest_resume",
+            "ingest_retry",
+            "ingest_batches",
+        ):
+            if key in ingest_stats:
+                payload[key] = ingest_stats[key]
     if filter_query_runs is not None:
         payload["filter_query_runs"] = filter_query_runs
     if hybrid_query_runs is not None:
@@ -559,6 +795,12 @@ def dry_run(ctx: RunContext) -> None:
         f"delete_first={ctx.delete_first} skip_delete={ctx.skip_delete} warm_mode={ctx.warm_mode}"
     )
     print(f"  filter_queries={len(ctx.filter_specs)} hybrid_queries={len(ctx.hybrid_specs)}")
+    start_batch = parse_ingest_start_batch()
+    print(
+        f"  ingest_start_batch={start_batch} "
+        f"retry_max={ingest_retry_max_attempts()} "
+        f"retry_base_ms={ingest_retry_base_ms()}"
+    )
     if ctx.warm_mode:
         print(
             f"  warm_runs={ctx.warm_runs} warm_consistency={ctx.warm_consistency} "
@@ -573,6 +815,29 @@ def dry_run(ctx: RunContext) -> None:
         f"Full run: export TURBOPUFFER_API_KEY=tpuf_... TURBOPUFFER_REGION={ctx.region} "
         f"&& python3 benchmarks/tpuf_driver/run_benchmark.py --tier {ctx.tier}{warm_flag}"
     )
+
+
+def write_partial_ingest_failure(ctx: RunContext, partial: dict[str, Any]) -> None:
+    """Write tpuf JSON with ingest failure metadata (no query phase)."""
+    payload = build_result_payload(
+        ctx,
+        index_meta={
+            "status": "unknown",
+            "approx_row_count": partial.get("ingest_rows_written"),
+        },
+        ingest_stats=partial,
+        cold_runs=[],
+        p50_ms=0,
+        p95_ms=0,
+        candidates_ratio=None,
+        recall_at_10=0.0,
+    )
+    payload["ingest_status"] = partial.get("ingest_status", "failed")
+    ctx.results_path.parent.mkdir(parents=True, exist_ok=True)
+    with ctx.results_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    print(f"Wrote partial ingest failure to {ctx.results_path}", file=sys.stderr)
 
 
 def enforce_result_gates(ctx: RunContext, payload: dict[str, Any]) -> None:
@@ -625,7 +890,12 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
                 f"tpuf ingest: tier={ctx.tier} namespace={ctx.namespace} "
                 f"docs={ctx.num_docs} region={ctx.region}"
             )
-            ingest_stats = ingest_workload(ns, cfg)
+            start_batch = parse_ingest_start_batch()
+            try:
+                ingest_stats = ingest_workload(ns, cfg, start_batch=start_batch)
+            except IngestBatchError as exc:
+                write_partial_ingest_failure(ctx, exc.partial)
+                raise SystemExit(1) from exc
             print(
                 f"  ingest done: {ingest_stats['ingest_rows_written']} rows in "
                 f"{ingest_stats['ingest_elapsed_secs']}s "
