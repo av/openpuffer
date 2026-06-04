@@ -30,7 +30,94 @@ Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN
 ./scripts/run-minio-correctness-gates.sh
 ```
 
-**CI:** On every push/PR, job `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the same script (Docker testcontainers), then compose MinIO + [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) `--docs 10000` (schema fast path, 25m step timeout).
+**CI:** On every push/PR, job `g2-minio-correctness` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs two MinIO backends in sequence: (1) **testcontainers** via [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) — same as local G2; (2) **compose** via [`ensure-compose-minio.sh`](../scripts/ensure-compose-minio.sh) + [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh) `--docs 10000` (schema fast path, 25m step timeout). See [§ MinIO backends](#minio-backends-for-g2-testcontainers-vs-compose) below.
+
+### MinIO backends for G2 (testcontainers vs compose)
+
+G2 correctness uses **two different MinIO setups**. They are **not interchangeable** for every step — know which one your command expects.
+
+| Backend | How it starts | S3 API | Default bucket | Used for |
+|---------|---------------|--------|----------------|----------|
+| **testcontainers** | Ephemeral container per `cargo test` (Rust `S3Fixture::from_testcontainers`) | Random host port mapped to MinIO | Per-test (fixture) | **Core G2 gates:** `run-minio-correctness-gates.sh`, `integration_s3` `synthetic_128_g2_*`, `bench_cold` synthetic-128 gate, nightly G6 step 1 |
+| **compose** | [`docker-compose.test.yml`](../docker-compose.test.yml) project `openpuffer-test` | **Fixed** `http://127.0.0.1:9000` (console `:9001`) | `openpuffer-integration` | **Schema / operator paths:** CI step 2 (`run-minio-large-schema-example.sh`), `./scripts/run-integration-s3.sh external`, manual `dev-serve` against a stable endpoint |
+
+**Core G2 one-shot does not require compose.** [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) only needs Docker (for testcontainers). You only need `docker-compose.test.yml` when running compose-backed scripts (schema example, external integration tests, or local ingest/bench against MinIO on `:9000`).
+
+#### `docker-compose.test.yml` — start, env, stop
+
+Stack definition: [`docker-compose.test.yml`](../docker-compose.test.yml) (distinct from dev [`docker-compose.yml`](../docker-compose.yml) — different Compose project name and bucket).
+
+| Item | Value |
+|------|--------|
+| Compose project | `openpuffer-test` (`name:` in file) |
+| API | `http://127.0.0.1:9000` |
+| Console | `http://127.0.0.1:9001` |
+| Credentials | `minioadmin` / `minioadmin` |
+| Bucket (created by `minio-init`) | `openpuffer-integration` |
+
+**Start** (idempotent — skips `up` if `/minio/health/live` already succeeds on the endpoint):
+
+```bash
+./scripts/ensure-compose-minio.sh
+# equivalent:
+docker compose -f docker-compose.test.yml up -d
+# wait for health, then:
+docker compose -f docker-compose.test.yml run --rm minio-init
+```
+
+**Env** (used by compose-backed tests and [`run-minio-large-schema-example.sh`](../scripts/run-minio-large-schema-example.sh); defaults match the file above):
+
+```bash
+export OPENPUFFER_TEST_S3_ENDPOINT=http://127.0.0.1:9000
+export OPENPUFFER_TEST_S3_BUCKET=openpuffer-integration
+export OPENPUFFER_TEST_S3_ACCESS_KEY=minioadmin
+export OPENPUFFER_TEST_S3_SECRET_KEY=minioadmin
+```
+
+For **serve + ingest/bench on compose MinIO**, point `OPENPUFFER_S3_*` at the same values (see [`run-integration-s3.sh`](../scripts/run-integration-s3.sh) `print_external_env_docs`).
+
+**Stop** (frees ports `9000`/`9001`):
+
+```bash
+docker compose -f docker-compose.test.yml down
+```
+
+**External integration suite** (compose + `#[ignore]` tests — longer than G2 subset):
+
+```bash
+./scripts/run-integration-s3.sh external
+```
+
+**MinIO L1 schema example** (G2-adjacent; validates `large-aws-*.json` shape, not AWS SLOs):
+
+```bash
+./scripts/ensure-compose-minio.sh
+./scripts/run-minio-large-schema-example.sh --docs 10000   # ~2–5 min (CI parity)
+# full committed example path:
+./scripts/run-minio-large-schema-example.sh                # 100k, ~15–30 min
+```
+
+#### G2 troubleshooting (compose + testcontainers)
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `Bind for 0.0.0.0:9000 failed: port is already allocated` | Dev [`docker-compose.yml`](../docker-compose.yml), [`docker-compose.test.yml`](../docker-compose.test.yml), or another MinIO already on **9000**/**9001** | `docker compose -f docker-compose.yml down` **and** `docker compose -f docker-compose.test.yml down`; `ss -tlnp \| grep -E ':9000|:9001'`; keep only one stack. Dev uses bucket `openpuffer-dev`; test compose uses `openpuffer-integration`. |
+| `ensure-compose-minio` prints “already healthy” but schema/ingest fails with `NoSuchBucket` / 403 | Something **other than** `openpuffer-test` is answering on `:9000` (wrong bucket/creds) | Stop all MinIO on 9000; run `./scripts/ensure-compose-minio.sh` fresh; confirm bucket: `docker compose -f docker-compose.test.yml run --rm minio-init` |
+| `error: docker daemon is not reachable` | Docker stopped or user lacks permission | Start Docker; `docker info`; on Linux, add user to `docker` group or use `sudo` consistently |
+| `cargo test -F integration` hangs or flakes on MinIO | testcontainers **Ryuk** cleanup or leaked containers | CI sets `TESTCONTAINERS_RYUK_DISABLED=true` ([`ci.yml`](../.github/workflows/ci.yml)); locally try the same, then `docker ps -a \| grep testcontainers` and remove stale containers; restart Docker if port pool exhausted |
+| G2 integration passes locally but compose schema step fails | Only ran `run-minio-correctness-gates.sh` (testcontainers) — compose never started | Run `./scripts/ensure-compose-minio.sh` then `run-minio-large-schema-example.sh` (mirrors CI job step 2) |
+| `run-aws-large-benchmark.sh` / G3 preflight rejects endpoint | `OPENPUFFER_S3_ENDPOINT` points at MinIO (`127.0.0.1:9000`) on the **AWS comparison path** | Expected: G3 needs real `*amazonaws.com*` (or unset). Use compose MinIO only for **G2** and schema examples, not `large-aws-*.json` comparison latencies |
+| Two `cargo test -F integration` processes in parallel | Each spawns its own testcontainers MinIO — slow / OOM on small machines | Run G2 gates serially: `./scripts/run-minio-correctness-gates.sh` (already serial); avoid parallel `integration_s3` while compose schema ingest runs |
+
+**Quick diagnosis:**
+
+```bash
+curl -sf http://127.0.0.1:9000/minio/health/live && echo OK || echo "nothing on :9000"
+docker compose -f docker-compose.test.yml ps
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '9000|minio|testcontainers'
+```
+
+**Makefile / verify:** `make bench-g2-minio` and `./scripts/verify-large-benchmark-program.sh --with-g2` run **testcontainers only** (same as CI step 1). For full CI parity including compose schema path, run `ensure-compose-minio.sh` + `run-minio-large-schema-example.sh --docs 10000` after G2 green.
 
 **Full MinIO preflight** (plan §2.3 — longer):
 
