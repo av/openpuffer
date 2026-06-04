@@ -42,38 +42,52 @@ Subdirectory docs: [workloads/synthetic-128/README.md](workloads/synthetic-128/R
 
 ## JSON artifacts — committed vs operator-only
 
-There is **no** `benchmarks/` entry in `.gitignore`. What lands in git is a **policy**, enforced by preflight (`large_preflight_guard_aws_results_path`, `preflight-tpuf.sh --check-results`) and review.
+Git policy is enforced at **write time** (preflight guards), **add time** (`.gitignore` + explicit `git add -f`), and **CI/review** ([`scripts/check-benchmark-artifacts.sh`](../scripts/check-benchmark-artifacts.sh)).
 
-### Committed in the repo
+### Committed in the repo (always tracked)
 
 | Path | Purpose |
 |------|---------|
 | `workloads/synthetic-128/**/manifest.json` | Tier doc counts, seed, schema |
 | `workloads/synthetic-128/**/queries.json` | Cold/filter/hybrid/warm/spot_check/recall_defaults |
-| `report/fixtures/*.json` | Offline G5 merge inputs (`--dry-run`) |
+| `report/fixtures/*.json` | Offline G5 merge inputs (`--dry-run`; `environment=aws-s3` / `turbopuffer:<region>`) |
 | `cross_check/fixtures/*.json` | Mock overlap for tests |
-| `results/baseline-10k.json` | Legacy 10k MinIO baseline |
+| `results/baseline-10k.json` | Legacy 10k MinIO baseline (`environment=minio-testcontainers`) |
 | `results/cold-50k-v3.json` | Legacy 50k v3 cold gate snapshot |
 | `results/nightly-100k.json` | Nightly 100k MinIO snapshot |
 | `results/*-schema-minio*.example.json` | MinIO **shape** exemplars (`environment=minio`) |
 | `results/ingest-large-*-schema-minio*.example.json` | Ingest sidecars for schema examples |
+| `results/large-aws-l{2,3}.example.json`, `tpuf-l{2,3}.example.json`, `ingest-large-l{2,3}.example.json` | L2/L3 schema placeholders (`environment=aws-s3` or `turbopuffer:*`) |
+| `results/id-overlap-l1.example.json` | Phase 3.3 mock overlap (no live API) |
 
 ### Operator-produced — commit after live AWS/tpuf runs
 
-| Path | When to commit |
-|------|----------------|
-| `results/large-aws-{l1,l2,l3}.json` | G3 on **real AWS S3** (`environment` ≠ `minio`); run `preflight-aws-ec2.sh` / preflight guard |
-| `results/tpuf-{l1,l2,l3}.json` | G4 live driver; run `preflight-tpuf.sh --check-results` before `git add` |
-| `results/ingest-large-{tier}.json` | Optional sidecar from `ingest-large.sh` (embedded in bench JSON too) |
-| `results/id-overlap-{tier}.json` | Phase 3.3 after **both** namespaces indexed |
+These paths are in [`.gitignore`](../.gitignore) so a normal `git add benchmarks/results/` does **not** pick up local runs. After EC2 preflight and validation, commit **explicitly**:
 
-### Do not commit (or use `*.example.json` naming)
+```bash
+./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json
+./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
+./scripts/check-benchmark-artifacts.sh --staged
+git add -f benchmarks/results/large-aws-l1.json benchmarks/results/ingest-large-l1.json
+git add -f benchmarks/results/tpuf-l1.json benchmarks/results/id-overlap-l1.json
+```
+
+| Path | When to commit | Required `environment` |
+|------|----------------|------------------------|
+| `results/large-aws-{l1,l2,l3}.json` | G3 on **real AWS S3** | `aws-s3` |
+| `results/ingest-large-{tier}.json` | Optional ingest sidecar | `aws-s3` |
+| `results/tpuf-{l1,l2,l3}.json` | G4 live driver | `turbopuffer:<region>` |
+| `results/id-overlap-{tier}.json` | Phase 3.3 after both sides indexed | (no `environment` field) |
+
+### Do not commit (or use `*.example.json` / `*-schema-minio*` naming)
 
 | Pattern | Reason |
 |---------|--------|
-| `large-aws-*.json` from **MinIO** | Not comparable to tpuf; preflight blocks unless path contains `minio`, `example`, or `schema` |
+| `large-aws-l*.json` from **MinIO** | Not comparable to tpuf; use `large-aws-l1-schema-minio.example.json` (`environment=minio`) |
 | Scratch / partial runs | No `environment`, wrong tier, or failed index gate |
 | Files containing API keys | `preflight-tpuf.sh --check-results` scans before publish |
+
+**Why `.gitignore` live paths?** Prevents accidental commits of workstation/MinIO timings while still allowing measured AWS/tpuf JSON in the repo via `git add -f` after operator review. **`check-benchmark-artifacts.sh`** fails CI if tracked JSON has `environment=minio` on a live comparison basename.
 
 **MinIO schema runs** must keep `environment=minio` and filenames like `large-aws-l1-schema-minio.example.json` — safe for CI and schema facts; **never** paste MinIO latencies into [docs/COMPARISON.md](../docs/COMPARISON.md).
 
@@ -160,6 +174,7 @@ GitHub Actions alternative (secrets): [docs/BENCHMARKS_GITHUB_ACTIONS_SECRETS.md
 | [test_render-report.sh](../scripts/test_render-report.sh) | Offline render-report merge checks |
 | [test_render-report-measured.sh](../scripts/test_render-report-measured.sh) | Measured-mode schema, interpretation, appendix redaction |
 | [validate-benchmark-json.sh](../scripts/validate-benchmark-json.sh) | JSON Schema for fixtures + `*.example.json` (large-aws, tpuf, ingest, id-overlap) |
+| [check-benchmark-artifacts.sh](../scripts/check-benchmark-artifacts.sh) | Git policy: live `large-aws-*` must be `environment=aws-s3`; MinIO only in `*-schema-minio*` / legacy snapshots |
 | [test_ingest-timing-schema.sh](../scripts/test_ingest-timing-schema.sh) | `ingest_timing` / batch_runs JSON shape |
 | [test_bench-large-secondary-schema.sh](../scripts/test_bench-large-secondary-schema.sh) | Filter/hybrid/warm fields in bench JSON |
 | [ensure-compose-minio.sh](../scripts/ensure-compose-minio.sh) | Start/wait for compose MinIO on `:9000` (CI schema job) |

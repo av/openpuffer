@@ -37,6 +37,7 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 | 2026-06-04 | `5aca279` | G3 live retry skipped on MinIO; add [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) |
 | 2026-06-04 | `5627247` | Generalize benchmark JSON schemas for L2/L3 tiers + example artifacts |
 | 2026-06-04 | `2337cbb` | `@spec` facts for validate-benchmark-json, preflight scripts, and schemas |
+| 2026-06-04 | `3a9318f` | Git policy: `.gitignore` live `large-aws-*` / `tpuf-*` paths; `check-benchmark-artifacts.sh` CI gate |
 | 2026-06-04 | `3a3904a` | id-overlap JSON Schema, production-shaped mock, committed `id-overlap-l1.example.json` |
 | 2026-06-04 | `7424cad` | COMPARISON operator checklist mirroring PLAN steps 1–5 |
 | 2026-06-04 | `fe7edd3` | ingest-large-l1 JSON Schema wired into validate-benchmark-json |

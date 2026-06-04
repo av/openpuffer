@@ -56,7 +56,13 @@ export TURBOPUFFER_REGION=aws-us-east-1
 | `tpuf-l1.json`, `id-overlap-l1.json` | `TURBOPUFFER_API_KEY`, `.env`, IAM secrets |
 | `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` | `*-schema-minio*.example.json` as “measured AWS” |
 
-Validate before push: `./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json`
+Validate before push:
+
+```bash
+./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json
+./scripts/check-benchmark-artifacts.sh --staged
+git add -f benchmarks/results/large-aws-l1.json benchmarks/results/tpuf-l1.json
+```
 
 ## Wall-clock (L1 @ 100k, m7i.xlarge)
 

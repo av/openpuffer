@@ -406,7 +406,11 @@
 # bench-large (PLAN_LARGE_DATASET_BENCHMARK Phase 8 A1–A5, G1/G6)
 
 - label: benchmarks/README.md hub documents directory layout JSON commit policy operator quick-start and script index
-  command: test -f benchmarks/README.md && grep -q 'verify-large-benchmark-program' benchmarks/README.md && grep -q 'run-large-benchmark-program' benchmarks/README.md && grep -q 'large-aws-' benchmarks/README.md && grep -q 'schema-minio' benchmarks/README.md && grep -q 'Do not commit' benchmarks/README.md && grep -q 'benchmarks/README.md' docs/BENCHMARKS.md && grep -q 'benchmarks/README.md' README.md
+  command: test -f benchmarks/README.md && grep -q 'verify-large-benchmark-program' benchmarks/README.md && grep -q 'run-large-benchmark-program' benchmarks/README.md && grep -q 'large-aws-' benchmarks/README.md && grep -q 'schema-minio' benchmarks/README.md && grep -q 'Do not commit' benchmarks/README.md && grep -q 'check-benchmark-artifacts' benchmarks/README.md && grep -q 'git add -f' benchmarks/README.md && grep -q 'benchmarks/README.md' docs/BENCHMARKS.md && grep -q 'benchmarks/README.md' README.md
+  tags: [spec, bench-large, bench-tpuf, implemented]
+
+- label: check-benchmark-artifacts.sh enforces live large-aws environment aws-s3 gitignore and operator git add -f policy
+  command: test -x scripts/check-benchmark-artifacts.sh && test -x scripts/test_check-benchmark-artifacts.sh && grep -q 'large-aws-l1.json' .gitignore && grep -q 'tpuf-l1.json' .gitignore && grep -q check-benchmark-artifacts.sh scripts/verify-large-benchmark-program.sh && ./scripts/test_check-benchmark-artifacts.sh && ./scripts/check-benchmark-artifacts.sh >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 
 - label: synthetic-128 L1 workload manifest and queries committed with seed 42 num_docs 100k dim 128 recall_defaults num=20 top_k=10
@@ -437,7 +441,7 @@
   command: test -x scripts/test_l2-l3-harness-dry-run.sh && grep -q 'L2/L3' docs/BENCHMARKS.md && ./scripts/test_l2-l3-harness-dry-run.sh >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 - label: verify-large-benchmark-program.sh runs offline harness gates pytest render synthetic_workload_gate L1 L2 L3 dry-run documented in PLAN
-  command: test -x scripts/verify-large-benchmark-program.sh && grep -q verify-large-benchmark-program docs/PLAN_LARGE_DATASET_BENCHMARK.md && grep -q synthetic_workload_gate scripts/verify-large-benchmark-program.sh && grep -q test_l2-l3-harness-dry-run.sh scripts/verify-large-benchmark-program.sh && grep -q validate-benchmark-json.sh scripts/verify-large-benchmark-program.sh && ./scripts/verify-large-benchmark-program.sh --skip-facts >/dev/null
+  command: test -x scripts/verify-large-benchmark-program.sh && grep -q verify-large-benchmark-program docs/PLAN_LARGE_DATASET_BENCHMARK.md && grep -q synthetic_workload_gate scripts/verify-large-benchmark-program.sh && grep -q test_l2-l3-harness-dry-run.sh scripts/verify-large-benchmark-program.sh && grep -q validate-benchmark-json.sh scripts/verify-large-benchmark-program.sh && grep -q check-benchmark-artifacts.sh scripts/verify-large-benchmark-program.sh && ./scripts/verify-large-benchmark-program.sh --skip-facts >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
 - label: run-minio-large-schema-example.sh targets schema example JSON with environment minio warm secondary query fields and optional --docs 10000 fast path
   command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh && grep -qE '(--warm|WARM_MODE)' scripts/run-minio-large-schema-example.sh && grep -q 'filter_query_runs' scripts/run-minio-large-schema-example.sh && grep -q 'docs 10000' scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio-10k.example.json' scripts/run-minio-large-schema-example.sh

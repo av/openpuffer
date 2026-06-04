@@ -70,6 +70,10 @@ step "shellcheck benchmark + report/gates scripts"
 step "benchmark JSON schema (fixtures + *.example.json)"
 ./scripts/validate-benchmark-json.sh
 
+step "benchmark results git policy (tracked + staged)"
+./scripts/check-benchmark-artifacts.sh
+./scripts/test_check-benchmark-artifacts.sh
+
 step "ingest/bench JSON schema tests"
 ./scripts/test_ingest-timing-schema.sh
 ./scripts/test_ingest-large-retry.sh

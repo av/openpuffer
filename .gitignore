@@ -23,3 +23,18 @@ docker-compose.override.yml
 
 # Facts agent cache (if any)
 .facts-agent/__pycache__/
+
+# Live large-dataset measured JSON (G3/G4/G3b) — not ignored from git permanently;
+# operators `git add -f` after EC2 preflight. CI gate: scripts/check-benchmark-artifacts.sh
+benchmarks/results/large-aws-l1.json
+benchmarks/results/large-aws-l2.json
+benchmarks/results/large-aws-l3.json
+benchmarks/results/tpuf-l1.json
+benchmarks/results/tpuf-l2.json
+benchmarks/results/tpuf-l3.json
+benchmarks/results/ingest-large-l1.json
+benchmarks/results/ingest-large-l2.json
+benchmarks/results/ingest-large-l3.json
+benchmarks/results/id-overlap-l1.json
+benchmarks/results/id-overlap-l2.json
+benchmarks/results/id-overlap-l3.json
