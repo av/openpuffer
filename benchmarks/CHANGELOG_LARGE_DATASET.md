@@ -33,7 +33,7 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 | Date | Commit | Description |
 |------|--------|-------------|
-| 2026-06-04 | `66f4281` | **Harness audit (operator handoff):** `verify-large-benchmark-program.sh` exit 0 @ `9670556`; PLAN status + checklist harness-complete statement; no live G3/G4 on MinIO/no-tpuf host |
+| 2026-06-04 | `9d5b87b` | **Harness audit (operator handoff):** `verify-large-benchmark-program.sh` exit 0 @ `9670556`; PLAN status + checklist harness-complete statement; no live G3/G4 on MinIO/no-tpuf host |
 | 2026-06-04 | `9670556` | Git policy for live results JSON (`check-benchmark-artifacts.sh` in verify gate) |
 | 2026-06-04 | `aa7de00` | Shared serve readiness wait (`/health` or `/v1/ready`) before ingest/bench upsert/query |
 | 2026-06-04 | `5aca279` | G3 live retry skipped on MinIO; add [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) |
