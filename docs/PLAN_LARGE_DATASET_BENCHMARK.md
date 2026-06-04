@@ -384,8 +384,8 @@ Record these commit SHAs in every report:
 
 | Artifact | `.facts` section | Operator after EC2 / tpuf run |
 |----------|------------------|-------------------------------|
-| `benchmarks/results/large-aws-l1.json` | `# bench-large live G3` (fact `8zb`) | `./scripts/preflight-aws-ec2.sh` → `./scripts/run-aws-large-benchmark.sh --tier l1` → `validate-benchmark-json.sh` + `check-benchmark-artifacts.sh` → `git add -f` large-aws + ingest sidecar → `facts at 8zb implemented --remove-tag pending --remove-tag skipped` |
-| `benchmarks/results/tpuf-l1.json` | `# bench-tpuf live G4` (fact `7ow`) | `export TURBOPUFFER_API_KEY` → `./scripts/preflight-tpuf.sh --tier l1` → `./scripts/run-tpuf-large-benchmark.sh --tier l1` → `preflight-tpuf.sh --check-results` → `git add -f` → `facts at 7ow implemented --remove-tag pending --remove-tag skipped` |
+| `benchmarks/results/large-aws-l1.json` | `# bench-large live G3` (fact `8zb`) | [OPERATOR_AFTER_LIVE_RUN.md](../benchmarks/OPERATOR_AFTER_LIVE_RUN.md) §1 → `git add -f` → `facts edit 8zb --add-tag implemented --remove-tag pending,skipped` |
+| `benchmarks/results/tpuf-l1.json` | `# bench-tpuf live G4` (fact `7ow`) | [OPERATOR_AFTER_LIVE_RUN.md](../benchmarks/OPERATOR_AFTER_LIVE_RUN.md) §2 → `git add -f` → `facts edit 7ow --add-tag implemented --remove-tag pending,skipped` |
 
 While files are absent, `facts check --tags bench-large` / `bench-tpuf` still passes: the command prints `PENDING @spec (skipped): …` and exits 0. After commit, the same fact validates schema + gates (`environment=aws-s3`, `storage_roundtrips ≤ 4`, `preferred_ann_version == 3` for AWS; `tpuf_region` + `cold_query_runs == 7` for tpuf).
 

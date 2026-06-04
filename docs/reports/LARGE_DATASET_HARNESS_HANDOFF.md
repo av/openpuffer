@@ -225,15 +225,19 @@ export TURBOPUFFER_REGION=aws-us-east-1
 git add -f benchmarks/results/large-aws-l1.json benchmarks/results/tpuf-l1.json benchmarks/results/id-overlap-l1.json
 ```
 
-### 5. Post-live facts (add when artifacts exist)
+### 5. Post-live facts (activate `8zb` and `7ow`)
+
+After EC2 G3/G4 JSON exists, follow **[benchmarks/OPERATOR_AFTER_LIVE_RUN.md](../../benchmarks/OPERATOR_AFTER_LIVE_RUN.md)** — validate artifacts, `git add -f`, then:
 
 ```bash
+facts edit 8zb --add-tag implemented --remove-tag pending,skipped
+facts edit 7ow --add-tag implemented --remove-tag pending,skipped
 facts check --tags bench-large
 facts check --tags bench-tpuf
 facts check --tags "ann or cold"   # if ann/cold code touched
 ```
 
-Placeholder `@spec` (`pending` / `skipped`): live `large-aws-l1.json`, `tpuf-l1.json` in [`.facts`](../.facts) — still manual: measured report, `id-overlap-l1.json` — [PLAN § Fact sheet](../PLAN_LARGE_DATASET_BENCHMARK.md#fact-sheet).
+Placeholder `@spec` (`pending` / `skipped`): facts **`8zb`** (`large-aws-l1.json`) and **`7ow`** (`tpuf-l1.json`) in [`.facts`](../.facts). Still manual beyond those: measured report, `id-overlap-l1.json` — [PLAN § Fact sheet](../PLAN_LARGE_DATASET_BENCHMARK.md#fact-sheet).
 
 ---
 
@@ -279,6 +283,7 @@ Live G3/G4 were **not** executed on the harness development host (2026-06-04). E
 | [benchmarks/README.md](../../benchmarks/README.md) | Directory layout, JSON commit policy, script index |
 | [benchmarks/CHANGELOG_LARGE_DATASET.md](../../benchmarks/CHANGELOG_LARGE_DATASET.md) | Harness commit chronology |
 | [benchmarks/OPERATOR_RUNBOOK_QUICK.md](../../benchmarks/OPERATOR_RUNBOOK_QUICK.md) | EC2 one-page G3→G5 |
+| [benchmarks/OPERATOR_AFTER_LIVE_RUN.md](../../benchmarks/OPERATOR_AFTER_LIVE_RUN.md) | Post-EC2: validate JSON, activate `@spec` facts `8zb` / `7ow` |
 | [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) | Blocked live attempt log |
 | [benchmarks/workloads/QUERY_SPEC.md](../../benchmarks/workloads/QUERY_SPEC.md) | `queries.json` structure (cold/warm/filter/hybrid/recall) |
 | [benchmarks/workloads/EMBEDDINGS.md](../../benchmarks/workloads/EMBEDDINGS.md) | `bench_sin_v1` determinism rules |

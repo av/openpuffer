@@ -117,6 +117,7 @@ git add benchmarks/results/tpuf-l1.json
 
 - [ ] `large-aws-l1.json` (`environment` ≠ `minio`)
 - [ ] `tpuf-l1.json`
+- [ ] Activate `@spec` facts **`8zb`** / **`7ow`** — [OPERATOR_AFTER_LIVE_RUN.md](OPERATOR_AFTER_LIVE_RUN.md)
 - [ ] `id-overlap-l1.json`
 - [ ] Measured report + [COMPARISON.md](../docs/COMPARISON.md) L1 rows
 
