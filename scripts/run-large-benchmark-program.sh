@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end large-dataset comparison program (G2 → G3 → G4 → 3.3 → G5 dry-run).
+# End-to-end large-dataset comparison program (G2 → G3 → G4 → 3.3 → G5).
+# After live G3/G4, runs check-large-aws-gates and check-tpuf-gates on result JSON.
 # Chains operator wrappers; documents AWS + turbopuffer env in --help / --dry-run.
 #
 # Usage:
@@ -123,6 +124,9 @@ print_program_plan() {
   echo "    turbopuffer: ${TPUF_RESULTS}"
   echo "    overlap: ${OVERLAP_RESULTS}"
   echo "    report: ${REPORT_OUT} (measured=${MEASURED_REPORT})"
+  echo "  post-live SLO gates (when JSON exists):"
+  echo "    check-large-aws-gates: ${OP_RESULTS}"
+  echo "    check-tpuf-gates: ${TPUF_RESULTS}"
   echo ""
   echo "=== openpuffer (G3) ==="
   large_preflight_print_aws_operator_env
@@ -200,6 +204,34 @@ run_tpuf_phase() {
   ./scripts/run-tpuf-large-benchmark.sh "${tpuf_args[@]}"
 }
 
+run_aws_gates() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "==> G3 check-large-aws-gates (dry-run) would run: ${OP_RESULTS}"
+    return 0
+  fi
+  if [[ ! -f "$OP_RESULTS" ]]; then
+    echo "program: skip check-large-aws-gates (missing ${OP_RESULTS})" >&2
+    return 0
+  fi
+  echo "==> G3 check-large-aws-gates ${OP_RESULTS}"
+  export OPENPUFFER_BENCH_ENFORCE_GATES="${OPENPUFFER_BENCH_ENFORCE_GATES:-1}"
+  ./scripts/check-large-aws-gates.sh --tier "$TIER" "$OP_RESULTS"
+}
+
+run_tpuf_gates() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "==> G4 check-tpuf-gates (dry-run) would run: ${TPUF_RESULTS}"
+    return 0
+  fi
+  if [[ ! -f "$TPUF_RESULTS" ]]; then
+    echo "program: skip check-tpuf-gates (missing ${TPUF_RESULTS})" >&2
+    return 0
+  fi
+  echo "==> G4 check-tpuf-gates ${TPUF_RESULTS}"
+  export TURBOPUFFER_BENCH_ENFORCE_GATES="${TURBOPUFFER_BENCH_ENFORCE_GATES:-1}"
+  ./scripts/check-tpuf-gates.sh --tier "$TIER" "$TPUF_RESULTS"
+}
+
 run_overlap_phase() {
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "==> Phase 3.3 id-overlap --dry-run"
@@ -242,7 +274,9 @@ large_preflight_validate_tier_workload "$TIER" "$ROOT"
 if [[ "$DRY_RUN" == "1" ]]; then
   run_g2
   [[ "$TPUF_ONLY" != "1" ]] && run_aws_phase
+  [[ "$TPUF_ONLY" != "1" ]] && run_aws_gates
   [[ "$AWS_ONLY" != "1" && "$SKIP_TPUF" != "1" ]] && run_tpuf_phase
+  [[ "$AWS_ONLY" != "1" && "$SKIP_TPUF" != "1" ]] && run_tpuf_gates
   [[ "$SKIP_OVERLAP" != "1" ]] && run_overlap_phase
   [[ "$SKIP_REPORT" != "1" ]] && run_report_phase
   echo "run-large-benchmark-program dry-run: OK"
@@ -264,10 +298,12 @@ fi
 
 if [[ "$TPUF_ONLY" != "1" ]]; then
   run_aws_phase
+  run_aws_gates
 fi
 
 if [[ "$AWS_ONLY" != "1" && "$SKIP_TPUF" != "1" ]]; then
   run_tpuf_phase
+  run_tpuf_gates
 fi
 
 if [[ "$SKIP_OVERLAP" != "1" ]]; then

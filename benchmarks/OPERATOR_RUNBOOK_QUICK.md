@@ -35,19 +35,31 @@ export OPENPUFFER_S3_REGION=us-east-1
 ./scripts/run-aws-large-benchmark.sh --preflight-only --tier l1
 ./scripts/run-aws-large-benchmark.sh --tier l1
 # → benchmarks/results/large-aws-l1.json (+ ingest-large-l1.json)
+./scripts/check-large-aws-gates.sh --tier l1 benchmarks/results/large-aws-l1.json
 
 export TURBOPUFFER_API_KEY=<test-org-key>
 export TURBOPUFFER_REGION=aws-us-east-1
 ./scripts/preflight-tpuf.sh --tier l1
 ./scripts/run-tpuf-large-benchmark.sh --tier l1
 # → benchmarks/results/tpuf-l1.json
+./scripts/check-tpuf-gates.sh --tier l1 benchmarks/results/tpuf-l1.json
 
 ./scripts/run-id-overlap-spotcheck.sh --tier l1
 # → benchmarks/results/id-overlap-l1.json
 
 ./scripts/run-large-benchmark-program.sh --tier l1 --measured-report
+# Program re-runs check-large-aws-gates + check-tpuf-gates after live G3/G4 (same as above).
 # or: ./scripts/render-report.sh --date $(date +%F)
 ```
+
+### SLO gates (post-live)
+
+| Script | When | Skip enforcement |
+|--------|------|------------------|
+| `check-large-aws-gates.sh` | After `large-aws-*.json` (`environment=aws-s3`) | `OPENPUFFER_BENCH_ENFORCE_GATES=0` |
+| `check-tpuf-gates.sh` | After `tpuf-*.json` (`environment=turbopuffer:*`) | `TURBOPUFFER_BENCH_ENFORCE_GATES=0` |
+
+`run-aws-large-benchmark.sh`, `bench-large.sh`, and `run-tpuf-large-benchmark.sh` already invoke these; `run-large-benchmark-program.sh` runs them again at program exit so a partial manual chain still fails closed before overlap/report.
 
 ## Commit policy
 
@@ -61,6 +73,8 @@ Validate before push:
 
 ```bash
 ./scripts/validate-benchmark-json.sh benchmarks/results/large-aws-l1.json
+./scripts/check-large-aws-gates.sh benchmarks/results/large-aws-l1.json
+./scripts/check-tpuf-gates.sh benchmarks/results/tpuf-l1.json
 ./scripts/check-benchmark-artifacts.sh --staged
 git add -f benchmarks/results/large-aws-l1.json benchmarks/results/tpuf-l1.json
 ```
