@@ -1,5 +1,17 @@
 # Operator log: live G3/G4 attempt (2026-06-04)
 
+## Attempt 3 — blocked (2026-06-04, `02398a8`)
+
+| Check | Result |
+|-------|--------|
+| `OPENPUFFER_S3_ENDPOINT` | `http://127.0.0.1:9000` → **minio** (not AWS) |
+| `AWS_ACCESS_KEY_ID` | **unset** |
+| `TURBOPUFFER_API_KEY` | **unset** |
+| G3 / G4 live scripts | **not** run |
+| Live JSON | **not** produced |
+
+---
+
 ## Harness audit — operator handoff (2026-06-04)
 
 | Check | Result |

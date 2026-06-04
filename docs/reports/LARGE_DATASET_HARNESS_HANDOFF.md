@@ -210,6 +210,8 @@ Pending manual `@spec` facts: live `large-aws-l1.json`, `tpuf-l1.json`, measured
 
 Live G3/G4 were **not** executed on the harness development host (2026-06-04). Evidence: [benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md](../../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md).
 
+**Attempt 3 (2026-06-04, `02398a8`):** **Blocked** — `OPENPUFFER_S3_ENDPOINT=http://127.0.0.1:9000` (MinIO, not `*amazonaws.com*`); `AWS_ACCESS_KEY_ID` unset; `TURBOPUFFER_API_KEY` unset. G3/G4 scripts not run; no live JSON committed.
+
 | Requirement | Why blocked on dev host | Operator fix |
 |-------------|-------------------------|--------------|
 | **AWS S3** | `OPENPUFFER_S3_ENDPOINT=http://127.0.0.1:9000` (MinIO) | EC2 + dedicated `openpuffer-bench-*` bucket; unset MinIO endpoint |
