@@ -91,6 +91,7 @@ After upserts and `index_cursor == wal_commit_seq`, vector queries report `perfo
 make bench-verify      # offline harness gate (same as CI dispatch)
 make bench-dry-run     # harness dry-run only (L1–L3; no cloud spend)
 make bench-g2-minio    # optional G2 MinIO correctness (Docker; slow)
+make bench-preflight   # G3+G4+overlap preflights (offline; EC2: PREFLIGHT_FLAGS="--live --tier l1")
 ```
 
 See [benchmarks/README.md](benchmarks/README.md) for EC2 live runs and artifact commit policy.

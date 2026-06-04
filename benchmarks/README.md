@@ -174,6 +174,18 @@ make bench-dry-run
 
 Per-step dry-runs: `./scripts/ingest-large.sh`, `./scripts/bench-large.sh`, `./scripts/run-aws-large-benchmark.sh`, `./scripts/run-tpuf-large-benchmark.sh`, `./scripts/run-id-overlap-spotcheck.sh`, `./scripts/render-report.sh --dry-run`.
 
+### 2b. Operator preflight (G3+G4+overlap)
+
+```bash
+make bench-preflight
+# same as:
+./scripts/preflight-large-benchmark-all.sh
+# optional: make bench-preflight PREFLIGHT_FLAGS="--skip-overlap"   # aws+tpuf only (no openpuffer yet)
+# EC2 live: make bench-preflight PREFLIGHT_FLAGS="--live --tier l1"
+```
+
+Default mode runs AWS cost estimate (`preflight-aws-ec2.sh --dry-run`), turbopuffer workload/deps (`preflight-tpuf.sh --skip-key`), and id-overlap checks (`preflight-id-overlap.sh --skip-key`). Live mode matches `run-*-large-benchmark.sh --preflight-only` spend gates. See [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md).
+
 ### 3. Live comparison on EC2
 
 On an **m7i.xlarge** (or similar) in the **same region/AZ** as the S3 bucket:
@@ -230,7 +242,7 @@ Other harness scripts (`validate-benchmark-json.sh`, `normalize-benchmark-json.s
 
 | Entry | Description |
 |-------|-------------|
-| [Makefile](../Makefile) | `make bench-verify`, `make bench-dry-run`, `make bench-g2-minio` |
+| [Makefile](../Makefile) | `make bench-verify`, `make bench-dry-run`, `make bench-g2-minio`, `make bench-preflight` |
 | [verify-large-benchmark-program.sh](../scripts/verify-large-benchmark-program.sh) | Offline gate: pytest + dry-runs + optional G2 + facts |
 | [run-large-benchmark-program.sh](../scripts/run-large-benchmark-program.sh) | Chain G2→G3→G4→overlap→G5; `--dry-run`, `--measured-report`, `--warm` |
 | [run-aws-large-benchmark.sh](../scripts/run-aws-large-benchmark.sh) | G3: G2 subset → AWS S3 → ingest-large → bench-large → `large-aws-{tier}.json` |
