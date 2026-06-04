@@ -2,9 +2,67 @@
 
 Chronological record of commits that built the **offline harness** for [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) (A1–A6, G2–G6, JSON schemas, operator wrappers). **Live G3/G4 JSON and measured G5** are still operator-pending; see [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md).
 
-**Verify gate:** `./scripts/verify-large-benchmark-program.sh` (exit **0** @ `9670556`; harness **complete** @ `43fa706`)
+**Verify gate:** `./scripts/verify-large-benchmark-program.sh` (exit **0** @ `7a38d7f`, 2026-06-04T02:54:51Z)
 
-**Session log:** iterations **49–74** (timeboxed run 2026-06-04); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
+**Session log:** timeboxed run 2026-06-04 (~90 iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
+
+---
+
+## Session 2026-06-04
+
+| Field | Value |
+|-------|--------|
+| **Time window** | 2026-06-04 00:24 CEST → ~06:00 CEST (timeboxed PLAN_LARGE_DATASET_BENCHMARK implementation) |
+| **Total iterations** | **~90** (A1–A6 + G2–G6 harness build, polish, closure; see tables below) |
+| **Harness commits** | `6186190` … `f7643e8` (offline program complete) |
+| **Verify gate** | `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`7a38d7f`** (2026-06-04T02:54:51Z; optional `--with-g2` for MinIO Docker parity) |
+
+### Harness complete
+
+All **offline** checklist rows for [PLAN_LARGE_DATASET_BENCHMARK.md](../docs/PLAN_LARGE_DATASET_BENCHMARK.md) are satisfied: synthetic workload (A1), ingest/bench/tpuf drivers (A2–A4), report merge + measured renderer (A5), CI dispatch + nightly dry-run (A6), G2 MinIO correctness gates, G3/G4 operator wrappers + preflights, G5 schema/exemplar JSON + `fill-comparison-from-report.sh`, G6 regression wiring, JSON schemas L1–L3, id-overlap mock, SLO gate scripts (`check-large-aws-gates`, `check-tpuf-gates`), and the unified verify gate.
+
+**Statement:** The large-dataset benchmark **harness is complete** and safe for operator handoff / merge. `./scripts/verify-large-benchmark-program.sh` is the single offline gate; last full audit passed at `7a38d7f`.
+
+Operator PR summary: [LARGE_DATASET_HARNESS_HANDOFF.md](../docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md). Archived phase spec: [PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md](../docs/archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md).
+
+### Live work remaining
+
+**Program complete** (measured comparison + publish) is **not** done — blocked on operator credentials and EC2 only (not harness gaps):
+
+| Step | Artifact / outcome | Blocker on dev host |
+|------|-------------------|---------------------|
+| G3 | `benchmarks/results/large-aws-l1.json` (+ ingest sidecar) | MinIO-style endpoint; needs EC2 + real AWS S3 |
+| G4 | `benchmarks/results/tpuf-l1.json` | `TURBOPUFFER_API_KEY` unset |
+| Phase 3.3 | `benchmarks/results/id-overlap-l1.json` | Requires live G3 + G4 namespaces |
+| G5 | Measured dated report + [COMPARISON.md](../docs/COMPARISON.md) L1 rows | Depends on live JSON above |
+| @spec | Live `large-aws-l1` / `tpuf-l1` facts (placeholders exist @ `af43e43`) | Same as G3/G4 |
+
+**Do not** re-run live G3/G4 on the MinIO dev host. Use [OPERATOR_RUNBOOK_QUICK.md](OPERATOR_RUNBOOK_QUICK.md) on bench EC2; blocked attempts: [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md).
+
+**Operator sequence (L1):** preflight AWS → `run-aws-large-benchmark.sh` → preflight tpuf → `run-tpuf-large-benchmark.sh` → `run-id-overlap-spotcheck.sh` → `run-large-benchmark-program.sh --measured-report` (or `render-report.sh` + `fill-comparison-from-report.sh`).
+
+---
+
+## Iterations 75–90 (session closure)
+
+| Iter | Commit | Description |
+|------|--------|-------------|
+| **75** | `e86a010` | CHANGELOG iterations 49–74 table |
+| **76** | `8ca2eb4` | Sync `@spec` bench-large / bench-tpuf fact counts (32/15) |
+| **77** | `f30f46c` | HANDOFF: offline harness — no remaining gaps |
+| **78** | `4da0713` | Operator docs typo sweep (paths, tiers, fact counts) |
+| **79** | `a103ec0` | G2 MinIO `docker-compose.test.yml` operator docs |
+| **80** | `fbddf10` | Nightly `bench-100k` ↔ large-dataset program link (G6) |
+| **81** | `af43e43` | `@spec` placeholders for live `large-aws-l1` / `tpuf-l1` JSON |
+| **82** | `387b7d0` | HANDOFF verify gate recorded @ `af43e43` |
+| **83** | `7e1f876` | id-overlap live mode errors + preflight hardening |
+| **84** | `8480ccb` | `render-report.sh` partial merge when one JSON side missing |
+| **85** | `d516003`, `14f0980`, `161ee75` | SLO gate scripts + wire into `run-large-benchmark-program.sh` |
+| **86** | `7a38d7f` | L2/L3 `render-report --dry-run` uses tier `*.example.json` |
+| **87** | `3b99883` | Final verify gate documentation @ `7a38d7f` |
+| **88** | `38ca7c6` | `fill-comparison-from-report.sh` for COMPARISON L1 publish |
+| **89** | `5dd8175` | Optional Prometheus scrape during `bench-large` (BENCHMARKS) |
+| **90** | `f7643e8` | Archive PLAN Phases 1–7; Phase 8 harness status table |
 
 ---
 
@@ -63,6 +121,9 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 | **Docs / hub** | `8594099`, `23fe932`, `3ddf464`, `4a7102a`, `7424cad`, `32cb61c`, `cf5b490`, `43fa706`, `f3103c8`, `04c50f1`, `84bb89a`, `57f7f39` | Runbooks, README, PLAN/COMPARISON, QUERY_SPEC, EMBEDDINGS, handoff PR summary |
 | **Harness hygiene** | `868fd26`, `ff3eef8`, `02398a8`, `ae22a7a`, `a061bcd`, `1b5fb41` | shellcheck, exit codes, secret-echo audit, consolidated Python deps |
 | **Operator attempts** | `32cb61c`, `5aca279`, `4459e3a`, `d09192d` | Logged G3/G4 live skips (MinIO env, no tpuf key) |
+| **SLO gates** | `d516003`, `14f0980`, `161ee75` | `check-large-aws-gates.sh`, `check-tpuf-gates.sh`; wired into program chain |
+| **Publish helpers** | `38ca7c6`, `8480ccb`, `7e1f876` | `fill-comparison-from-report.sh`; partial render merge; id-overlap live UX |
+| **Session closure** | `7a38d7f`, `3b99883`, `f7643e8`, `5dd8175`, `af43e43`, `387b7d0` | Final verify @ `7a38d7f`; PLAN archive; Prometheus doc; live @spec placeholders |
 
 ---
 
@@ -70,6 +131,24 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 | Date | Commit | Description |
 |------|--------|-------------|
+| 2026-06-04 | `f7643e8` | Archive PLAN Phases 1–7; Phase 8 harness status table |
+| 2026-06-04 | `5dd8175` | Optional Prometheus scrape during `bench-large` (BENCHMARKS) |
+| 2026-06-04 | `38ca7c6` | `fill-comparison-from-report.sh` for COMPARISON L1 publish |
+| 2026-06-04 | `3b99883` | Final verify gate documentation @ `7a38d7f` |
+| 2026-06-04 | `7a38d7f` | L2/L3 `render-report --dry-run` uses tier example JSON |
+| 2026-06-04 | `161ee75` | Wire SLO gates into `run-large-benchmark-program.sh` after live G3/G4 |
+| 2026-06-04 | `14f0980` | `check-tpuf-gates.sh` SLO script mirroring large-aws gates |
+| 2026-06-04 | `d516003` | `check-large-aws-gates.sh` SLO script for large-aws JSON |
+| 2026-06-04 | `8480ccb` | `render-report.sh` partial merge when one JSON side missing |
+| 2026-06-04 | `7e1f876` | id-overlap live mode empty-namespace errors and preflight |
+| 2026-06-04 | `387b7d0` | HANDOFF verify gate @ `af43e43` |
+| 2026-06-04 | `af43e43` | `@spec` placeholders for live `large-aws-l1` / `tpuf-l1` JSON |
+| 2026-06-04 | `fbddf10` | Nightly bench-100k ↔ large-dataset L1 program (G6) |
+| 2026-06-04 | `a103ec0` | G2 MinIO `docker-compose.test.yml` docs in BENCHMARKS |
+| 2026-06-04 | `4da0713` | Operator docs typo sweep |
+| 2026-06-04 | `f30f46c` | HANDOFF: offline harness has no remaining gaps |
+| 2026-06-04 | `8ca2eb4` | Sync bench-large/bench-tpuf `@spec` fact counts |
+| 2026-06-04 | `e86a010` | CHANGELOG iterations 49–74 table |
 | 2026-06-04 | `d09192d` | Live G3/G4 attempt 3 blocked (MinIO env, no `TURBOPUFFER_API_KEY`) |
 | 2026-06-04 | `02398a8` | shellcheck: exit-codes and serve-ready lib fixes |
 | 2026-06-04 | `a061bcd` | Standard exit codes for large-dataset benchmark scripts |
