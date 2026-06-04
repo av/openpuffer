@@ -62,6 +62,8 @@ This PR-equivalent handoff documents a **timeboxed implementation** (~60 harness
 
 **Non-goals (unchanged):** MinIO latencies in the tpuf comparison report; claiming turbopuffer fleet SPFresh parity; production tpuf keys on bench hosts.
 
+**Scope audit (2026-06-04):** No interface-level assets in scope — session commits `6186190`…`HEAD` touch only harness scripts, benchmark JSON/schemas, operator docs, CI workflows, and API readiness (`GET /v1/ready`); no dashboard, frontend, or UI-only polish.
+
 ---
 
 ## What was built
