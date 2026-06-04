@@ -1,6 +1,6 @@
 # EC2 operator quick runbook (G3 → G5)
 
-One-page checklist for **live** `large-aws-*.json` / `tpuf-*.json`. Full IAM, troubleshooting, and tier tables: [docs/BENCHMARKS.md § G3/G4](../docs/BENCHMARKS.md#g3--ec2--aws-s3-operator-setup).
+One-page checklist for **live** `large-aws-*.json` / `tpuf-*.json`. Full IAM, troubleshooting, and tier tables: [docs/BENCHMARKS.md § G3/G4](../docs/BENCHMARKS.md#g3-ec2-aws-s3-operator-setup).
 
 ## Before you spend
 
