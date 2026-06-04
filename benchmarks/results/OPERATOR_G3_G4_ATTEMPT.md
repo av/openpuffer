@@ -1,5 +1,16 @@
 # Operator log: live G3/G4 attempt (2026-06-04)
 
+## G4 only — iteration 52 (2026-06-04)
+
+| Check | Result |
+|-------|--------|
+| `TURBOPUFFER_API_KEY` | **unset** → G4 blocked |
+| `./scripts/run-tpuf-large-benchmark.sh --tier l1` | **Skipped** (no API key) |
+| `benchmarks/results/tpuf-l1.json` | **not** produced |
+| Deliverable | [OPERATOR_RUNBOOK_QUICK.md](../OPERATOR_RUNBOOK_QUICK.md) G4 skip note |
+
+---
+
 ## Retry — iteration 48 (`5627247`)
 
 | Check | Result |

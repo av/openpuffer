@@ -66,6 +66,21 @@ Plan **≥45–90 min** first run: WAL ingest ~15 min + index catch-up often **1
 
 MinIO / no tpuf key is expected — log in [results/OPERATOR_G3_G4_ATTEMPT.md](results/OPERATOR_G3_G4_ATTEMPT.md). Use MinIO schema path only: `./scripts/run-minio-large-schema-example.sh --tier l1`.
 
+### G4 skipped when `TURBOPUFFER_API_KEY` unset (2026-06-04)
+
+Live G4 was **not** run on this host: `TURBOPUFFER_API_KEY` was unset at operator time. Do **not** commit fixture or dry-run JSON as `benchmarks/results/tpuf-l1.json`.
+
+When the key is available on EC2 (same region as openpuffer bench):
+
+```bash
+export TURBOPUFFER_API_KEY=<test-org-key>   # never commit; see turbopuffer.com/docs/testing
+export TURBOPUFFER_REGION=aws-us-east-1
+./scripts/preflight-tpuf.sh --tier l1
+./scripts/run-tpuf-large-benchmark.sh --tier l1
+./scripts/preflight-tpuf.sh --check-results benchmarks/results/tpuf-l1.json
+git add benchmarks/results/tpuf-l1.json
+```
+
 ## Program complete
 
 - [ ] `large-aws-l1.json` (`environment` ≠ `minio`)
