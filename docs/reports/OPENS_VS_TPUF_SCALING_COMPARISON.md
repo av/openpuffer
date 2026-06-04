@@ -1,6 +1,6 @@
 # openpuffer vs turbopuffer — scaling comparison
 
-**Status:** Iteration 1 (foundation). Official turbopuffer numbers are recorded below; openpuffer columns are **TBD** until Iteration 2 runs local MinIO benches and fills `benchmarks/results/op-scaling-*.json`.
+**Status:** Iteration 2 (measured). openpuffer MinIO tiers recorded in `benchmarks/results/op-scaling-*.json` (2026-06-04). Normalized scaling analysis and conclusion remain **TBD** (Iteration 3).
 
 **Goal:** Determine whether openpuffer cold/warm query latency scales with namespace size and dimensionality in a pattern **similar** to turbopuffer’s published 10M × 1024-dim curve—not to claim parity on MinIO vs managed GCP.
 
@@ -35,11 +35,11 @@
 
 We cannot reproduce 10M × 1024 on every dev machine. Iteration 2+ runs **MinIO testcontainers** tiers that stress the same *protocol shape* (strong cold ANN, `top_k=10`, 7 runs, empty `--cache-dir`) at smaller scale.
 
-| Tier | Docs × dims | Environment | Harness | Result artifact (TBD) |
-|------|-------------|-------------|---------|------------------------|
-| T0 | 10k × 128 | MinIO | `cargo test -F bench bench_cold_10k_baseline` | `baseline-10k.json` (exists) |
-| T1 | 50k × 128 | MinIO | `cargo test --release -F large_stress --test stress_50k fifty_thousand_docs_v3_cold_probed_validation -- --ignored` | `cold-50k-v3.json` (partial; no p50 yet) |
-| T2 | 100k × 128 | MinIO | `cargo test -F bench bench_cold_100k_nightly -- --ignored` | `nightly-100k.json` (exists) |
+| Tier | Docs × dims | Environment | Harness | Result artifact |
+|------|-------------|-------------|---------|-----------------|
+| T0 | 10k × 128 | MinIO | `cargo test -F bench bench_cold_10k_baseline` | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json) |
+| T1 | 50k × 128 | MinIO | `cargo test --release -F large_stress --test stress_50k fifty_thousand_docs_v3_cold_probed_validation -- --ignored` | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) |
+| T2 | 100k × 128 | MinIO | `cargo test -F bench bench_cold_100k_nightly -- --ignored` | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) |
 | T3 (optional) | 500k × 128 | MinIO / AWS | `scripts/bench-large.sh --tier l2` | `large-aws-l2.json` or MinIO schema run |
 
 **Protocol alignment with tpuf**
@@ -57,24 +57,38 @@ We cannot reproduce 10M × 1024 on every dev machine. Iteration 2+ runs **MinIO 
 
 ---
 
-## 3. openpuffer measured columns (TBD — Iteration 2)
+## 3. openpuffer measured columns (Iteration 2 — 2026-06-04)
+
+**Host:** dev machine, MinIO via testcontainers (one healthy `openpuffer-minio-1` container; no stray MinIO cleanup needed).  
+**Git at measure:** `76875cb` (pre-commit of this iteration).  
+**Raw JSON:** [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json), [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json), [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json), [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json).
+
+**Caveat:** 50k tier uses **v3 + release**; 10k/100k use **v2 + debug**. Cross-tier slope is not apples-to-apples until re-run at unified `ann_version` and profile.
 
 ### Cold query p50 (ms)
 
-| Docs | Dims | Environment | p50 | p90 | p99 | vs tpuf @ 10M (normalized) |
-|------|------|-------------|-----|-----|-----|----------------------------|
-| 10k | 128 | minio-testcontainers | _fill_ | — | — | _fill_ |
-| 50k | 128 | minio-testcontainers | _fill_ | — | — | _fill_ |
-| 100k | 128 | minio-testcontainers | _fill_ | — | — | _fill_ |
-| 500k | 128 | _optional_ | _fill_ | — | — | _fill_ |
+| Docs | Dims | Environment | p50 | p90 | p99 | ANN | Profile | \(L_{\text{norm}}\)† | vs tpuf 874 ms |
+|------|------|-------------|-----|-----|-----|-----|---------|----------------------|----------------|
+| 10k | 128 | minio-testcontainers | **717** | — | — | v2 | debug | 2.03M | ~2320× |
+| 50k | 128 | minio-testcontainers | **377** | — | — | v3 | release | 213k | ~244× |
+| 100k | 128 | minio-testcontainers | **7174** | — | — | v2 | debug | 2.03M | ~2320× |
+| 500k | 128 | _optional_ | — | — | — | — | — | — | — |
 
-Committed snapshots (cold p50 only, for Iteration 2 baseline): `baseline-10k.json` → **662 ms**; `nightly-100k.json` → **6820 ms** (re-validate in Iteration 2; numbers drift with hardware).
+† \(L_{\text{norm}} = L_{\text{op}}(N,128) \times (10^7/N) \times \sqrt{1024/128}\) per §4.3. p90/p99 not collected (7 sequential samples only).
+
+**Per-doc cold p50 (ms/doc):** 10k → **0.072**; 50k → **0.008** (v3/release); 100k → **0.072**. 10k and 100k align on per-doc proxy; 50k is faster due to v3 + release, not doc count alone.
 
 ### Warm query p50 (ms)
 
 | Docs | Dims | Environment | p50 | Notes |
 |------|------|-------------|-----|-------|
-| 10k | 128 | minio-testcontainers | _fill_ | From `bench_cold_10k_warm_vs_cold` or dedicated JSON writer |
+| 10k | 128 | minio-testcontainers | **738** | [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json); `POST /warm` + eventual, 7 runs. **Not** faster than cold (717 ms) on this MinIO/debug run — unlike tpuf warm 14 ms. |
+
+### Preliminary scaling read (not final)
+
+- **Doc-count shape (10k ↔ 100k, same v2/debug):** p50 grows ~10× for ~10× docs (717 → 7174 ms) → roughly **linear in N** on these two points.
+- **50k point:** faster than linear trend predicts (377 ms) because **v3 probed + release**.
+- **vs turbopuffer:** absolute \(L_{\text{norm}}\) ≫ 874 ms (expected: MinIO + self-host). Shape-only comparison needs unified re-runs and §4 fit — **conclusion: inconclusive** until Iteration 3.
 
 ---
 
@@ -145,11 +159,11 @@ Warm tpuf p50 **14 ms** is cache-resident. openpuffer warm should be measured wi
 
 ## 6. Iteration 2 checklist
 
-- [ ] Re-run / refresh `bench_cold_10k_baseline`, `bench_cold_100k_nightly`, `stress_50k` v3 cold; record p50/p90/p99 where available
-- [ ] Add `benchmarks/results/op-scaling-{10k,50k,100k}.json` with unified schema
-- [ ] Run `bench_cold_10k_warm_vs_cold` with JSON export for warm p50
-- [ ] Fill §3 tables; compute \(L_{\text{norm}}\) and doc-scaling \(\alpha\) fit
-- [ ] State conclusion: **similar / faster-than-linear / slower-than-linear / inconclusive**
+- [x] Re-run / refresh `bench_cold_10k_baseline`, `bench_cold_100k_nightly`, `stress_50k` v3 cold; record p50 (p90/p99 deferred)
+- [x] Add `benchmarks/results/op-scaling-{10k,50k,100k}.json` + `op-scaling-10k-warm.json`
+- [x] Run `bench_cold_10k_warm_vs_cold` with stdout JSON for warm p50
+- [x] Fill §3 tables; compute \(L_{\text{norm}}\) (ballpark)
+- [ ] Iteration 3: unified v3 + release across tiers; p90/p99; doc-scaling \(\alpha\) fit; final conclusion
 
 ---
 

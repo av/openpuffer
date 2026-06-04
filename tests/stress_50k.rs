@@ -38,7 +38,7 @@ const MAX_CANDIDATES_RATIO: f64 = 0.20;
 /// Mid-tier recall gate between 10k integration (0.85) and 100k nightly (0.88).
 const MIN_RECALL_AT_10_50K: f64 = 0.86;
 const MAX_STORAGE_ROUNDTRIPS: u64 = 4;
-const COLD_QUERY_RUNS: usize = 3;
+const COLD_QUERY_RUNS: usize = 7;
 const RECALL_QUERIES: usize = 10;
 const RECALL_TOP_K: usize = 10;
 const TEST_WALL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -67,6 +67,11 @@ fn synthetic_embedding(doc_index: usize) -> Vec<f64> {
     (0..STRESS_DIM)
         .map(|d| ((doc_index * STRESS_DIM + d) as f64 * 0.001).sin())
         .collect()
+}
+
+fn p50_ms(samples: &mut [u64]) -> u64 {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
 }
 
 fn count_ann_index_objects(keys: &[String]) -> usize {
@@ -149,7 +154,7 @@ async fn recall_at_10_on_namespace(serve: &ServeHandle, namespace: &str, docs: u
     recall_sum / RECALL_QUERIES as f64
 }
 
-async fn cold_vector_query(serve: &ServeHandle, namespace: &str) -> Value {
+async fn cold_vector_query_ms(serve: &ServeHandle, namespace: &str) -> (u64, Value) {
     let client = reqwest::Client::new();
     client
         .post(format!("{}/v1/debug/cache-stats/reset", serve.base_url))
@@ -159,6 +164,7 @@ async fn cold_vector_query(serve: &ServeHandle, namespace: &str) -> Value {
     let query_vec: Vec<f64> = (0..STRESS_DIM)
         .map(|d| (d as f64 * 0.02).cos())
         .collect();
+    let t0 = Instant::now();
     let resp = client
         .post(format!(
             "{}/v2/namespaces/{}/query",
@@ -174,7 +180,9 @@ async fn cold_vector_query(serve: &ServeHandle, namespace: &str) -> Value {
         .await
         .expect("cold query");
     assert_eq!(resp.status(), StatusCode::OK, "cold query failed");
-    resp.json().await.expect("query json")
+    let ms = t0.elapsed().as_millis() as u64;
+    let body = resp.json().await.expect("query json");
+    (ms, body)
 }
 
 async fn assert_v3_l0_on_s3(fixture: &S3Fixture, namespace: &str) {
@@ -310,10 +318,14 @@ async fn fifty_thousand_docs_v3_cold_probed_validation() {
 
     let recall = recall_at_10_on_namespace(&serve, NAMESPACE_V3_COLD, STRESS_DOCS).await;
 
+    let mut latencies_ms = Vec::with_capacity(COLD_QUERY_RUNS);
     let mut last_body = json!(null);
     for _ in 0..COLD_QUERY_RUNS {
-        last_body = cold_vector_query(&serve, NAMESPACE_V3_COLD).await;
+        let (ms, body) = cold_vector_query_ms(&serve, NAMESPACE_V3_COLD).await;
+        latencies_ms.push(ms);
+        last_body = body;
     }
+    let p50_query_latency_ms = p50_ms(&mut latencies_ms);
     let perf = last_body["performance"].as_object().expect("performance");
     let ratio = perf["candidates_ratio"].as_f64().expect("candidates_ratio");
     let roundtrips = perf["storage_roundtrips"]
@@ -332,6 +344,9 @@ async fn fifty_thousand_docs_v3_cold_probed_validation() {
         "environment": "minio-testcontainers",
         "ann_version": 3,
         "namespace_docs": STRESS_DOCS,
+        "dimensions": STRESS_DIM,
+        "p50_query_latency_ms": p50_query_latency_ms,
+        "cold_query_runs": COLD_QUERY_RUNS,
         "storage_roundtrips": roundtrips,
         "cold_s3_keys_fetched": cold_keys,
         "ann_probed_clusters": probed,
@@ -403,7 +418,7 @@ async fn v3_cold_probed_wiring_at_2k() {
     ingest_namespace(&serve, NAMESPACE_WIRING, WIRING_DOCS, 2_000).await;
     assert_v3_l0_on_s3(&fixture, NAMESPACE_WIRING).await;
 
-    let body = cold_vector_query(&serve, NAMESPACE_WIRING).await;
+    let (_, body) = cold_vector_query_ms(&serve, NAMESPACE_WIRING).await;
     let perf = body["performance"].as_object().expect("performance");
     assert!(
         perf["storage_roundtrips"].as_u64().unwrap_or(99) <= MAX_STORAGE_ROUNDTRIPS,

@@ -3,11 +3,14 @@
   "ann_version": 3,
   "benchmark": "cold_50k_v3",
   "candidates_ratio": 0.0016,
+  "cold_query_runs": 7,
   "cold_s3_keys_fetched": 15,
+  "dimensions": 128,
   "environment": "minio-testcontainers",
-  "index_object_count": 175,
-  "ingest_elapsed_secs": 12,
+  "index_object_count": 245,
+  "ingest_elapsed_secs": 14,
   "namespace_docs": 50000,
+  "p50_query_latency_ms": 377,
   "recall_at_10": 1.0,
-  "storage_roundtrips": 2
+  "storage_roundtrips": 3
 }

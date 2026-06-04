@@ -1,0 +1,20 @@
+{
+  "schema_version": "op_scaling_v1",
+  "timestamp_utc": "2026-06-04T22:57:14Z",
+  "git_commit": "76875cb1cae795f55cc6f1dfc263ab8552f02520",
+  "environment": "minio-testcontainers",
+  "path": "cold",
+  "namespace_docs": 10000,
+  "dimensions": 128,
+  "p50_ms": 717,
+  "p90_ms": null,
+  "p99_ms": null,
+  "storage_roundtrips": 3,
+  "recall_at_10": null,
+  "cold_query_runs": 7,
+  "ann_version": 2,
+  "cargo_profile": "debug",
+  "harness": "cargo test -F bench bench_cold_10k_baseline -- --nocapture",
+  "source_artifact": "benchmarks/results/baseline-10k.json",
+  "notes": "Strong cold, empty cache-dir, 7 sequential runs. v2 index. MinIO testcontainers on dev host 2026-06-04."
+}

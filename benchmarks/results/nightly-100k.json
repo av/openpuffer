@@ -7,12 +7,12 @@
   "dimensions": 128,
   "environment": "minio-testcontainers",
   "index_cursor_eq_wal_commit_seq": true,
-  "index_keys_total": 357,
-  "index_object_count": 274,
+  "index_keys_total": 327,
+  "index_object_count": 284,
   "namespace_docs": 100000,
   "notes": "Nightly 100k gate. Regenerate: cargo test -F bench bench_cold_100k_nightly -- --ignored --nocapture",
-  "p50_query_latency_ms": 828,
+  "p50_query_latency_ms": 7174,
   "recall_at_10": 1.0,
   "s3_get_count": 0,
-  "storage_roundtrips": 2
+  "storage_roundtrips": 3
 }

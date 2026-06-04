@@ -1,0 +1,20 @@
+{
+  "schema_version": "op_scaling_v1",
+  "timestamp_utc": "2026-06-04T22:57:14Z",
+  "git_commit": "76875cb1cae795f55cc6f1dfc263ab8552f02520",
+  "environment": "minio-testcontainers",
+  "path": "cold",
+  "namespace_docs": 50000,
+  "dimensions": 128,
+  "p50_ms": 377,
+  "p90_ms": null,
+  "p99_ms": null,
+  "storage_roundtrips": 3,
+  "recall_at_10": 1.0,
+  "cold_query_runs": 7,
+  "ann_version": 3,
+  "cargo_profile": "release",
+  "harness": "cargo test --release -F large_stress --test stress_50k fifty_thousand_docs_v3_cold_probed_validation -- --ignored --nocapture",
+  "source_artifact": "benchmarks/results/cold-50k-v3.json",
+  "notes": "v3 probed cold @ 50k; release build. Not directly comparable to 10k/100k (v2, debug) without re-run at same profile."
+}

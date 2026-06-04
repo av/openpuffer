@@ -400,30 +400,50 @@ async fn bench_cold_10k_warm_vs_cold() {
     assert_eq!(warm_body["status"], "ok");
     assert!(warm_body["pinned"].as_bool().unwrap_or(false));
 
-    client
-        .post(format!(
-            "{}/v1/debug/cache-stats/reset",
-            serve_warm.base_url
-        ))
-        .send()
-        .await
-        .expect("cache reset");
-    let warm_query = client
-        .post(format!(
-            "{}/v2/namespaces/{}/query",
-            serve_warm.base_url,
-            namespace_path_segment(NAMESPACE)
-        ))
-        .json(&json!({
-            "rank_by": ["vector", "ANN", "embedding", query_vec],
-            "top_k": 10,
-            "consistency": "eventual"
+    let mut warm_latencies_ms = Vec::with_capacity(COLD_QUERY_RUNS);
+    let mut warm_body = json!(null);
+    for _ in 0..COLD_QUERY_RUNS {
+        client
+            .post(format!(
+                "{}/v1/debug/cache-stats/reset",
+                serve_warm.base_url
+            ))
+            .send()
+            .await
+            .expect("cache reset");
+        let t0 = Instant::now();
+        let warm_query = client
+            .post(format!(
+                "{}/v2/namespaces/{}/query",
+                serve_warm.base_url,
+                namespace_path_segment(NAMESPACE)
+            ))
+            .json(&json!({
+                "rank_by": ["vector", "ANN", "embedding", query_vec.clone()],
+                "top_k": 10,
+                "consistency": "eventual"
+            }))
+            .send()
+            .await
+            .expect("warm query");
+        assert_eq!(warm_query.status(), StatusCode::OK);
+        warm_latencies_ms.push(t0.elapsed().as_millis() as u64);
+        warm_body = warm_query.json().await.expect("warm query json");
+    }
+    let p50_warm_query_latency_ms = p50_ms(&mut warm_latencies_ms);
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "benchmark": "warm_10k",
+            "environment": "minio-testcontainers",
+            "namespace_docs": DOCS,
+            "dimensions": DIM,
+            "p50_query_latency_ms": p50_warm_query_latency_ms,
+            "warm_query_runs": COLD_QUERY_RUNS,
+            "notes": "POST /warm + eventual query with disk cache; from bench_cold_10k_warm_vs_cold"
         }))
-        .send()
-        .await
-        .expect("warm query");
-    assert_eq!(warm_query.status(), StatusCode::OK);
-    let warm_body: Value = warm_query.json().await.expect("warm query json");
+        .expect("warm json")
+    );
     let warm_perf = warm_body["performance"].as_object().expect("performance");
     assert!(
         warm_perf.get("storage_roundtrips").is_none()
