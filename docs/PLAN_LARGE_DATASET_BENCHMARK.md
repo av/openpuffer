@@ -398,7 +398,7 @@ While files are absent, `facts check --tags bench-large` / `bench-tpuf` still pa
 
 ## Phases 1–7 — operator summary (spec archived)
 
-The original phase-by-phase **implementation specification** (Phases 1–7) is archived at [`docs/archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md`](archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md). Harness work is **complete**; use this table and [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-46) for day-to-day operations.
+The original phase-by-phase **implementation specification** (Phases 1–7) is archived at [`docs/archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md`](archive/PLAN_LARGE_DATASET_BENCHMARK_PHASES_1-7.md). Harness work is **complete**; use this table and [BENCHMARKS.md](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-4-6) for day-to-day operations.
 
 | Phase | Harness | Operator entry |
 |-------|:-------:|----------------|
@@ -439,7 +439,7 @@ The original phase-by-phase **implementation specification** (Phases 1–7) is a
 | [`run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) | G2 → G3 → G4 → 3.3 → G5 (optional `--warm`, `--measured-report`) | All tier artifacts + report |
 | [`estimate-large-benchmark-cost.sh`](../scripts/estimate-large-benchmark-cost.sh) | Operator cost planning (L1–L3) | stdout estimate |
 
-Operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-46). **Unified hub:** [`benchmarks/README.md`](../benchmarks/README.md). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
+Operators follow [BENCHMARKS.md § Large-dataset program — Operator runbook (Phases 4–6)](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-4-6). **Unified hub:** [`benchmarks/README.md`](../benchmarks/README.md). For 1M-only legacy flow, [`bench-1m.sh`](../scripts/bench-1m.sh) remains valid; prefer `bench-large.sh --tier l3` for shared synthetic workload.
 
 Report fixtures (dry-run / schema, **not** live AWS): `benchmarks/report/fixtures/large-aws-l1.json`, `tpuf-l1.json`; tier examples `benchmarks/results/*-{l2,l3}.example.json`. Exemplar report: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`](reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md) (`NOT MEASURED`).
 
@@ -493,7 +493,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 |------|:----:|----------|
 | **Offline harness verify (one command)** | [x] | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) — pytest, render tests, `synthetic_workload_gate`, L1/L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf`; `bfaec74` |
 | MinIO G2 (subset, integration+bench, CI) | [x] | [`run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `synthetic_workload_gate`, `integration_s3` `synthetic_128_g2_*`, `bench_cold_10k_*`; `./scripts/run-integration-s3.sh` + `cargo test -F bench`; CI `g2-minio-correctness`; `5972ab7`, `67c7050`, `ef4fa97` |
-| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-46); G3: [§ G3 EC2](BENCHMARKS.md#g3-ec2-aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4-turbopuffer-operator-setup), `preflight-tpuf.sh` |
+| Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program-operator-runbook-phases-4-6); G3: [§ G3 EC2](BENCHMARKS.md#g3-ec2-aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4-turbopuffer-operator-setup), `preflight-tpuf.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
 | A2 `ingest-large.sh` | [x] | fact `3ss`; `preferred_ann_version` poll; API `bd449b6`; production S3 retry/resume (`scripts/lib/ingest-large-retry.sh`, `OPENPUFFER_INGEST_START_BATCH`) |
 | A3 `bench-large.sh` | [x] | fact `zq8`; outputs `large-aws-{tier}.json` |
