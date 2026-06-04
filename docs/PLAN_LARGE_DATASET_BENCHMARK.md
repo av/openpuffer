@@ -182,43 +182,164 @@ Pending live fact (add when `large-aws-l1.json` exists): `environment=aws-s3`, `
 
 ## Architecture of the evaluation
 
+### Component map (scripts + artifacts)
+
+Default tier **L1** paths shown; L2/L3 substitute `l2` / `l3` and workload dirs `l2-500k` / `l3-1m`. Live JSON lives under `benchmarks/results/` (gitignored until `git add -f`; see [benchmarks/README.md](../benchmarks/README.md)).
+
 ```mermaid
-flowchart LR
-  subgraph gen [Workload]
-    W[workload generator]
-    M[manifest.json]
+flowchart TB
+  subgraph offline [Offline harness — laptop/CI]
+    VERIFY["scripts/verify-large-benchmark-program.sh"]
+    VALID["scripts/validate-benchmark-json.sh"]
+    G2["scripts/run-minio-correctness-gates.sh"]
+    DRY["scripts/run-large-benchmark-program.sh --dry-run"]
   end
 
-  subgraph op [openpuffer]
+  subgraph g1 [G1 Workload]
+    GEN["benchmarks/workloads/generate_synthetic.py"]
+    WL["benchmarks/workloads/synthetic-128/l1-100k/"]
+    MAN["manifest.json"]
+    QRY["queries.json"]
+  end
+
+  subgraph g3 [G3 openpuffer — AWS EC2]
+    PFA["scripts/preflight-aws-ec2.sh"]
+    AWS["scripts/run-aws-large-benchmark.sh"]
+    ING["scripts/ingest-large.sh"]
+    BEN["scripts/bench-large.sh"]
+    SRV["openpuffer serve --ann-version 3"]
     S3[(AWS S3 bucket)]
-    SRV[openpuffer serve EC2 same region]
-    ART1[large-aws-*.json]
+    OPJSON["benchmarks/results/large-aws-l1.json"]
+    INGJSON["benchmarks/results/ingest-large-l1.json"]
   end
 
-  subgraph tp [turbopuffer]
-    REG[tpuf region]
-    SDK[Python benchmark driver]
-    ART2[tpuf-*.json]
+  subgraph g4 [G4 turbopuffer — same EC2]
+    PFT["scripts/preflight-tpuf.sh"]
+    TPUF["scripts/run-tpuf-large-benchmark.sh"]
+    DRV["benchmarks/tpuf_driver/run_benchmark.py"]
+    TPUFJSON["benchmarks/results/tpuf-l1.json"]
   end
 
-  subgraph out [Deliverables]
-    RPT[comparison report]
-    CMP[COMPARISON.md update]
+  subgraph p33 [Phase 3.3 cross-check]
+    OVL["scripts/run-id-overlap-spotcheck.sh"]
+    SPOT["benchmarks/cross_check/run_spotcheck.py"]
+    OVJSON["benchmarks/results/id-overlap-l1.json"]
   end
 
-  W --> M
-  M --> SRV
-  M --> SDK
+  subgraph g5 [G5 Deliverables]
+    RND["scripts/render-report.sh"]
+    E2E["scripts/run-large-benchmark-program.sh --measured-report"]
+    RPT["docs/reports/BENCHMARK_VS_TURBOPUFFER_YYYY-MM-DD.md"]
+    CMP["docs/COMPARISON.md"]
+  end
+
+  GEN --> WL
+  WL --> MAN
+  WL --> QRY
+  VERIFY --> VALID
+  VERIFY --> G2
+  DRY -.-> AWS
+  DRY -.-> TPUF
+
+  MAN --> ING
+  QRY --> BEN
+  QRY --> DRV
+  PFA --> AWS
+  AWS --> ING
+  ING --> SRV
   SRV --> S3
-  SRV --> ART1
-  SDK --> REG
-  SDK --> ART2
-  ART1 --> RPT
-  ART2 --> RPT
+  ING --> INGJSON
+  AWS --> BEN
+  BEN --> OPJSON
+
+  PFT --> TPUF
+  TPUF --> DRV
+  MAN --> DRV
+  DRV --> TPUFJSON
+
+  OPJSON --> OVL
+  TPUFJSON --> OVL
+  OVL --> SPOT
+  SPOT --> OVJSON
+
+  OPJSON --> RND
+  TPUFJSON --> RND
+  OVJSON --> RND
+  INGJSON --> RND
+  RND --> RPT
+  E2E --> RND
   RPT --> CMP
 ```
 
-**Fairness rule:** the benchmark **client** (EC2 or laptop) should sit in the **same cloud region** as openpuffer’s S3 bucket and as the chosen turbopuffer region. Record RTT with `curl -w '%{time_connect}'` to both endpoints before trusting latency deltas.
+| Artifact | Producer | Notes |
+|----------|----------|-------|
+| `benchmarks/results/large-aws-{tier}.json` | `bench-large.sh` (via `run-aws-large-benchmark.sh`) | `environment=aws-s3`; cold bench + gates |
+| `benchmarks/results/ingest-large-{tier}.json` | `ingest-large.sh` | Optional sidecar; default write is `ingest-large-{num_docs}.json` — set `OPENPUFFER_INGEST_RESULTS` to tier path before commit |
+| `benchmarks/results/tpuf-{tier}.json` | `run_benchmark.py` (via `run-tpuf-large-benchmark.sh`) | `environment=turbopuffer:<region>` |
+| `benchmarks/results/id-overlap-{tier}.json` | `run_spotcheck.py` (via `run-id-overlap-spotcheck.sh`) | After **both** namespaces indexed |
+| `docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md` | `render-report.sh` or E2E `--measured-report` | Fixtures: `benchmarks/report/fixtures/*.json` (dry-run only) |
+| `*-schema-minio*.example.json` | `run-minio-large-schema-example.sh` | MinIO **shape** only — not comparison timings |
+
+MinIO correctness (G2) does not feed the comparison report column; AWS guard rejects `127.0.0.1:9000` in G3 preflight.
+
+### Operator sequence (verify → ingest → bench → tpuf → overlap → report)
+
+One-command offline gate first; live steps on EC2 with real S3 + tpuf test-org key. Alternative: `./scripts/run-large-benchmark-program.sh --tier l1` chains G3→G4→3.3→G5 (add `--measured-report` for publish).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Op as Operator
+  participant Verify as verify-large-benchmark-program.sh
+  participant PrefAWS as preflight-aws-ec2.sh
+  participant G3 as run-aws-large-benchmark.sh
+  participant Ingest as ingest-large.sh
+  participant Bench as bench-large.sh
+  participant Serve as openpuffer serve
+  participant S3 as AWS S3
+  participant Res as benchmarks/results/
+  participant PrefTP as preflight-tpuf.sh
+  participant G4 as run-tpuf-large-benchmark.sh
+  participant Driver as tpuf_driver/run_benchmark.py
+  participant Overlap as run-id-overlap-spotcheck.sh
+  participant Valid as validate-benchmark-json.sh
+  participant Report as render-report.sh
+
+  Note over Op,Verify: Phase 0 — no cloud spend
+  Op->>Verify: ./scripts/verify-large-benchmark-program.sh
+  Verify-->>Op: exit 0 (pytest, dry-runs, facts)
+
+  Note over Op,S3: G3 — EC2 same region as bucket
+  Op->>PrefAWS: ./scripts/preflight-aws-ec2.sh
+  PrefAWS-->>Op: IMDS, head-bucket, unset MinIO endpoint
+  Op->>G3: ./scripts/run-aws-large-benchmark.sh --tier l1
+  G3->>Ingest: ingest-large.sh --tier l1
+  Ingest->>Serve: upsert batches (ANN v3)
+  Serve->>S3: WAL + index objects
+  Ingest-->>Res: ingest sidecar JSON
+  G3->>Bench: bench-large.sh --tier l1
+  Bench->>Serve: 7× cold queries (queries.json)
+  Bench-->>Res: large-aws-l1.json
+
+  Note over Op,Driver: G4 — after openpuffer indexed
+  Op->>PrefTP: ./scripts/preflight-tpuf.sh --tier l1
+  PrefTP-->>Op: TURBOPUFFER_API_KEY, region RTT
+  Op->>G4: ./scripts/run-tpuf-large-benchmark.sh --tier l1
+  G4->>Driver: run_benchmark.py (shared manifest)
+  Driver-->>Res: tpuf-l1.json
+
+  Note over Op,Overlap: Phase 3.3 — both sides indexed
+  Op->>Overlap: ./scripts/run-id-overlap-spotcheck.sh --tier l1
+  Overlap-->>Res: id-overlap-l1.json
+
+  Note over Op,Report: G5 — validate then publish
+  Op->>Valid: validate-benchmark-json.sh (each live JSON)
+  Op->>Report: render-report.sh --date YYYY-MM-DD
+  Report-->>Op: docs/reports/BENCHMARK_VS_TURBOPUFFER_*.md
+  Op->>Op: update COMPARISON.md; git add -f Res/*.json
+```
+
+**Fairness rule:** the benchmark **client** (EC2 or laptop) should sit in the **same cloud region** as openpuffer’s S3 bucket and as the chosen turbopuffer region. Record RTT with `curl -w '%{time_connect}'` to both endpoints before trusting latency deltas (`preflight-tpuf.sh` prints tpuf RTT).
 
 ---
 
