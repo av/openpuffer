@@ -4,7 +4,8 @@
 **Program:** [PLAN_LARGE_DATASET_BENCHMARK.md](../PLAN_LARGE_DATASET_BENCHMARK.md) — apples-to-apples openpuffer vs managed turbopuffer on a shared synthetic workload (L1 default: **100k × 128-dim** cosine).  
 **Status:** **Offline harness COMPLETE** · **Live G3–G5 PENDING** (credentials + EC2)  
 **Offline harness:** no remaining gaps  
-**Harness TODO sweep:** complete @ `1dc58b2` (2026-06-04) — no offline PLAN `[ ]` items; PLAN/BENCHMARKS have no `TODO`/`FIXME`/`defer`; remaining checklist `[ ]` is live G3–G5 only.
+**Harness TODO sweep:** complete @ `1dc58b2` (2026-06-04) — no offline PLAN `[ ]` items; PLAN/BENCHMARKS have no `TODO`/`FIXME`/`defer`; remaining checklist `[ ]` is live G3–G5 only.  
+**Git tag (milestone):** `large-dataset-harness-v1` → `c7f66a3` (annotated, 2026-06-04) — offline harness complete; live G3–G5 remains operator-run.
 
 ---
 
@@ -19,6 +20,18 @@ Re-verified on this branch (harness TODO sweep, 2026-06-04):
 ```
 
 No further offline harness implementation is planned before operator live G3–G5.
+
+### Milestone tag `large-dataset-harness-v1`
+
+Annotated tag on **`c7f66a3422d75790d9d1137387be8bda1f1c8dd9`** (`c7f66a3`, 2026-06-04):
+
+```bash
+git fetch --tags   # if cloning fresh
+git checkout large-dataset-harness-v1
+git show large-dataset-harness-v1   # tag message + commit
+```
+
+Tag message summary: **offline harness complete** — A1–A6 workloads, ingest/bench/tpuf drivers, G2 MinIO correctness gates, G3/G4 operator wrappers, G5 `render-report`, G6 CI/nightly dry-run, `verify-large-benchmark-program.sh` exit 0, JSON schemas, id-overlap mock. **Not included:** measured `large-aws-l1.json`, `tpuf-l1.json`, or publishable G5/COMPARISON rows (EC2 + AWS S3 + `TURBOPUFFER_API_KEY`).
 
 ---
 
@@ -313,5 +326,6 @@ Both require **`OPENPUFFER_ANN_VERSION=3`** for large-tier gates. L3 (1M) reuses
 | Can we publish COMPARISON latencies from CI MinIO? | **No** — AWS + managed tpuf only |
 | What unblocks “program complete”? | EC2 + real S3 + tpuf test key → runbook above → commit live JSON + measured report |
 | Where is the blocked-run evidence? | [OPERATOR_G3_G4_ATTEMPT.md](../../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
+| Offline harness milestone tag? | **`large-dataset-harness-v1`** @ `c7f66a3` — see [§ Milestone tag](#milestone-tag-large-dataset-harness-v1) |
 
 **Handoff author:** timeboxed harness session (see `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md` progress log). **Next owner:** operator with AWS/tpuf credentials following [OPERATOR_RUNBOOK_QUICK.md](../../benchmarks/OPERATOR_RUNBOOK_QUICK.md).
