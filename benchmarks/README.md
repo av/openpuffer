@@ -160,7 +160,7 @@ make bench-verify
 # optional: make bench-g2-minio   # MinIO G2 only (Docker; not part of bench-verify)
 ```
 
-Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/bench schema tests, `synthetic_workload_gate`, and L1–L3 harness dry-runs. Same gate as CI [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml).
+Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/bench schema tests, `synthetic_workload_gate`, and L1–L3 harness dry-runs. CI [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) also runs `preflight-large-benchmark-all.sh --skip-overlap` for the selected tier, then this verify gate.
 
 ### 2. Program dry-run (no credentials)
 

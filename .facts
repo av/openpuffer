@@ -470,6 +470,9 @@
 - label: benchmark-large-dispatch workflow runs verify-large-benchmark-program.sh offline harness
   command: grep -q 'verify-large-benchmark-program.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q 'workflow_dispatch' .github/workflows/benchmark-large-dispatch.yml
   tags: [spec, bench-large, implemented]
+- label: benchmark-large-dispatch workflow runs preflight-large-benchmark-all.sh --skip-overlap for selected tier
+  command: grep -q 'preflight-large-benchmark-all.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q '\-\-skip-overlap' .github/workflows/benchmark-large-dispatch.yml && grep -q 'inputs.tier' .github/workflows/benchmark-large-dispatch.yml
+  tags: [spec, bench-large, implemented]
 - label: large-aws bench JSON fixture cold_large_l1 records tier workload_dir recall_at_10 p50 storage_roundtrips preferred_ann_version 3 index_cursor_eq_wal_commit_seq filter_query_runs hybrid_query_runs
   command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and all(k in d for k in ('workload_dir','recall_at_10','p50_query_latency_ms','storage_roundtrips','preferred_ann_version','index_cursor_eq_wal_commit_seq','cold_query_runs','filter_query_runs','hybrid_query_runs')) and d['preferred_ann_version']==3 and d['index_cursor_eq_wal_commit_seq'] and d['cold_query_runs']==7 and len(d['filter_query_runs'])>=1 and len(d['hybrid_query_runs'])>=1"
   tags: [spec, bench-large, implemented]

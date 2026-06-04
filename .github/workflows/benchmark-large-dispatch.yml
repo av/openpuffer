@@ -51,5 +51,8 @@ jobs:
       - name: Install facts CLI
         run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
 
+      - name: preflight-large-benchmark-all.sh (G3+G4 offline, skip overlap)
+        run: ./scripts/preflight-large-benchmark-all.sh --skip-overlap --tier "${{ inputs.tier }}"
+
       - name: verify-large-benchmark-program.sh (all offline gates)
         run: ./scripts/verify-large-benchmark-program.sh

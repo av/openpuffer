@@ -616,7 +616,7 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
 
 1. GitHub → **Actions** → **Large-dataset benchmark (dispatch)** → **Run workflow**.
 2. Choose **tier** (`l1`, `l2`, or `l3`; default `l1`).
-3. Workflow runs [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (offline gates only; no repository secrets).
+3. Workflow runs [`scripts/preflight-large-benchmark-all.sh`](../scripts/preflight-large-benchmark-all.sh) `--skip-overlap --tier <tier>` (G3 AWS dry-run + G4 tpuf skip-key; no openpuffer overlap — CI has no serve), then [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (full offline harness; no repository secrets).
 
 Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml).
 
