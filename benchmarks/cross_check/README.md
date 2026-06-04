@@ -8,7 +8,7 @@ Compares **top_k id overlap** between openpuffer and turbopuffer for the first 1
 # Validate workload (CI-safe, no network)
 python3 benchmarks/cross_check/run_spotcheck.py --tier l1 --dry-run
 
-# Offline mock → benchmarks/results/id-overlap-l1.json
+# Offline mock (production-shaped JSON) → benchmarks/results/id-overlap-l1.json
 python3 benchmarks/cross_check/run_spotcheck.py --tier l1 --mock
 
 # Live (indexed namespaces on both sides)

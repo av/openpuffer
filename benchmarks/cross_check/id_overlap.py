@@ -13,6 +13,9 @@ from typing import Any
 
 DEFAULT_SPOT_CHECK_COUNT = 10
 
+# Deterministic intersection sizes for offline mock (10 queries, top_k=10).
+MOCK_INTERSECTION_COUNTS: tuple[int, ...] = (8, 7, 6, 7, 5, 8, 6, 7, 9, 6)
+
 
 def load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as f:
@@ -149,6 +152,72 @@ def summarize_query_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def synthetic_mock_id_lists(
+    doc_index: int, *, top_k: int, intersection_count: int
+) -> tuple[list[str], list[str]]:
+    """Build ranked id lists with a fixed intersection size (offline mock only)."""
+    op_ids = [f"doc-{doc_index + i}" for i in range(top_k)]
+    inter = min(max(intersection_count, 0), top_k)
+    shared = op_ids[:inter]
+    tpuf_extra = [f"tpuf-{doc_index + top_k + i}" for i in range(top_k - inter)]
+    tpuf_ids = shared + tpuf_extra
+    return op_ids, tpuf_ids
+
+
+def mock_intersection_counts(query_count: int) -> tuple[int, ...]:
+    """Repeat MOCK_INTERSECTION_COUNTS to match spot_check query count."""
+    base = MOCK_INTERSECTION_COUNTS
+    if query_count <= len(base):
+        return base[:query_count]
+    out: list[int] = []
+    while len(out) < query_count:
+        out.extend(base)
+    return tuple(out[:query_count])
+
+
+def build_mock_payload(
+    *,
+    tier: str,
+    workload_dir: str,
+    queries: dict[str, Any],
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Production-shaped mock payload from workload queries.json (no network)."""
+    from datetime import date
+
+    spot_cfg = spot_check_config(queries)
+    top_k = int(spot_cfg.get("top_k", 10))
+    specs = spot_check_query_specs(queries)
+    per_query: list[dict[str, Any]] = []
+    for spec, inter_n in zip(specs, mock_intersection_counts(len(specs))):
+        doc_index = int(spec.get("doc_index", 0))
+        op_ids, tpuf_ids = synthetic_mock_id_lists(
+            doc_index, top_k=top_k, intersection_count=inter_n
+        )
+        metrics = overlap_metrics(op_ids, tpuf_ids, top_k=top_k)
+        per_query.append(
+            {
+                "name": str(spec.get("name", "unknown")),
+                "doc_index": spec.get("doc_index"),
+                **metrics,
+            }
+        )
+    return build_result_payload(
+        tier=tier,
+        workload_dir=workload_dir,
+        spot_cfg=spot_cfg,
+        per_query=per_query,
+        mode="mock",
+        openpuffer_namespace=f"bench-large-{tier}-mock",
+        turbopuffer_namespace=f"bench-tpuf-{date.today().isoformat()}-{tier}-mock",
+        notes=notes
+        or (
+            "Offline mock for render-report and pytest; "
+            "not measured against live engines."
+        ),
+    )
+
+
 def build_result_payload(
     *,
     tier: str,
@@ -158,6 +227,7 @@ def build_result_payload(
     mode: str,
     openpuffer_namespace: str | None = None,
     turbopuffer_namespace: str | None = None,
+    notes: str | None = None,
 ) -> dict[str, Any]:
     summary = summarize_query_results(per_query)
     return {
@@ -170,7 +240,8 @@ def build_result_payload(
         "turbopuffer_namespace": turbopuffer_namespace,
         "queries": per_query,
         "summary": summary,
-        "notes": spot_cfg.get("notes")
+        "notes": notes
+        or spot_cfg.get("notes")
         or (
             "Pure vector ANN overlap@k; expect divergence from different ANN graphs. "
             "Not a hard CI gate on live overlap."

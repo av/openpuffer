@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validate committed large-dataset benchmark JSON (fixtures + *.example.json).
 #
-# Uses JSON Schema (python jsonschema) for large-aws, tpuf, and ingest-large L1 artifacts.
+# Uses JSON Schema (python jsonschema) for large-aws, tpuf, ingest-large, and id-overlap artifacts.
 # Ingest JSON also gets cross-field timing consistency checks after schema pass.
 #
 # Usage:
@@ -17,6 +17,7 @@ SCHEMA_DIR="$ROOT/benchmarks/report/schema"
 OP_SCHEMA="$SCHEMA_DIR/large-aws-l1.schema.json"
 TPUF_SCHEMA="$SCHEMA_DIR/tpuf-l1.schema.json"
 INGEST_SCHEMA="$SCHEMA_DIR/ingest-large-l1.schema.json"
+OVERLAP_SCHEMA="$SCHEMA_DIR/id-overlap-l1.schema.json"
 
 ensure_jsonschema() {
   if ! python3 -c "import jsonschema" >/dev/null 2>&1; then
@@ -35,7 +36,8 @@ collect_default_paths() {
     benchmarks/results/large-aws-l1-schema-minio.example.json \
     benchmarks/results/large-aws-l1-schema-minio-10k.example.json \
     benchmarks/results/ingest-large-l1-schema-minio.example.json \
-    benchmarks/results/ingest-large-l1-schema-minio-10k.example.json; do
+    benchmarks/results/ingest-large-l1-schema-minio-10k.example.json \
+    benchmarks/results/id-overlap-l1.example.json; do
     if [[ -f "$f" ]]; then
       paths+=("$f")
     fi
@@ -59,7 +61,7 @@ run_validation() {
     done < <(collect_default_paths)
   fi
 
-  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "${json_paths[@]}" <<'PY'
+  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "${json_paths[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -69,15 +71,19 @@ from jsonschema import Draft202012Validator
 op_schema_path = Path(sys.argv[1])
 tpuf_schema_path = Path(sys.argv[2])
 ingest_schema_path = Path(sys.argv[3])
-paths = [Path(p) for p in sys.argv[4:]]
+overlap_schema_path = Path(sys.argv[4])
+paths = [Path(p) for p in sys.argv[5:]]
 
 op_validator = Draft202012Validator(json.loads(op_schema_path.read_text()))
 tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
+overlap_validator = Draft202012Validator(json.loads(overlap_schema_path.read_text()))
 
 
 def classify(path: Path) -> str:
     s = str(path)
+    if "id-overlap" in s:
+        return "id-overlap"
     if "ingest-large" in s:
         return "ingest"
     if "tpuf" in s:
@@ -98,6 +104,28 @@ def schema_errors(validator, data, label: str, path: Path) -> None:
             + "\n".join(lines)
             + suffix
         )
+
+
+def validate_overlap_cross_fields(path: Path, data: dict) -> None:
+    queries = data.get("queries") or []
+    summary = data.get("summary") or {}
+    if summary.get("query_count") != len(queries):
+        raise SystemExit(
+            f"{path}: summary.query_count != len(queries) "
+            f"({summary.get('query_count')} vs {len(queries)})"
+        )
+    spot = data.get("spot_check") or {}
+    top_k = int(spot.get("top_k", 10))
+    for row in queries:
+        if row.get("top_k") != top_k:
+            raise SystemExit(f"{path}: query {row.get('name')} top_k != spot_check.top_k")
+        inter_n = int(row.get("intersection_count", 0))
+        expected = round(inter_n / max(top_k, 1), 4)
+        actual = row.get("overlap_at_k")
+        if actual is not None and abs(float(actual) - expected) > 0.0001:
+            raise SystemExit(
+                f"{path}: query {row.get('name')} overlap_at_k {actual} != {expected}"
+            )
 
 
 def validate_ingest_cross_fields(path: Path, data: dict) -> None:
@@ -128,6 +156,9 @@ for path in paths:
     if kind == "ingest":
         schema_errors(ingest_validator, data, "ingest-large-l1", path)
         validate_ingest_cross_fields(path, data)
+    elif kind == "id-overlap":
+        schema_errors(overlap_validator, data, "id-overlap", path)
+        validate_overlap_cross_fields(path, data)
     elif kind == "openpuffer":
         schema_errors(op_validator, data, "large-aws-l1", path)
     else:

@@ -64,14 +64,31 @@ def openpuffer_query(
         return json.loads(resp.read().decode("utf-8"))
 
 
-def run_mock(tier: str, fixture_path: Path) -> dict[str, Any]:
-    payload = xcheck.load_json(fixture_path)
-    if payload.get("tier") and payload["tier"] != tier:
-        print(
-            f"warning: fixture tier={payload['tier']} != --tier {tier}",
-            file=sys.stderr,
-        )
-    return payload
+def run_mock(
+    *,
+    tier: str,
+    workload_dir: Path,
+    queries: dict[str, Any],
+    fixture_path: Path | None,
+) -> dict[str, Any]:
+    rel_workload = (
+        str(workload_dir.relative_to(ROOT))
+        if workload_dir.is_relative_to(ROOT)
+        else str(workload_dir)
+    )
+    if fixture_path is not None:
+        payload = xcheck.load_json(fixture_path)
+        if payload.get("tier") and payload["tier"] != tier:
+            print(
+                f"warning: fixture tier={payload['tier']} != --tier {tier}",
+                file=sys.stderr,
+            )
+        return payload
+    return xcheck.build_mock_payload(
+        tier=tier,
+        workload_dir=rel_workload,
+        queries=queries,
+    )
 
 
 def run_live(
@@ -221,17 +238,19 @@ def main(argv: list[str] | None = None) -> int:
         results_path = ROOT / results_path
 
     if args.mock:
-        fixture = Path(
-            args.fixture
-            or ROOT
-            / "benchmarks"
-            / "cross_check"
-            / "fixtures"
-            / f"overlap-{args.tier}-mock.json"
+        fixture: Path | None = None
+        if args.fixture:
+            fixture = Path(args.fixture)
+            if not fixture.is_absolute():
+                fixture = ROOT / fixture
+            if not fixture.is_file():
+                raise SystemExit(f"missing mock fixture: {fixture}")
+        payload = run_mock(
+            tier=args.tier,
+            workload_dir=workload_dir,
+            queries=queries,
+            fixture_path=fixture,
         )
-        if not fixture.is_file():
-            raise SystemExit(f"missing mock fixture: {fixture}")
-        payload = run_mock(args.tier, fixture)
         payload["mode"] = "mock"
     else:
         try:

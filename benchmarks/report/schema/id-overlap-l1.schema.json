@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openpuffer.dev/benchmarks/report/schema/id-overlap-l1.schema.json",
+  "title": "id-overlap spot-check JSON (all tiers)",
+  "description": "Schema for benchmarks/results/id-overlap-{tier}.json (Phase 3.3 run_spotcheck.py output).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "benchmark",
+    "tier",
+    "workload_dir",
+    "mode",
+    "spot_check",
+    "queries",
+    "summary"
+  ],
+  "properties": {
+    "benchmark": { "const": "id_overlap_spotcheck" },
+    "tier": { "enum": ["l1", "l2", "l3"] },
+    "workload_dir": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["mock", "live"] },
+    "spot_check": { "$ref": "#/$defs/spot_check" },
+    "openpuffer_namespace": { "type": ["string", "null"], "minLength": 1 },
+    "turbopuffer_namespace": { "type": ["string", "null"], "minLength": 1 },
+    "queries": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/query_result" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "spot_check": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["count", "top_k", "include_attributes", "consistency", "source"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 1 },
+        "top_k": { "type": "integer", "minimum": 1 },
+        "include_attributes": { "type": "boolean" },
+        "consistency": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 }
+      }
+    },
+    "query_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "top_k",
+        "openpuffer_count",
+        "turbopuffer_count",
+        "intersection_count",
+        "union_count",
+        "overlap_at_k",
+        "jaccard",
+        "intersection_ids",
+        "openpuffer_ids",
+        "turbopuffer_ids"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "doc_index": { "type": ["integer", "null"] },
+        "top_k": { "type": "integer", "minimum": 1 },
+        "openpuffer_count": { "type": "integer", "minimum": 0 },
+        "turbopuffer_count": { "type": "integer", "minimum": 0 },
+        "intersection_count": { "type": "integer", "minimum": 0 },
+        "union_count": { "type": "integer", "minimum": 0 },
+        "overlap_at_k": { "type": "number", "minimum": 0, "maximum": 1 },
+        "jaccard": { "type": "number", "minimum": 0, "maximum": 1 },
+        "intersection_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "openpuffer_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "turbopuffer_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "query_count",
+        "mean_overlap_at_k",
+        "min_overlap_at_k",
+        "max_overlap_at_k"
+      ],
+      "properties": {
+        "query_count": { "type": "integer", "minimum": 0 },
+        "mean_overlap_at_k": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "min_overlap_at_k": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "max_overlap_at_k": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

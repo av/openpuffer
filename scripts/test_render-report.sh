@@ -46,6 +46,8 @@ grep -q "Batch upsert p50" "$OUT"
 grep -q "110" "$OUT"
 grep -q "8" "$OUT"
 grep -q "tpuf_driver/run_benchmark.py" "$OUT"
+grep -q "Spot-check overlap@10" "$OUT"
+grep -q "0.690" "$OUT" || grep -q "0.69" "$OUT"
 
 if grep -E 'tpuf_deadbeef|TURBOPUFFER_API_KEY=tpuf_' "$OUT"; then
   echo "FAIL: report leaked API key material" >&2

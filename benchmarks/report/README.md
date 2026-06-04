@@ -1,7 +1,7 @@
 # Comparison report assets (A5)
 
 - **Fixtures:** `fixtures/large-aws-l1.json`, `fixtures/tpuf-l1.json` — offline inputs for `scripts/render-report.sh --dry-run`.
-- **JSON Schema:** `schema/large-aws-l1.schema.json`, `schema/tpuf-l1.schema.json`, `schema/ingest-large-l1.schema.json` — validated by [`scripts/validate-benchmark-json.sh`](../../scripts/validate-benchmark-json.sh).
+- **JSON Schema:** `schema/large-aws-l1.schema.json`, `schema/tpuf-l1.schema.json`, `schema/ingest-large-l1.schema.json`, `schema/id-overlap-l1.schema.json` — validated by [`scripts/validate-benchmark-json.sh`](../../scripts/validate-benchmark-json.sh).
 - **Live results:** `../results/large-aws-{tier}.json`, `../results/tpuf-{tier}.json`.
 - **Output:** `../../docs/reports/BENCHMARK_VS_TURBOPUFFER_<date>.md`.
 

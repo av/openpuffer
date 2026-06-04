@@ -68,6 +68,32 @@ def test_mock_fixture_summary() -> None:
     assert payload["summary"]["mean_overlap_at_k"] == 0.69
 
 
+def test_mock_payload_matches_production_schema() -> None:
+    queries = json.loads(L1_QUERIES.read_text())
+    payload = xcheck.build_mock_payload(
+        tier="l1",
+        workload_dir="benchmarks/workloads/synthetic-128/l1-100k",
+        queries=queries,
+    )
+    assert payload["mode"] == "mock"
+    assert len(payload["queries"]) == 10
+    row0 = payload["queries"][0]
+    for key in (
+        "top_k",
+        "openpuffer_count",
+        "turbopuffer_count",
+        "intersection_count",
+        "union_count",
+        "overlap_at_k",
+        "jaccard",
+        "intersection_ids",
+        "openpuffer_ids",
+        "turbopuffer_ids",
+    ):
+        assert key in row0, key
+    assert payload["summary"]["mean_overlap_at_k"] == 0.69
+
+
 def test_run_spotcheck_dry_run() -> None:
     proc = subprocess.run(
         [sys.executable, str(RUNNER), "--tier", "l1", "--dry-run"],
@@ -89,8 +115,6 @@ def test_run_spotcheck_mock_writes_json(tmp_path: Path) -> None:
             "--tier",
             "l1",
             "--mock",
-            "--fixture",
-            str(MOCK_FIXTURE),
             "--output",
             str(out),
         ],
@@ -103,3 +127,4 @@ def test_run_spotcheck_mock_writes_json(tmp_path: Path) -> None:
     written = json.loads(out.read_text())
     assert written["mode"] == "mock"
     assert written["summary"]["query_count"] == 10
+    assert "openpuffer_ids" in written["queries"][0]

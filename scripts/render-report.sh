@@ -282,6 +282,11 @@ resolve_overlap_json() {
     echo "$primary"
     return 0
   fi
+  local example="$ROOT/benchmarks/results/id-overlap-${tier}.example.json"
+  if [[ -f "$example" ]]; then
+    echo "$example"
+    return 0
+  fi
   if [[ "$DRY_RUN" == "1" && "$tier" == "l1" ]]; then
     local mock="$ROOT/benchmarks/cross_check/fixtures/overlap-l1-mock.json"
     if [[ -f "$mock" ]]; then
@@ -354,9 +359,10 @@ validate_tier() {
 }
 
 render_executive_summary() {
-  local tier="$1" op_file="$2" tpuf_file="$3"
+  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
   local op_p50 tpuf_p50 op_recall tpuf_recall ratio
-  local op_warm_p50 tpuf_warm_p50 warm_line=""
+  local op_warm_p50 tpuf_warm_p50 warm_line="" overlap_line=""
+  local overlap_mean overlap_mode
   op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
   tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
@@ -368,13 +374,19 @@ render_executive_summary() {
     warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual; tpuf: \`hint_cache_warm\` + eventual, plan §4.3).
 "
   fi
+  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
+    overlap_mean="$(jq_field "$overlap_file" '.summary.mean_overlap_at_k')"
+    overlap_mode="$(jq_field "$overlap_file" '.mode')"
+    overlap_line="- **Spot-check overlap@10 (mean):** $(fmt_recall "$overlap_mean") (10 vector queries, mode=${overlap_mode}; Phase 3.3 \`id-overlap-${tier}.json\`).
+"
+  fi
 
   cat <<EOF
 ## Executive summary
 
 - **Workload:** synthetic-128, tier **${tier}** ($(tier_docs_label "$tier") docs × 128-dim cosine, seed from manifest).
 - **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio ${ratio}).
-${warm_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
+${warm_line}${overlap_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
 - **Self-host vs managed:** openpuffer exposes S3 cold-path metrics (\`storage_roundtrips\`, \`cold_s3_keys_fetched\`); turbopuffer is managed (those fields n/a).
 - _Auto-interpretation:_ see [Comparison interpretation (tier ${tier})](#comparison-interpretation-tier-${tier}) below; edit after operator review. [COMPARISON.md](../COMPARISON.md) § measured maturity.
 
@@ -502,7 +514,8 @@ PY
 }
 
 render_methodology_skeleton() {
-  local tier="$1" op_file="$2" tpuf_file="$3"
+  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
+  local overlap_artifact=""
   local docs dim seed emb op_env tpuf_env tpuf_region
   docs="$(jq_field "$op_file" '.namespace_docs')"
   dim="$(jq_field "$op_file" '.dimensions')"
@@ -511,6 +524,9 @@ render_methodology_skeleton() {
   op_env="$(jq_field "$op_file" '.environment')"
   tpuf_env="$(jq_field "$tpuf_file" '.environment')"
   tpuf_region="$(jq_field "$tpuf_file" '.tpuf_region // .environment')"
+  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
+    overlap_artifact=", \`benchmarks/results/id-overlap-${tier}.json\`"
+  fi
 
   cat <<EOF
 ## Methodology
@@ -536,7 +552,7 @@ render_methodology_skeleton() {
 | Client placement | _fill: EC2 instance type + AZ, same-region as S3/tpuf_ |
 | Ingest cadence (openpuffer) | ~1.1s between 10k batches (WAL-limited) |
 
-**Artifacts:** \`benchmarks/results/large-aws-${tier}.json\`, \`benchmarks/results/tpuf-${tier}.json\`.
+**Artifacts:** \`benchmarks/results/large-aws-${tier}.json\`, \`benchmarks/results/tpuf-${tier}.json\`${overlap_artifact}.
 
 **Regenerate:**
 
@@ -586,8 +602,8 @@ EOF
 }
 
 render_results_table() {
-  local tier="$1" op_file="$2" tpuf_file="$3"
-  local docs seed
+  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
+  local docs seed overlap_mean overlap_min overlap_mode overlap_row=""
   docs="$(jq_field "$op_file" '.namespace_docs')"
   seed="$(jq_field "$op_file" '.seed')"
 
@@ -634,6 +650,13 @@ render_results_table() {
     tpuf_warm_proto="$(jq_field "$tpuf_file" '.warm_protocol // "hint_cache_warm"')"
     warm_protocol_note="${warm_protocol_note} **Warm (turbopuffer):** ${tpuf_warm_runs} runs, consistency=${tpuf_warm_consistency}, protocol=${tpuf_warm_proto}."
   fi
+  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
+    overlap_mean="$(jq_field "$overlap_file" '.summary.mean_overlap_at_k')"
+    overlap_min="$(jq_field "$overlap_file" '.summary.min_overlap_at_k')"
+    overlap_mode="$(jq_field "$overlap_file" '.mode')"
+    overlap_row="| Spot-check overlap@10 (mean / min) | $(fmt_recall "$overlap_mean") / $(fmt_recall "$overlap_min") | same query vectors (mode=${overlap_mode}) | — |
+"
+  fi
 
   cat <<EOF
 ## Results @ $(tier_docs_label "$tier") × 128-dim cosine (synthetic seed=${seed})
@@ -650,7 +673,7 @@ render_results_table() {
 | Warm p50 query (ms) | $(fmt_num "$op_warm_p50") | $(fmt_num "$tpuf_warm_p50") | $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50") |
 | Warm p95 query (ms) | $(fmt_num "$op_warm_p95") | $(fmt_num "$tpuf_warm_p95") | $(fmt_ratio "$op_warm_p95" "$tpuf_warm_p95") |
 | recall@10 (num=20) | $(fmt_recall "$op_recall") | $(fmt_recall "$tpuf_recall") | $(fmt_ratio "$op_recall" "$tpuf_recall") |
-| storage_roundtrips | $(fmt_num "$op_rt") | n/a | — |
+${overlap_row}| storage_roundtrips | $(fmt_num "$op_rt") | n/a | — |
 | cold_s3_keys_fetched | $(fmt_num "$op_cold") | n/a | — |
 | candidates_ratio | $(fmt_num "$op_ratio") | $(fmt_num "$tpuf_ratio") | $(fmt_ratio "$op_ratio" "$tpuf_ratio") |
 | index_object_count | $(fmt_num "$op_idx") | n/a | — |
@@ -900,7 +923,7 @@ _Generated by \`scripts/render-report.sh\` on ${REPORT_DATE} (UTC). Commit \`${C
 EOF
     if [[ "$DRY_RUN" == "1" ]]; then
       cat <<EOF
-> **NOT MEASURED** — dry-run report using fixtures under \`benchmarks/report/fixtures/\` and (for L1) \`benchmarks/cross_check/fixtures/overlap-l1-mock.json\`. Numbers are placeholders for layout review only; do not cite in COMPARISON.md until live \`large-aws-*.json\` and \`tpuf-*.json\` exist.
+> **NOT MEASURED** — dry-run report using fixtures under \`benchmarks/report/fixtures/\` and (when present) \`benchmarks/results/id-overlap-*.example.json\` or \`benchmarks/cross_check/fixtures/overlap-*-mock.json\`. Numbers are placeholders for layout review only; do not cite in COMPARISON.md until live \`large-aws-*.json\` and \`tpuf-*.json\` exist.
 
 EOF
     fi
@@ -908,16 +931,16 @@ EOF
       op_path="$(resolve_input_json op "$tier")"
       tpuf_path="$(resolve_input_json tpuf "$tier")"
       [[ -f "$op_path" && -f "$tpuf_path" ]] || continue
-      render_executive_summary "$tier" "$op_path" "$tpuf_path"
-      render_methodology_skeleton "$tier" "$op_path" "$tpuf_path"
+      overlap_path="$(resolve_overlap_json "$tier")"
+      render_executive_summary "$tier" "$op_path" "$tpuf_path" "$overlap_path"
+      render_methodology_skeleton "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       render_setup_summary "$tier" "$op_path" "$tpuf_path"
-      render_results_table "$tier" "$op_path" "$tpuf_path"
+      render_results_table "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       render_secondary_query_table "$tier" "$op_path" "$tpuf_path"
       if [[ "$DRY_RUN" == "0" ]]; then
         render_comparison_interpretation "$tier" "$op_path" "$tpuf_path"
         echo ""
       fi
-      overlap_path="$(resolve_overlap_json "$tier")"
       render_correctness_section "$tier" "$op_path" "$tpuf_path" "$overlap_path"
       echo ""
     done
