@@ -2,6 +2,14 @@
 
 Measurable baselines and scale gates for [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md). Work is fact-driven: `@spec` facts under `index/ann` and `query/cold` in `.facts` are checked with `facts check --tags cold,ann`.
 
+For the **large-dataset turbopuffer comparison program** ([PLAN_LARGE_DATASET_BENCHMARK.md](PLAN_LARGE_DATASET_BENCHMARK.md)), run all offline harness gates in one command:
+
+```bash
+./scripts/verify-large-benchmark-program.sh
+```
+
+(`--with-g2` for MinIO Docker G2; `--skip-l2-l3` for a faster L1-only pass.)
+
 ## Large-dataset program — G2 correctness gates (MinIO)
 
 Before AWS/turbopuffer comparison runs ([`PLAN_LARGE_DATASET_BENCHMARK.md`](PLAN_LARGE_DATASET_BENCHMARK.md) Phase 2–3), prove API semantics on the **shared synthetic-128 fixture** (`benchmarks/workloads/synthetic-128/l1-100k/`).
@@ -145,12 +153,14 @@ Run **L1 first** on AWS + tpuf before L2/L3 spend. MinIO proves correctness only
 **End-to-end dry-run (offline):**
 
 ```bash
+./scripts/verify-large-benchmark-program.sh    # all offline gates (preferred)
+# or tier-focused:
 ./scripts/test_l2-l3-harness-dry-run.sh
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l2 --skip-g2
 ./scripts/run-large-benchmark-program.sh --dry-run --tier l3 --skip-g2
 ```
 
-**GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs ingest/bench/tpuf/program/id-overlap dry-run for the selected tier (`l1`, `l2`, or `l3`).
+**GitHub Actions:** [benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml) `workflow_dispatch` runs [`verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (full offline harness).
 
 **Spot-check ids:** `queries.json` `spot_check` uses the first 10 `vector_queries`; doc indices scale with tier (`num_docs / 50` stride), e.g. L2 → 0, 10k, …, 90k; L3 → 0, 20k, …, 180k.
 
@@ -412,15 +422,7 @@ Not scheduled on push/PR (AWS/tpuf cost). Use when validating harness changes be
 
 1. GitHub → **Actions** → **Large-dataset benchmark (dispatch)** → **Run workflow**.
 2. Choose **tier** (`l1`, `l2`, or `l3`; default `l1`).
-3. Workflow runs offline gates only (no repository secrets required in this iteration):
-   - `pytest benchmarks/workloads/test_generate_synthetic.py`
-   - `pytest benchmarks/tpuf_driver/test_run_benchmark.py`
-   - [`scripts/test_render-report.sh`](../scripts/test_render-report.sh)
-   - [`scripts/test_render-report-measured.sh`](../scripts/test_render-report-measured.sh) (fixture merge simulating live G5)
-   - [`scripts/ingest-large.sh`](../scripts/ingest-large.sh) / [`scripts/bench-large.sh`](../scripts/bench-large.sh) `--dry-run` for the selected tier
-   - [`scripts/run-tpuf-large-benchmark.sh`](../scripts/run-tpuf-large-benchmark.sh) `--dry-run` (wraps tpuf driver)
-   - [`benchmarks/tpuf_driver/run_benchmark.py`](../benchmarks/tpuf_driver/run_benchmark.py) `--dry-run`
-   - `facts check --tags bench-large` and `facts check --tags bench-tpuf`
+3. Workflow runs [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (offline gates only; no repository secrets).
 
 Workflow file: [`.github/workflows/benchmark-large-dispatch.yml`](../.github/workflows/benchmark-large-dispatch.yml). Live ingest/bench on AWS and managed turbopuffer still run from an operator host with credentials (future: optional job inputs + secrets for one-click live runs).
 

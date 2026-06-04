@@ -429,6 +429,9 @@
 - label: L2 L3 harness dry-run script validates ingest bench G3 G4 program id-overlap render-report offline
   command: test -x scripts/test_l2-l3-harness-dry-run.sh && grep -q 'L2/L3' docs/BENCHMARKS.md && ./scripts/test_l2-l3-harness-dry-run.sh >/dev/null
   tags: [spec, bench-large, bench-tpuf, implemented]
+- label: verify-large-benchmark-program.sh runs offline harness gates pytest render synthetic_workload_gate L1 L2 L3 dry-run documented in PLAN
+  command: test -x scripts/verify-large-benchmark-program.sh && grep -q 'verify-large-benchmark-program' docs/PLAN_LARGE_DATASET_BENCHMARK.md && grep -q 'synthetic_workload_gate' scripts/verify-large-benchmark-program.sh && grep -q 'test_l2-l3-harness-dry-run' scripts/verify-large-benchmark-program.sh && ./scripts/verify-large-benchmark-program.sh --skip-facts >/dev/null
+  tags: [spec, bench-large, bench-tpuf, implemented]
 - label: run-minio-large-schema-example.sh targets schema example JSON with environment minio warm secondary query fields and optional --docs 10000 fast path
   command: test -x scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio.example.json' scripts/run-minio-large-schema-example.sh && grep -q "environment=minio" scripts/run-minio-large-schema-example.sh && grep -qE '(--warm|WARM_MODE)' scripts/run-minio-large-schema-example.sh && grep -q 'filter_query_runs' scripts/run-minio-large-schema-example.sh && grep -q 'docs 10000' scripts/run-minio-large-schema-example.sh && grep -q 'schema-minio-10k.example.json' scripts/run-minio-large-schema-example.sh
   tags: [spec, bench-large, implemented]
@@ -450,8 +453,8 @@
 - label: G5 dry-run exemplar report BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md labeled NOT MEASURED
   command: test -f docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md && grep -q 'NOT MEASURED' docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md
   tags: [spec, bench-tpuf, bench-large, implemented]
-- label: benchmark-large-dispatch workflow runs G3 run-aws-large-benchmark run-large-benchmark-program and id-overlap spotcheck dry-run
-  command: grep -q 'run-aws-large-benchmark.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q 'run-large-benchmark-program.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q 'run-id-overlap-spotcheck.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q '\-\-dry-run' .github/workflows/benchmark-large-dispatch.yml
+- label: benchmark-large-dispatch workflow runs verify-large-benchmark-program.sh offline harness
+  command: grep -q 'verify-large-benchmark-program.sh' .github/workflows/benchmark-large-dispatch.yml && grep -q 'workflow_dispatch' .github/workflows/benchmark-large-dispatch.yml
   tags: [spec, bench-large, implemented]
 - label: large-aws bench JSON fixture cold_large_l1 records tier workload_dir recall_at_10 p50 storage_roundtrips preferred_ann_version index_cursor_eq_wal_commit_seq filter_query_runs hybrid_query_runs
   command: python3 -c "import json; d=json.load(open('benchmarks/report/fixtures/large-aws-l1.json')); assert d['benchmark']=='cold_large_l1' and d['tier']=='l1' and all(k in d for k in ('workload_dir','recall_at_10','p50_query_latency_ms','storage_roundtrips','preferred_ann_version','index_cursor_eq_wal_commit_seq','cold_query_runs','filter_query_runs','hybrid_query_runs')) and d['cold_query_runs']==7 and len(d['filter_query_runs'])>=1 and len(d['hybrid_query_runs'])>=1"

@@ -6,8 +6,22 @@ Related docs:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — current on-disk layout and query phases
 - [COMPARISON.md](COMPARISON.md) — honest maturity vs TurboPuffer
+- [PLAN_LARGE_DATASET_BENCHMARK.md](PLAN_LARGE_DATASET_BENCHMARK.md) — large-dataset evaluation and turbopuffer comparison program
 
 Work follows fact-driven development: add `@spec` facts in `.facts` before each phase, implement, then `facts check --tags <tag>` and tag `@implemented`.
+
+---
+
+## Relationship to the large-dataset comparison program
+
+[PLAN_LARGE_DATASET_BENCHMARK.md](PLAN_LARGE_DATASET_BENCHMARK.md) defines the **end-to-end evaluation and turbopuffer comparison** (shared workload, G2–G6 harnesses, AWS/tpuf JSON, comparison report). **This document** defines **implementation and testing** for SPFresh-class ANN and cold query @ 1M.
+
+| Document | Owns | Verify with |
+|----------|------|-------------|
+| **This plan** | Probe planner on query path, index v3, recall HTTP, `scripts/bench-1m.sh`, ann/cold gates | `facts check --tags "ann or cold"`; gates in [BENCHMARKS.md](BENCHMARKS.md) |
+| [PLAN_LARGE_DATASET_BENCHMARK.md](PLAN_LARGE_DATASET_BENCHMARK.md) | Synthetic workload generator, MinIO G2, `ingest-large` / `bench-large`, tpuf driver, id-overlap, report merge | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) |
+
+Cold/recall SLOs at 1M (storage_roundtrips ≤ 4, p50 targets) are shared: this plan implements them; the large-dataset plan measures them on the **same synthetic-128 workload** against turbopuffer. Do not use MinIO latencies in the tpuf comparison report — only AWS + managed tpuf ([BENCHMARKS.md](BENCHMARKS.md)).
 
 ---
 

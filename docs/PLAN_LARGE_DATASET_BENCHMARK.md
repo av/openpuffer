@@ -2,9 +2,46 @@
 
 End-to-end program to load a **large-ish** namespace (primary target **1M**), prove correctness under real object storage, measure openpuffer performance, and publish an **apples-to-apples comparison report** against **managed turbopuffer** (not docs-only reference numbers).
 
-This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) and operator runbooks in [BENCHMARKS.md](BENCHMARKS.md). It does not replace them: those docs define *gates*; this doc defines the *full evaluation program* and the *comparison report*.
+This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) and operator runbooks in [BENCHMARKS.md](BENCHMARKS.md). It does not replace them — see [How this plan relates to SPFresh / cold @ 1M](#how-this-plan-relates-to-spfresh--cold-1m).
 
-**Harness status:** automation through Phase 8 A1–A6 and G2 MinIO gates is in-repo (`facts check --tags bench-large` / `bench-tpuf`). Live G3–G5 (AWS + tpuf JSON + measured report) remain operator-owned — see [Unresolved assumptions](#unresolved-assumptions) and [Verification checklist](#verification-checklist-program-complete).
+**Harness status:** **offline program harness complete** — run [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) (pytest workloads/tpuf/cross_check, render tests, `synthetic_workload_gate`, L1 + L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf`). Live G3–G5 (AWS + tpuf JSON + measured report) remain operator-owned — see [Unresolved assumptions](#unresolved-assumptions) and [Verification checklist](#verification-checklist-program-complete).
+
+---
+
+## How this plan relates to SPFresh / cold @ 1M
+
+| Document | Owns | Primary verification |
+|----------|------|----------------------|
+| [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) | **Implementation:** probe planner on the query path, index v3 / SPFresh direction, recall HTTP API, `scripts/bench-1m.sh`, ann/cold `@spec` facts | `facts check --tags "ann or cold"`; MinIO/AWS cold gates in [BENCHMARKS.md](BENCHMARKS.md) |
+| **This plan** | **Evaluation program:** shared synthetic workload (G1), correctness before latency (G2), AWS scale proof (G3), turbopuffer baseline (G4), comparison report (G5), regression harness (G6) | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh); live JSON via [`scripts/run-large-benchmark-program.sh`](../scripts/run-large-benchmark-program.sh) |
+
+**Division of labor:** SPFresh/cold work ships the engine behaviors and SLO gates; this plan wires those gates into a **reproducible apples-to-apples comparison** against managed turbopuffer (same workload, regions, JSON artifacts, report). L3 (1M) here reuses the same cold/recall targets as the SPFresh plan; L1 (100k) is the default comparison tier.
+
+---
+
+## Program harness verification (offline complete)
+
+Before operator spend (G3–G5), run all offline gates in one command:
+
+```bash
+./scripts/verify-large-benchmark-program.sh
+```
+
+| Flag | Effect |
+|------|--------|
+| `--skip-l2-l3` | L1 dry-run + shared gates only (faster pre-commit) |
+| `--with-g2` | Also runs [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh) (Docker MinIO; CI parity, slower) |
+| `--skip-facts` | Skip `facts check` (e.g. when facts CLI not installed) |
+
+**Included gates:** `pytest` workloads + tpuf driver + id-overlap; [`scripts/test_render-report.sh`](../scripts/test_render-report.sh) + [`test_render-report-measured.sh`](../scripts/test_render-report-measured.sh); ingest/bench JSON schema tests; `cargo test --test synthetic_workload_gate`; L1 harness dry-run; [`scripts/test_l2-l3-harness-dry-run.sh`](../scripts/test_l2-l3-harness-dry-run.sh) (unless `--skip-l2-l3`); `facts check --tags bench-large` and `bench-tpuf`.
+
+**Operator E2E dry-run** (documents env, fixture report — subset of verify):
+
+```bash
+./scripts/run-large-benchmark-program.sh --dry-run --tier l1
+```
+
+**Program complete** (live comparison) still requires the four `[ ]` rows in [Verification checklist](#verification-checklist-program-complete) — measured AWS/tpuf JSON and report.
 
 ---
 
@@ -547,7 +584,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | **G3** AWS scale proof | Harness only | `scripts/run-aws-large-benchmark.sh`, `bench-large.sh`; **no** `large-aws-l1.json` (live AWS); MinIO shape: `large-aws-l1-schema-minio.example.json` (`bd449b6`) |
 | **G4** tpuf baseline | Harness only | `scripts/run-tpuf-large-benchmark.sh`, `benchmarks/tpuf_driver/run_benchmark.py`; fact `eos`; **no** live `tpuf-l1.json` |
 | **G5** report | Skeleton + measured harness | `scripts/render-report.sh` (schema validation, interpretation, appendix redaction), `test_render-report-measured.sh`, `BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md` (`NOT MEASURED`); fact `ye8` |
-| **G6** regression | Done (dry-run CI + nightly) | `.github/workflows/benchmark-large-dispatch.yml` (manual A6); `.github/workflows/nightly-stress.yml` job `large-dataset-program` (G2 MinIO + `run-large-benchmark-program.sh --dry-run`); `facts check --tags bench-large,bench-tpuf` |
+| **G6** regression | Done (dry-run CI + nightly) | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh); `.github/workflows/benchmark-large-dispatch.yml` (manual A6); `.github/workflows/nightly-stress.yml` job `large-dataset-program` |
 | Phase 3.3 overlap | Harness only | `benchmarks/cross_check/`, `run-id-overlap-spotcheck.sh`; mock fixture; live `id-overlap-l1.json` pending |
 | Phase 7 COMPARISON | Placeholders | `docs/COMPARISON.md` L1 table — explicit “pending live JSON” (`5ec9851`) |
 
@@ -557,7 +594,8 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 
 | Item | Done | Evidence |
 |------|:----:|----------|
-| MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` |
+| **Offline harness verify (one command)** | [x] | [`scripts/verify-large-benchmark-program.sh`](../scripts/verify-large-benchmark-program.sh) — pytest, render tests, `synthetic_workload_gate`, L1/L2/L3 dry-runs, `facts check --tags bench-large` / `bench-tpuf` |
+| MinIO G2 subset tests | [x] | [`scripts/run-minio-correctness-gates.sh`](../scripts/run-minio-correctness-gates.sh); `tests/synthetic_workload_gate.rs`, `integration_s3` `synthetic_128_g2_correctness_gates_on_minio`, `bench_cold_10k_synthetic_128_workload_gate`; `5972ab7` (also `--with-g2` on verify script) |
 | MinIO G2 CI job | [x] | `.github/workflows/ci.yml` → `g2-minio-correctness`; `67c7050` |
 | Phase 4/5/6 operator runbook | [x] | [BENCHMARKS.md § Large-dataset runbook](BENCHMARKS.md#large-dataset-program--operator-runbook-phases-46); G3: [§ G3 EC2](BENCHMARKS.md#g3--ec2--aws-s3-operator-setup), `preflight-aws-ec2.sh`; G4: [§ G4 tpuf](BENCHMARKS.md#g4--turbopuffer-operator-setup), `preflight-tpuf.sh` |
 | A1 `generate_synthetic.py` + L1–L3 manifests | [x] | `benchmarks/workloads/synthetic-128/`; facts `6m8`, `tiu`, `u2e`; `76ff071` |
@@ -578,6 +616,8 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | Measured report + COMPARISON rows | [ ] | `render-report.sh` without `--dry-run`; [COMPARISON.md](COMPARISON.md) L1 table still placeholder (`5ec9851`) |
 | `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
 
+**Offline harness complete** when `./scripts/verify-large-benchmark-program.sh` passes (no AWS/tpuf credentials).
+
 **Program complete** when the four `[ ]` live/measured rows above are checked and methodology in the dated report matches [Unresolved assumptions](#unresolved-assumptions) defaults (or documents overrides).
 
 ---
@@ -597,7 +637,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 ## Related documents
 
 - [BENCHMARKS.md](BENCHMARKS.md) — tiers, env vars, gates, artifacts
-- [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) — ANN/cold implementation program
+- [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_SPFRESH_AND_COLD_1M.md) — ANN/cold implementation program ([relationship](#how-this-plan-relates-to-spfresh--cold-1m))
 - [COMPARISON.md](COMPARISON.md) — living maturity matrix (update after report)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — cold planner, probes, limits
 - [turbopuffer Testing](https://turbopuffer.com/docs/testing)

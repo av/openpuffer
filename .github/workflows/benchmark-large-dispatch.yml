@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tier:
-        description: Workload tier (l1=100k, l2=500k, l3=1M)
+        description: Workload tier (l1=100k, l2=500k, l3=1M) — informational; verify runs all tiers
         required: true
         default: l1
         type: choice
@@ -21,7 +21,7 @@ env:
 
 jobs:
   dry-run-gates:
-    name: dry-run gates (${{ inputs.tier }})
+    name: offline harness verify (${{ inputs.tier }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -38,43 +38,8 @@ jobs:
       - name: Python tooling (pytest)
         run: python3 -m pip install --upgrade pip pytest
 
-      - name: pytest workloads (generate_synthetic)
-        run: python3 -m pytest benchmarks/workloads/test_generate_synthetic.py -q
-
-      - name: pytest tpuf driver (offline)
-        run: python3 -m pytest benchmarks/tpuf_driver/test_run_benchmark.py -q
-
-      - name: render-report offline tests
-        run: |
-          ./scripts/test_render-report.sh
-          ./scripts/test_render-report-measured.sh
-
-      - name: ingest-large dry-run
-        run: ./scripts/ingest-large.sh --tier ${{ inputs.tier }} --dry-run
-
-      - name: bench-large dry-run
-        run: ./scripts/bench-large.sh --tier ${{ inputs.tier }} --dry-run
-
-      - name: run-aws-large-benchmark dry-run (G3)
-        run: ./scripts/run-aws-large-benchmark.sh --tier ${{ inputs.tier }} --dry-run
-
-      - name: run-large-benchmark-program dry-run (end-to-end)
-        run: ./scripts/run-large-benchmark-program.sh --tier ${{ inputs.tier }} --dry-run --skip-g2
-
-      - name: id-overlap spotcheck dry-run (Phase 3.3)
-        run: ./scripts/run-id-overlap-spotcheck.sh --tier ${{ inputs.tier }} --dry-run
-
-      - name: run-tpuf-large-benchmark dry-run
-        run: ./scripts/run-tpuf-large-benchmark.sh --tier ${{ inputs.tier }} --dry-run --skip-g2
-
-      - name: tpuf driver dry-run
-        run: python3 benchmarks/tpuf_driver/run_benchmark.py --tier ${{ inputs.tier }} --dry-run
-
       - name: Install facts CLI
         run: curl -fsSL https://raw.githubusercontent.com/av/facts/main/install.sh | sh
 
-      - name: facts check (bench-large)
-        run: facts check --tags bench-large
-
-      - name: facts check (bench-tpuf)
-        run: facts check --tags bench-tpuf
+      - name: verify-large-benchmark-program.sh (all offline gates)
+        run: ./scripts/verify-large-benchmark-program.sh
