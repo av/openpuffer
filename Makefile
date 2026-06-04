@@ -1,5 +1,6 @@
 # Large-dataset benchmark program — convenience targets (see benchmarks/README.md).
-.PHONY: help bench-verify bench-dry-run bench-g2-minio bench-preflight
+.PHONY: help bench-verify bench-dry-run bench-g2-minio bench-preflight \
+	bench-op-scaling bench-compare-tpuf
 
 # Extra flags for verify, e.g. make bench-verify VERIFY_FLAGS="--skip-l2-l3 --skip-facts"
 VERIFY_FLAGS ?=
@@ -13,6 +14,8 @@ help:
 	@echo "  make bench-dry-run    Harness dry-run only (L1–L3; no pytest/cargo/facts)"
 	@echo "  make bench-g2-minio   G2 MinIO correctness gates (Docker; slow)"
 	@echo "  make bench-preflight  G3+G4+overlap preflights (offline default; see PREFLIGHT_FLAGS)"
+	@echo "  make bench-op-scaling MinIO op-scaling tiers (10k/50k/100k/warm; slow)"
+	@echo "  make bench-compare-tpuf  Extrapolate op-scaling vs tpuf official 10M ref"
 	@echo ""
 	@echo "Options:"
 	@echo "  VERIFY_FLAGS='--skip-l2-l3'   Passed to verify-large-benchmark-program.sh"
@@ -41,3 +44,9 @@ bench-g2-minio:
 
 bench-preflight:
 	./scripts/preflight-large-benchmark-all.sh $(PREFLIGHT_FLAGS)
+
+bench-op-scaling:
+	./scripts/run-op-scaling-benchmark.sh
+
+bench-compare-tpuf:
+	./scripts/compare-op-scaling-to-tpuf.sh
