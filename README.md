@@ -83,18 +83,40 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32 # parallel GETs per cold sub-batch (def
 ./scripts/dev-serve.sh
 ```
 
-After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning. Large-dataset comparison harness (workloads, results JSON, operator scripts): [benchmarks/README.md](benchmarks/README.md).
+After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning.
 
-**Benchmark program (Makefile):**
+### Large-dataset comparison harness
+
+Apples-to-apples **openpuffer vs turbopuffer** on a shared synthetic workload (L1 default: **100k × 128-dim**). Workloads, result JSON, and operator scripts: [benchmarks/README.md](benchmarks/README.md). Program plan: [docs/PLAN_LARGE_DATASET_BENCHMARK.md](docs/PLAN_LARGE_DATASET_BENCHMARK.md).
+
+**Operator handoff (offline harness complete, live G3–G5 pending):** [docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md](docs/reports/LARGE_DATASET_HARNESS_HANDOFF.md).
+
+**Milestone tag** `large-dataset-harness-v1` (`c7f66a3`, annotated 2026-06-04) — offline harness only; measured `large-aws-l1.json` / `tpuf-l1.json` still require EC2 + AWS S3 + `TURBOPUFFER_API_KEY`:
 
 ```bash
-make bench-verify      # offline harness gate (same as CI dispatch)
-make bench-dry-run     # harness dry-run only (L1–L3; no cloud spend)
-make bench-g2-minio    # optional G2 MinIO correctness (Docker; slow)
-make bench-preflight   # G3+G4+overlap preflights (offline; EC2: PREFLIGHT_FLAGS="--live --tier l1")
+git fetch --tags
+git checkout large-dataset-harness-v1   # or: git show large-dataset-harness-v1
 ```
 
-See [benchmarks/README.md](benchmarks/README.md) for EC2 live runs and artifact commit policy.
+**Makefile targets** (same as `./scripts/verify-large-benchmark-program.sh` and operator preflights):
+
+| Target | Purpose |
+|--------|---------|
+| `make bench-verify` | Offline harness gate — pytest, schemas, L1–L3 dry-runs, `@spec` facts (CI dispatch) |
+| `make bench-dry-run` | Harness dry-run only — no pytest/cargo/facts; no cloud spend |
+| `make bench-g2-minio` | Optional G2 MinIO correctness gates (Docker; slow) |
+| `make bench-preflight` | G3+G4+overlap preflights (offline default) |
+
+```bash
+make bench-verify                                    # before any cloud spend
+make bench-verify VERIFY_FLAGS="--with-g2"           # + MinIO G2 (Docker parity with CI)
+make bench-dry-run                                   # L1–L3 script dry-runs only
+make bench-g2-minio                                  # G2 only (faster iteration)
+make bench-preflight                                 # offline cost/deps/overlap checks
+make bench-preflight PREFLIGHT_FLAGS="--live --tier l1"   # EC2 live preflight
+```
+
+EC2 live runs, artifact `git add -f` policy, and post-live `@spec` activation: [benchmarks/README.md](benchmarks/README.md), [benchmarks/OPERATOR_RUNBOOK_QUICK.md](benchmarks/OPERATOR_RUNBOOK_QUICK.md).
 
 **Recall API** (ANN vs exhaustive on indexed namespace):
 
