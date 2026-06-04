@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openpuffer.dev/benchmarks/report/schema/ingest-large-l1.schema.json",
+  "title": "openpuffer ingest-large L1 JSON",
+  "description": "Schema for benchmarks/results/ingest-large-l1*.json and report fixtures (ingest-large.sh output).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "benchmark",
+    "environment",
+    "tier",
+    "workload_dir",
+    "namespace",
+    "num_docs",
+    "dim",
+    "batch_size",
+    "batch_count",
+    "ingest_elapsed_secs",
+    "index_wait_sec",
+    "ingest_total_wall_sec",
+    "ingest_docs_per_sec",
+    "ingest_timing"
+  ],
+  "properties": {
+    "benchmark": { "const": "ingest_large" },
+    "environment": { "type": "string", "minLength": 1 },
+    "tier": { "const": "l1" },
+    "workload_dir": { "type": "string", "minLength": 1 },
+    "namespace": { "type": "string", "minLength": 1 },
+    "num_docs": { "type": "integer", "minimum": 1 },
+    "dim": { "type": "integer", "minimum": 1 },
+    "batch_size": { "type": "integer", "minimum": 1 },
+    "batch_count": { "type": "integer", "minimum": 0 },
+    "ingest_elapsed_secs": { "type": "number", "minimum": 0 },
+    "ingest_wall_sec": { "type": "number", "minimum": 0 },
+    "index_wait_sec": { "type": "number", "minimum": 0 },
+    "ingest_total_wall_sec": { "type": "number", "minimum": 0 },
+    "ingest_batches_per_sec": { "type": "number", "minimum": 0 },
+    "ingest_docs_per_sec": { "type": "number", "minimum": 0 },
+    "batch_sleep_sec": { "type": "number", "minimum": 0 },
+    "seed": { "type": "integer" },
+    "embedding_fn": { "type": "string", "minLength": 1 },
+    "id_scheme": { "type": "string", "minLength": 1 },
+    "preferred_ann_version": { "type": ["integer", "null"] },
+    "index_cursor": { "type": ["integer", "null"], "minimum": 0 },
+    "wal_commit_seq": { "type": ["integer", "null"], "minimum": 0 },
+    "index_cursor_eq_wal_commit_seq": { "type": "boolean" },
+    "index_timeout_sec": { "type": "integer", "minimum": 0 },
+    "generator": { "type": "string" },
+    "ingest_status": { "enum": ["ok", "failed"] },
+    "ingest_failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ingest_failure" }
+    },
+    "ingest_resume": { "$ref": "#/$defs/ingest_resume" },
+    "ingest_retry": { "$ref": "#/$defs/ingest_retry" },
+    "ingest_timing": { "$ref": "#/$defs/ingest_timing" },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "batch_latency_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p50", "p95", "min", "max"],
+      "properties": {
+        "p50": { "type": "number", "minimum": 0 },
+        "p95": { "type": "number", "minimum": 0 },
+        "min": { "type": "number", "minimum": 0 },
+        "max": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ingest_batch_run": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["batch", "file", "latency_ms"],
+      "properties": {
+        "batch": { "type": "integer", "minimum": 1 },
+        "file": { "type": "string" },
+        "latency_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ingest_failure": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["batch", "file", "attempt", "transient", "message"],
+      "properties": {
+        "batch": { "type": "integer", "minimum": 1 },
+        "file": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "http_code": { "type": ["integer", "null"] },
+        "curl_exit": { "type": ["integer", "null"] },
+        "transient": { "type": "boolean" },
+        "message": { "type": "string" }
+      }
+    },
+    "ingest_resume": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "start_batch": { "type": "integer", "minimum": 1 },
+        "skipped_batches": { "type": "integer", "minimum": 0 },
+        "total_batches": { "type": "integer", "minimum": 0 },
+        "next_batch": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ingest_retry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["max_attempts", "base_backoff_ms"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1 },
+        "base_backoff_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ingest_timing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "upsert_wall_sec",
+        "index_wait_sec",
+        "total_wall_sec",
+        "batch_count",
+        "batches_per_sec",
+        "docs_per_sec",
+        "batch_latency_ms",
+        "batch_runs"
+      ],
+      "properties": {
+        "upsert_wall_sec": { "type": "number", "minimum": 0 },
+        "index_wait_sec": { "type": "number", "minimum": 0 },
+        "total_wall_sec": { "type": "number", "minimum": 0 },
+        "batch_count": { "type": "integer", "minimum": 0 },
+        "batches_per_sec": { "type": "number", "minimum": 0 },
+        "docs_per_sec": { "type": "number", "minimum": 0 },
+        "batch_latency_ms": { "$ref": "#/$defs/batch_latency_ms" },
+        "batch_runs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ingest_batch_run" }
+        },
+        "ingest_failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ingest_failure" }
+        }
+      }
+    }
+  }
+}

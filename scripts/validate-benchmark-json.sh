@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Validate committed large-dataset benchmark JSON (fixtures + *.example.json).
 #
-# Uses JSON Schema (python jsonschema). Ingest JSON uses structural checks aligned
-# with test_ingest-timing-schema.sh (no separate schema file).
+# Uses JSON Schema (python jsonschema) for large-aws, tpuf, and ingest-large L1 artifacts.
+# Ingest JSON also gets cross-field timing consistency checks after schema pass.
 #
 # Usage:
 #   ./scripts/validate-benchmark-json.sh
@@ -16,6 +16,7 @@ cd "$ROOT"
 SCHEMA_DIR="$ROOT/benchmarks/report/schema"
 OP_SCHEMA="$SCHEMA_DIR/large-aws-l1.schema.json"
 TPUF_SCHEMA="$SCHEMA_DIR/tpuf-l1.schema.json"
+INGEST_SCHEMA="$SCHEMA_DIR/ingest-large-l1.schema.json"
 
 ensure_jsonschema() {
   if ! python3 -c "import jsonschema" >/dev/null 2>&1; then
@@ -58,7 +59,7 @@ run_validation() {
     done < <(collect_default_paths)
   fi
 
-  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "${json_paths[@]}" <<'PY'
+  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "${json_paths[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -67,38 +68,12 @@ from jsonschema import Draft202012Validator
 
 op_schema_path = Path(sys.argv[1])
 tpuf_schema_path = Path(sys.argv[2])
-paths = [Path(p) for p in sys.argv[3:]]
+ingest_schema_path = Path(sys.argv[3])
+paths = [Path(p) for p in sys.argv[4:]]
 
 op_validator = Draft202012Validator(json.loads(op_schema_path.read_text()))
 tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
-
-INGEST_REQUIRED_TOP = (
-    "benchmark",
-    "environment",
-    "tier",
-    "workload_dir",
-    "namespace",
-    "num_docs",
-    "dim",
-    "batch_size",
-    "batch_count",
-    "ingest_elapsed_secs",
-    "index_wait_sec",
-    "ingest_total_wall_sec",
-    "ingest_docs_per_sec",
-    "ingest_timing",
-)
-INGEST_TIMING_REQUIRED = (
-    "upsert_wall_sec",
-    "index_wait_sec",
-    "total_wall_sec",
-    "batch_count",
-    "batches_per_sec",
-    "docs_per_sec",
-    "batch_latency_ms",
-    "batch_runs",
-)
-LAT_REQUIRED = ("p50", "p95", "min", "max")
+ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
 
 
 def classify(path: Path) -> str:
@@ -112,25 +87,21 @@ def classify(path: Path) -> str:
     raise SystemExit(f"validate-benchmark-json: cannot classify {path}")
 
 
-def require_keys(data: dict, keys: tuple, label: str, path: Path) -> None:
-    missing = [k for k in keys if k not in data]
-    if missing:
+def schema_errors(validator, data, label: str, path: Path) -> None:
+    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
+    if errors:
+        lines = [f"  - {e.message} (at {list(e.path)})" for e in errors[:12]]
+        extra = len(errors) - 12
+        suffix = f"\n  … and {extra} more" if extra > 0 else ""
         raise SystemExit(
-            f"validate-benchmark-json: {label} missing fields in {path}: {', '.join(missing)}"
+            f"validate-benchmark-json: {label} schema failed for {path}:\n"
+            + "\n".join(lines)
+            + suffix
         )
 
 
-def validate_ingest(path: Path, data: dict) -> None:
-    if data.get("benchmark") != "ingest_large":
-        raise SystemExit(f"{path}: benchmark must be ingest_large")
-    if data.get("tier") != "l1":
-        raise SystemExit(f"{path}: tier must be l1")
-    require_keys(data, INGEST_REQUIRED_TOP, "ingest", path)
+def validate_ingest_cross_fields(path: Path, data: dict) -> None:
     timing = data["ingest_timing"]
-    require_keys(timing, INGEST_TIMING_REQUIRED, "ingest_timing", path)
-    for key in LAT_REQUIRED:
-        if key not in timing["batch_latency_ms"]:
-            raise SystemExit(f"{path}: batch_latency_ms missing {key}")
     if data["ingest_elapsed_secs"] != timing["upsert_wall_sec"]:
         raise SystemExit(f"{path}: ingest_elapsed_secs != ingest_timing.upsert_wall_sec")
     if data["index_wait_sec"] != timing["index_wait_sec"]:
@@ -145,26 +116,6 @@ def validate_ingest(path: Path, data: dict) -> None:
             raise SystemExit(f"{path}: batch_runs[0] missing batch/file/latency_ms")
 
 
-def validate_with_schema(path: Path, data: dict, kind: str) -> None:
-    if kind == "openpuffer":
-        validator = op_validator
-        label = "large-aws-l1"
-    else:
-        validator = tpuf_validator
-        label = "tpuf-l1"
-
-    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
-    if errors:
-        lines = [f"  - {e.message} (at {list(e.path)})" for e in errors[:12]]
-        extra = len(errors) - 12
-        suffix = f"\n  … and {extra} more" if extra > 0 else ""
-        raise SystemExit(
-            f"validate-benchmark-json: {label} schema failed for {path}:\n"
-            + "\n".join(lines)
-            + suffix
-        )
-
-
 for path in paths:
     if not path.is_file():
         raise SystemExit(f"validate-benchmark-json: missing file {path}")
@@ -175,9 +126,12 @@ for path in paths:
 
     kind = classify(path)
     if kind == "ingest":
-        validate_ingest(path, data)
+        schema_errors(ingest_validator, data, "ingest-large-l1", path)
+        validate_ingest_cross_fields(path, data)
+    elif kind == "openpuffer":
+        schema_errors(op_validator, data, "large-aws-l1", path)
     else:
-        validate_with_schema(path, data, kind)
+        schema_errors(tpuf_validator, data, "tpuf-l1", path)
     print(f"OK {path} ({kind})")
 
 print(f"validate-benchmark-json: {len(paths)} file(s) OK")
