@@ -21,6 +21,13 @@ from utc_timestamps import benchmark_run_timestamps  # noqa: E402
 
 DEFAULT_SPOT_CHECK_COUNT = 10
 
+# Fallback when manifest.json is unavailable (synthetic-128 tiers).
+TIER_EXPECTED_DOCS: dict[str, int] = {
+    "l1": 100_000,
+    "l2": 500_000,
+    "l3": 1_000_000,
+}
+
 # Deterministic intersection sizes for offline mock (10 queries, top_k=10).
 MOCK_INTERSECTION_COUNTS: tuple[int, ...] = (8, 7, 6, 7, 5, 8, 6, 7, 9, 6)
 
@@ -28,6 +35,135 @@ MOCK_INTERSECTION_COUNTS: tuple[int, ...] = (8, 7, 6, 7, 5, 8, 6, 7, 9, 6)
 def load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def expected_docs_for_tier(tier: str, manifest: dict[str, Any] | None = None) -> int:
+    """Expected indexed doc count for a synthetic-128 tier (from manifest or table)."""
+    if manifest is not None and manifest.get("num_docs") is not None:
+        return int(manifest["num_docs"])
+    if tier not in TIER_EXPECTED_DOCS:
+        raise ValueError(f"unknown tier for expected docs: {tier}")
+    return TIER_EXPECTED_DOCS[tier]
+
+
+def openpuffer_namespace_issues(
+    meta: dict[str, Any] | None,
+    *,
+    expected_docs: int,
+    namespace: str,
+) -> list[str]:
+    """Return human-readable blockers for live id-overlap (empty [] = ready)."""
+    if meta is None:
+        return [
+            f"namespace {namespace!r} not found (GET /v1/namespaces returned no body)",
+        ]
+    wal_commit = int(meta.get("wal_commit_seq") or 0)
+    index_cursor = int(meta.get("index_cursor") or 0)
+    pref_ann = int(meta.get("preferred_ann_version") or 2)
+    approx_rows = int(meta.get("approx_row_count") or 0)
+
+    issues: list[str] = []
+    if wal_commit == 0:
+        issues.append(
+            "wal_commit_seq=0 (namespace empty — run ./scripts/ingest-large.sh or "
+            "./scripts/run-aws-large-benchmark.sh for this tier first)"
+        )
+    elif index_cursor != wal_commit:
+        issues.append(
+            f"index not caught up (index_cursor={index_cursor} != wal_commit_seq={wal_commit}; "
+            "wait for ingest index poll or ./scripts/diagnose-index-lag.sh)"
+        )
+    if pref_ann != 3:
+        issues.append(
+            f"preferred_ann_version={pref_ann} (expected 3; re-ingest with OPENPUFFER_ANN_VERSION=3)"
+        )
+    if approx_rows == 0 and wal_commit > 0:
+        issues.append(
+            "approx_row_count=0 while wal_commit_seq>0 (metadata lag or corrupt namespace)"
+        )
+    elif 0 < approx_rows < expected_docs:
+        issues.append(
+            f"approx_row_count={approx_rows} < tier manifest num_docs={expected_docs} "
+            "(partial ingest — finish ingest-large before overlap spot-check)"
+        )
+    return issues
+
+
+def turbopuffer_namespace_issues(
+    meta: Any,
+    *,
+    expected_docs: int,
+    namespace: str,
+) -> list[str]:
+    """Return human-readable blockers for tpuf namespace (empty [] = ready)."""
+    if meta is None:
+        return [f"namespace {namespace!r} metadata unavailable"]
+
+    index = getattr(meta, "index", None)
+    status = getattr(index, "status", None) if index is not None else None
+    row_count = getattr(meta, "approx_row_count", None)
+    row_n = int(row_count) if row_count is not None else None
+
+    issues: list[str] = []
+    if row_n is None:
+        issues.append(
+            "approx_row_count missing (namespace may not exist — run "
+            "./scripts/run-tpuf-large-benchmark.sh or tpuf_driver/run_benchmark.py ingest first)"
+        )
+    elif row_n == 0:
+        issues.append(
+            "approx_row_count=0 (namespace empty — run G4 ingest for this tier; "
+            "check TURBOPUFFER_BENCH_NAMESPACE matches the ingested namespace)"
+        )
+    elif row_n < expected_docs:
+        issues.append(
+            f"approx_row_count={row_n} < tier manifest num_docs={expected_docs} "
+            "(partial ingest — finish tpuf ingest before overlap spot-check)"
+        )
+    if status != "up-to-date":
+        issues.append(
+            f"index.status={status!r} (expected 'up-to-date'; wait for tpuf index gate after ingest)"
+        )
+    return issues
+
+
+def format_namespace_preflight_error(
+    *,
+    engine: str,
+    namespace: str,
+    issues: list[str],
+    tier: str,
+    extra_hints: list[str] | None = None,
+) -> str:
+    """Single stderr/exit message for empty or unready namespaces."""
+    lines = [
+        f"id-overlap preflight: {engine} namespace not ready",
+        f"  namespace: {namespace}",
+        f"  tier: {tier}",
+    ]
+    for issue in issues:
+        lines.append(f"  - {issue}")
+    hints = list(extra_hints or [])
+    if engine == "openpuffer":
+        hints.extend(
+            [
+                "export OPENPUFFER_BASE_URL=http://127.0.0.1:8080",
+                f"export OPENPUFFER_BENCH_NAMESPACE=bench-large-{tier}  # or your G3 namespace",
+                f"curl -s \"$OPENPUFFER_BASE_URL/v1/namespaces/$OPENPUFFER_BENCH_NAMESPACE\" | jq",
+            ]
+        )
+    else:
+        hints.extend(
+            [
+                "export TURBOPUFFER_API_KEY=tpuf_...",
+                f"export TURBOPUFFER_BENCH_NAMESPACE=bench-tpuf-$(date +%F)-{tier}",
+                "./scripts/preflight-tpuf.sh --tier " + tier,
+            ]
+        )
+    lines.append("Hints:")
+    for hint in hints:
+        lines.append(f"  {hint}")
+    return "\n".join(lines)
 
 
 def spot_check_config(queries: dict[str, Any]) -> dict[str, Any]:

@@ -11,15 +11,20 @@ python3 benchmarks/cross_check/run_spotcheck.py --tier l1 --dry-run
 # Offline mock (production-shaped JSON) → benchmarks/results/id-overlap-l1.json
 python3 benchmarks/cross_check/run_spotcheck.py --tier l1 --mock
 
-# Live (indexed namespaces on both sides)
+# Preflight (both namespaces indexed; no queries)
+./scripts/preflight-id-overlap.sh --tier l1
+
+# Live (indexed namespaces on both sides; wrapper runs preflight first)
 export TURBOPUFFER_API_KEY='tpuf_...'
 export OPENPUFFER_BASE_URL='http://127.0.0.1:8080'
-export OPENPUFFER_BENCH_NAMESPACE='bench-large-100k'
+export OPENPUFFER_BENCH_NAMESPACE='bench-large-l1'
 export TURBOPUFFER_BENCH_NAMESPACE='bench-tpuf-2026-06-04-l1'
-python3 benchmarks/cross_check/run_spotcheck.py --tier l1
+./scripts/run-id-overlap-spotcheck.sh --tier l1
 ```
 
-Wrapper: `./scripts/run-id-overlap-spotcheck.sh --tier l1 [--dry-run|--mock]`
+Wrapper: `./scripts/run-id-overlap-spotcheck.sh --tier l1 [--dry-run|--mock|--preflight-only]`
+
+Empty or missing namespaces exit with actionable errors (e.g. `wal_commit_seq=0`, `approx_row_count=0`) instead of silent zero overlap.
 
 ## Tests
 
