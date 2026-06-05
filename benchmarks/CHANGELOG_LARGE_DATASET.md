@@ -8,7 +8,7 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 **Session log:** timeboxed run 2026-06-04 (**114** iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
 
-**Op-vs-tpuf scaling program (2026-06-04 → 2026-06-05):** timeboxed comparison through `a2c1fd6`; progress `/tmp/timeboxed-op-vs-tpuf-comparison-1780613123.md`
+**Op-vs-tpuf scaling program (2026-06-04 → 2026-06-05):** timeboxed comparison through `31dfc8e`; progress `/tmp/timeboxed-op-vs-tpuf-comparison-1780613123.md`
 
 ---
 
@@ -17,10 +17,49 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 | Field | Value |
 |-------|--------|
 | **Goal** | Compare openpuffer MinIO cold scaling (10k / 50k / 100k × 128) to turbopuffer official **874 ms** @ **10M × 1024** (GCP); deliver committed JSON, scripts, extrapolation, and operator report |
-| **Commits** | `256d46e` … `a2c1fd6` (measurements, compare/verify gates, CI smoke, docs, canonical linear extrap) |
+| **Commits** | `76875cb` … `31dfc8e` (measurements, compare/verify gates, CI smoke, docs, warm tiers, ingest/efficiency analysis, outlier gate) |
+| **Reproduce** | [SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md) — 5-command MinIO sweep + offline compare/verify |
 | **Verify gate** | `make bench-verify-op-scaling` → `./scripts/verify-op-scaling-comparison.sh` (offline; committed `op-scaling-*.json` + `tpuf-official-reference.json`) |
 | **CI** | `.github/workflows/ci.yml` job `op-scaling-comparison`; `verify-large-benchmark-program.sh --skip-op-scaling` avoids duplicate work |
 | **User report** | [BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](../docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md); hub [OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md) |
+
+### Key commits (`76875cb` → `31dfc8e`, oldest first)
+
+- `76875cb` — tpuf official reference + scaling comparison skeleton
+- `256d46e` — openpuffer scaling measurements for tpuf comparison
+- `382fbda` — unified op scaling runs and tpuf comparison conclusion
+- `39d4d17` — extrapolate openpuffer scaling to tpuf 10M reference
+- `7142ba2` — harden op-vs-tpuf scaling comparison tooling
+- `7769c14` — validate op scaling extrapolation models
+- `464ac91` — CI smoke gate for op-vs-tpuf scaling comparison
+- `da45441` — publish openpuffer vs tpuf scaling comparison report 2026-06-04
+- `9c637d1` — refresh op-scaling measurement JSON (full tier sweep)
+- `21ccd12` — reconcile tpuf scaling comparison after 100k remeasure
+- `df431b3` — efficiency metrics in tpuf scaling comparison
+- `ad8af56` — charts and quickstart for op-vs-tpuf scaling
+- `aad774e` — facts gates for op-vs-tpuf scaling comparison
+- `7f7c0f5` — p90/p99 and ingest throughput in op-scaling JSON
+- `6776874` — refresh 100k op-scaling with ingest metrics
+- `2738d6f` — canonical extrapolation model for tpuf comparison
+- `a2c1fd6` — 100k latency vs tpuf 10M reference insight (coincidental ms, not parity)
+- `ff47227` — changelog for op-vs-tpuf scaling comparison program
+- `b9b793e` — warm scaling tier for tpuf comparison
+- `979e2d6` — warm metrics in tpuf scaling compare script
+- `b7dac2b` — `scaling-comparison-summary.json` artifact
+- `fecec4f` — verify integration for op-vs-tpuf scaling
+- `82930ab` — dimension scaling sensitivity for tpuf comparison
+- `afc48fa` — CSV export for scaling comparison
+- `4a2f839` — optional op-scaling refresh CI workflow
+- `032a5ef` — sync scaling comparison executive summaries
+- `e67a936` — facts: mark op-vs-tpuf scaling comparison implemented
+- `88df45a` — automate 100k vs tpuf order-of-magnitude gate
+- `03f71c1` — FAQ for turbopuffer scaling comparison
+- `dcb46a7` — ingest throughput vs tpuf write claims
+- `31dfc8e` — gate op-scaling 100k outlier detection
+
+### How to reproduce
+
+See **[SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md)** (`make bench-op-scaling` → `make bench-compare-tpuf` → `make bench-verify-op-scaling`). Offline gate only needs committed `benchmarks/results/op-scaling-*.json` + `tpuf-official-reference.json`.
 
 ### Artifacts and scripts
 
@@ -60,7 +99,7 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 ### Program status
 
-**Offline comparison program complete** through `a2c1fd6`: committed measurements, extrapolation tooling, verify gate, CI smoke, and published scaling report. **Live** tpuf re-measure at matched tiers remains operator-pending (API key / EC2).
+**Offline comparison program complete** through `31dfc8e`: committed measurements, extrapolation tooling, verify gate, CI smoke, warm/ingest/dimension analysis, 100k outlier gate, and published scaling report. **Live** tpuf re-measure at matched tiers remains operator-pending (API key / EC2).
 
 ---
 
