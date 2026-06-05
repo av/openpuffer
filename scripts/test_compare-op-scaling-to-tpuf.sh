@@ -10,7 +10,8 @@ for f in benchmarks/results/tpuf-official-reference.json \
   benchmarks/results/op-scaling-50k.json \
   benchmarks/results/op-scaling-100k.json \
   benchmarks/results/op-scaling-10k-warm.json \
-  benchmarks/results/op-scaling-100k-warm.json; do
+  benchmarks/results/op-scaling-100k-warm.json \
+  benchmarks/results/scaling-comparison-summary.json; do
   if [[ ! -f "$f" ]]; then
     echo "test_compare-op-scaling-to-tpuf: missing required $f" >&2
     exit 1
@@ -112,6 +113,38 @@ print(
     f"(canonical={data['canonical_model']}, 10M×128={extrap_128} ms, "
     f"ratio_vs_tpuf={ratio}, warm_10k={ratio_10k}×, warm_100k={ratio_100k}×, "
     f"heuristic={extrap_1024} ms)"
+)
+PY
+
+grep -q 'Wrote dashboard summary: benchmarks/results/scaling-comparison-summary.json' "$out" \
+  || { echo "test_compare-op-scaling-to-tpuf: expected summary write line" >&2; exit 1; }
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+summary_path = Path("benchmarks/results/scaling-comparison-summary.json")
+summary = json.loads(summary_path.read_text())
+if summary.get("schema_version") != "scaling_comparison_summary_v1":
+    raise SystemExit("bad schema_version in scaling-comparison-summary.json")
+tpuf = summary["tpuf_official"]
+if tpuf["cold"]["p50_ms"] != 874 or tpuf["warm"]["p50_ms"] != 14:
+    raise SystemExit("tpuf_official latencies mismatch")
+canon = summary["canonical_extrapolation"]
+extrap = int(canon["p50_ms"])
+if extrap < 80_000 or extrap > 95_000:
+    raise SystemExit(f"canonical extrap {extrap} out of range")
+if summary["ratios"]["cold_10m_128_vs_tpuf_cold"] != canon["ratio_vs_tpuf_cold"]:
+    raise SystemExit("ratio mismatch in summary")
+if summary["confidence"] != "low":
+    raise SystemExit("confidence must be low")
+if len(summary.get("openpuffer_measured", [])) < 5:
+    raise SystemExit("expected ≥5 openpuffer measured tiers")
+if "874" not in summary.get("verdict_text", ""):
+    raise SystemExit("verdict_text missing tpuf reference")
+print(
+    "test_compare-op-scaling-to-tpuf: scaling-comparison-summary.json ok "
+    f"(extrap={extrap} ms, tiers={len(summary['openpuffer_measured'])})"
 )
 PY
 

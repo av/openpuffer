@@ -16,23 +16,31 @@ log_linear ~2.2 s @ 10M×128 used superseded 111/525/813 tiers. Override:
 Usage:
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --verdict-only
+  python3 benchmarks/report/compare_op_scaling_to_tpuf.py --write-summary
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --model=log_linear
   ./scripts/compare-op-scaling-to-tpuf.sh
   ./scripts/print-scaling-verdict.sh
+
+Writes ``benchmarks/results/scaling-comparison-summary.json`` on every full run
+(dashboard artifact; validated by validate-benchmark-json.sh).
 """
 
 from __future__ import annotations
 
 import json
 import math
+import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "benchmarks" / "results"
 TPUF_REF = RESULTS / "tpuf-official-reference.json"
+SUMMARY_PATH = RESULTS / "scaling-comparison-summary.json"
+SUMMARY_SCHEMA_VERSION = "scaling_comparison_summary_v1"
 DIM_REF = 1024
 DIM_OP = 128
 N_REF = 10_000_000
@@ -90,6 +98,134 @@ def load_tpuf_cold_p50() -> int:
 
 def load_tpuf_warm_p50() -> int:
     return int(load_tpuf_reference()["latencies_ms"]["warm"]["p50"])
+
+
+def load_tpuf_latency_triple(path_key: str) -> dict[str, int]:
+    lat = load_tpuf_reference()["latencies_ms"][path_key]
+    return {
+        "p50_ms": int(lat["p50"]),
+        "p90_ms": int(lat["p90"]),
+        "p99_ms": int(lat["p99"]),
+    }
+
+
+def load_tpuf_official_block() -> dict[str, Any]:
+    ref = load_tpuf_reference()
+    return {
+        "namespace_docs": int(ref["workload"]["document_count"]),
+        "dimensions": int(ref["workload"]["dimensions"]),
+        "cold": load_tpuf_latency_triple("cold"),
+        "warm": load_tpuf_latency_triple("warm"),
+    }
+
+
+def load_op_measured_tiers() -> list[dict[str, Any]]:
+    """All committed op-scaling-*.json tiers with p50/p90/p99 for dashboards."""
+    rows: list[dict[str, Any]] = []
+    for path in sorted(RESULTS.glob("op-scaling-*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        row: dict[str, Any] = {
+            "artifact": path.name,
+            "label": path.stem.removeprefix("op-scaling-"),
+            "path": data["path"],
+            "namespace_docs": int(data["namespace_docs"]),
+            "dimensions": int(data["dimensions"]),
+            "p50_ms": int(data["p50_ms"]),
+            "p90_ms": int(data["p90_ms"]),
+            "p99_ms": int(data["p99_ms"]),
+        }
+        if data.get("ingest_wall_secs") is not None:
+            row["ingest_wall_secs"] = float(data["ingest_wall_secs"])
+        if data.get("docs_per_sec") is not None:
+            row["docs_per_sec"] = float(data["docs_per_sec"])
+        rows.append(row)
+    rows.sort(key=lambda r: (r["path"], r["namespace_docs"], r["label"]))
+    return rows
+
+
+def resolve_git_commit() -> str:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    commits = [
+        json.loads(p.read_text(encoding="utf-8")).get("git_commit", "")
+        for p in sorted(RESULTS.glob("op-scaling-*.json"))
+    ]
+    commits = [c for c in commits if c]
+    return commits[-1] if commits else "unknown"
+
+
+def utc_now_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_scaling_comparison_summary(
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    """Single JSON artifact for dashboards (schema: scaling-comparison-summary)."""
+    snap = compute_comparison(model_override)
+    tpuf_p50 = snap.tpuf_p50
+    collapsed = collapse_by_n(load_op_scaling_points())
+    canonical = resolve_canonical_model(
+        [
+            fit_power_law(collapsed),
+            fit_linear(collapsed),
+            fit_log_linear(collapsed),
+        ],
+        model_override,
+    )
+    extrap_10m_sqrt = round(snap.extrap_10m_sqrt)
+    p100 = next((ms for n, ms in snap.measured_tiers if n == 100_000), None)
+    warm_10k = snap.warm_ratios_vs_tpuf.get(10_000)
+    warm_100k = snap.warm_ratios_vs_tpuf.get(100_000)
+    ratios: dict[str, float] = {
+        "cold_10m_128_vs_tpuf_cold": round(snap.ratio_vs_tpuf, 2),
+        "heuristic_10m_1024_vs_tpuf_cold": round(extrap_10m_sqrt / tpuf_p50, 2),
+    }
+    if p100 is not None:
+        ratios["cold_100k_vs_tpuf_cold"] = round(p100 / tpuf_p50, 3)
+    if warm_10k is not None:
+        ratios["warm_10k_vs_tpuf_warm"] = round(warm_10k, 2)
+    if warm_100k is not None:
+        ratios["warm_100k_vs_tpuf_warm"] = round(warm_100k, 2)
+    backsolve_n = backsolve_n_for_target(canonical, float(tpuf_p50))
+    return {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "timestamp_utc": utc_now_timestamp(),
+        "git_commit": resolve_git_commit(),
+        "tpuf_official": load_tpuf_official_block(),
+        "openpuffer_measured": load_op_measured_tiers(),
+        "canonical_extrapolation": {
+            "model": snap.canonical_model,
+            "namespace_docs": N_REF,
+            "dimensions": DIM_OP,
+            "p50_ms": round(snap.extrap_10m_128),
+            "p50_10m_1024_sqrt_dim_ms": extrap_10m_sqrt,
+            "ratio_vs_tpuf_cold": round(snap.ratio_vs_tpuf, 2),
+            "backsolve_n_at_tpuf_p50": (
+                round(backsolve_n) if backsolve_n and backsolve_n > 0 else None
+            ),
+        },
+        "ratios": ratios,
+        "confidence": snap.confidence,
+        "verdict_text": operator_verdict_paragraph(snap),
+    }
+
+
+def write_scaling_comparison_summary(
+    model_override: str | None = None,
+    path: Path = SUMMARY_PATH,
+) -> Path:
+    summary = build_scaling_comparison_summary(model_override)
+    path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def load_tpuf_write_commit_ms_claim() -> int:
@@ -676,6 +812,19 @@ def main() -> int:
         print(operator_verdict_paragraph(model_override=model_override))
         return 0
 
+    if "--write-summary" in sys.argv:
+        other_flags = [
+            a
+            for a in sys.argv[1:]
+            if a.startswith("--")
+            and a not in ("--write-summary",)
+            and not a.startswith("--model=")
+        ]
+        if not other_flags:
+            summary_path = write_scaling_comparison_summary(model_override)
+            print(f"Wrote dashboard summary: {summary_path.relative_to(ROOT)}")
+            return 0
+
     tpuf_p50 = load_tpuf_cold_p50()
     tpuf_warm_p50 = load_tpuf_warm_p50()
     points = load_op_scaling_points()
@@ -916,6 +1065,9 @@ def main() -> int:
     }
     print()
     print("EXTRAP_JSON=" + json.dumps(extrap_json))
+
+    summary_path = write_scaling_comparison_summary(model_override)
+    print(f"Wrote dashboard summary: {summary_path.relative_to(ROOT)}")
     return 0
 
 

@@ -22,6 +22,7 @@ TPUF_SCHEMA="$SCHEMA_DIR/tpuf-l1.schema.json"
 INGEST_SCHEMA="$SCHEMA_DIR/ingest-large-l1.schema.json"
 OVERLAP_SCHEMA="$SCHEMA_DIR/id-overlap-l1.schema.json"
 OP_SCALING_SCHEMA="$SCHEMA_DIR/op-scaling.schema.json"
+SCALING_SUMMARY_SCHEMA="$SCHEMA_DIR/scaling-comparison-summary.schema.json"
 
 ensure_jsonschema() {
   ensure_benchmark_python_deps "$ROOT"
@@ -68,7 +69,7 @@ run_validation() {
     done < <(collect_default_paths)
   fi
 
-  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "$OP_SCALING_SCHEMA" "${json_paths[@]}" <<'PY'
+  python3 - "$OP_SCHEMA" "$TPUF_SCHEMA" "$INGEST_SCHEMA" "$OVERLAP_SCHEMA" "$OP_SCALING_SCHEMA" "$SCALING_SUMMARY_SCHEMA" "${json_paths[@]}" <<'PY'
 import json
 import re
 import sys
@@ -81,7 +82,8 @@ tpuf_schema_path = Path(sys.argv[2])
 ingest_schema_path = Path(sys.argv[3])
 overlap_schema_path = Path(sys.argv[4])
 op_scaling_schema_path = Path(sys.argv[5])
-paths = [Path(p) for p in sys.argv[6:]]
+scaling_summary_schema_path = Path(sys.argv[6])
+paths = [Path(p) for p in sys.argv[7:]]
 
 sys.path.insert(0, str(op_schema_path.parent.parent))
 from utc_timestamps import validate_benchmark_timestamps
@@ -91,6 +93,9 @@ tpuf_validator = Draft202012Validator(json.loads(tpuf_schema_path.read_text()))
 ingest_validator = Draft202012Validator(json.loads(ingest_schema_path.read_text()))
 overlap_validator = Draft202012Validator(json.loads(overlap_schema_path.read_text()))
 op_scaling_validator = Draft202012Validator(json.loads(op_scaling_schema_path.read_text()))
+scaling_summary_validator = Draft202012Validator(
+    json.loads(scaling_summary_schema_path.read_text())
+)
 
 SCHEMA_VERSION_PATH = Path(op_schema_path).parent / ".." / "LARGE_BENCHMARK_JSON_SCHEMA_VERSION"
 EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION_PATH.resolve().read_text(encoding="utf-8").strip()
@@ -119,6 +124,8 @@ TIER_META = {
 
 def classify(path: Path) -> str:
     s = str(path)
+    if path.name == "scaling-comparison-summary.json":
+        return "scaling-comparison-summary"
     if "op-scaling" in s:
         return "op-scaling"
     if "id-overlap" in s:
@@ -368,6 +375,40 @@ def validate_op_scaling_cross_fields(path: Path, data: dict) -> None:
             )
 
 
+def validate_scaling_summary_cross_fields(path: Path, data: dict) -> None:
+    if data.get("schema_version") != "scaling_comparison_summary_v1":
+        raise SystemExit(
+            f"{path}: schema_version {data.get('schema_version')!r} != "
+            "'scaling_comparison_summary_v1'"
+        )
+    tpuf = data.get("tpuf_official") or {}
+    cold = (tpuf.get("cold") or {}).get("p50_ms")
+    warm = (tpuf.get("warm") or {}).get("p50_ms")
+    if cold != 874 or warm != 14:
+        raise SystemExit(
+            f"{path}: tpuf_official cold/warm p50 must be 874/14 (got {cold}/{warm})"
+        )
+    canon = data.get("canonical_extrapolation") or {}
+    extrap = int(canon.get("p50_ms") or 0)
+    ratio = float(data.get("ratios", {}).get("cold_10m_128_vs_tpuf_cold", 0))
+    if extrap > 0 and abs(ratio - extrap / cold) > 0.05:
+        raise SystemExit(
+            f"{path}: cold_10m_128_vs_tpuf_cold {ratio} != extrap/tpuf "
+            f"({extrap / cold:.2f})"
+        )
+    canon_ratio = float(canon.get("ratio_vs_tpuf_cold") or 0)
+    if extrap > 0 and abs(canon_ratio - ratio) > 0.05:
+        raise SystemExit(
+            f"{path}: canonical_extrapolation.ratio_vs_tpuf_cold {canon_ratio} "
+            f"!= ratios.cold_10m_128_vs_tpuf_cold {ratio}"
+        )
+    if data.get("confidence") not in ("low", "medium", "high"):
+        raise SystemExit(f"{path}: invalid confidence {data.get('confidence')!r}")
+    verdict = data.get("verdict_text") or ""
+    if "874" not in verdict or "not comparable" not in verdict.lower():
+        raise SystemExit(f"{path}: verdict_text missing expected tpuf/scaling caveats")
+
+
 for path in paths:
     if not path.is_file():
         raise SystemExit(f"validate-benchmark-json: missing file {path}")
@@ -381,6 +422,12 @@ for path in paths:
         schema_errors(op_scaling_validator, data, "op-scaling", path)
         validate_op_scaling_cross_fields(path, data)
         print(f"OK {path} ({kind}, docs={data.get('namespace_docs')}, path={data.get('path')})")
+        continue
+    if kind == "scaling-comparison-summary":
+        schema_errors(scaling_summary_validator, data, "scaling-comparison-summary", path)
+        validate_scaling_summary_cross_fields(path, data)
+        extrap = (data.get("canonical_extrapolation") or {}).get("p50_ms")
+        print(f"OK {path} ({kind}, extrap_10m_128_p50_ms={extrap})")
         continue
 
     validate_schema_version(path, data)

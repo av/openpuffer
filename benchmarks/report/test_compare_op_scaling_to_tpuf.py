@@ -6,7 +6,9 @@ import math
 
 from compare_op_scaling_to_tpuf import (
     CANONICAL_MODEL,
+    SUMMARY_SCHEMA_VERSION,
     ballpark_verdict,
+    build_scaling_comparison_summary,
     compute_comparison,
     dim_scale_sqrt,
     fit_power_law,
@@ -56,6 +58,21 @@ def test_canonical_model_linear_on_committed_json() -> None:
     assert 80_000 <= snap.extrap_10m_128 <= 95_000
     assert 95 <= snap.ratio_vs_tpuf <= 105
     assert snap.confidence == "low"
+
+
+def test_build_scaling_comparison_summary() -> None:
+    summary = build_scaling_comparison_summary()
+    assert summary["schema_version"] == SUMMARY_SCHEMA_VERSION
+    assert summary["tpuf_official"]["cold"]["p50_ms"] == 874
+    assert summary["tpuf_official"]["warm"]["p50_ms"] == 14
+    assert len(summary["openpuffer_measured"]) >= 5
+    canon = summary["canonical_extrapolation"]
+    assert canon["model"] == "linear"
+    assert 80_000 <= canon["p50_ms"] <= 95_000
+    assert summary["ratios"]["cold_10m_128_vs_tpuf_cold"] == canon["ratio_vs_tpuf_cold"]
+    assert summary["confidence"] == "low"
+    assert "874" in summary["verdict_text"]
+    assert summary["verdict_text"] == operator_verdict_paragraph(compute_comparison())
 
 
 def test_warm_metrics_on_committed_json() -> None:

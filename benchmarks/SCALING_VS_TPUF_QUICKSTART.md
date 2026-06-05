@@ -9,7 +9,12 @@ Full report: [docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](../do
 make bench-op-scaling
 
 # 2. Print extrapolation, models, and side-by-side vs tpuf-official-reference.json
+#    (also writes benchmarks/results/scaling-comparison-summary.json for dashboards)
 make bench-compare-tpuf
+
+# 2b. Regenerate dashboard JSON only (skip full compare tables)
+python3 benchmarks/report/compare_op_scaling_to_tpuf.py --write-summary
+./scripts/validate-benchmark-json.sh benchmarks/results/scaling-comparison-summary.json
 
 # 3. Offline CI gate on committed artifacts (schema + compare smoke; no Docker)
 make bench-verify-op-scaling

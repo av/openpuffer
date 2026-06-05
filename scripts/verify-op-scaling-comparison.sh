@@ -41,5 +41,8 @@ python3 -m pytest benchmarks/report/test_op_scaling_schema.py -q
 step "compare op-scaling to tpuf (committed JSON smoke)"
 ./scripts/test_compare-op-scaling-to-tpuf.sh
 
+step "scaling-comparison-summary.json schema"
+./scripts/validate-benchmark-json.sh benchmarks/results/scaling-comparison-summary.json
+
 echo ""
 echo "verify-op-scaling-comparison: OK (offline; no MinIO bench)"

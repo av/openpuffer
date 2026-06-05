@@ -1,0 +1,107 @@
+{
+  "schema_version": "scaling_comparison_summary_v1",
+  "timestamp_utc": "2026-06-05T00:17:34Z",
+  "git_commit": "979e2d64389d7a9f642b64fc5da1c99fd07dc823",
+  "tpuf_official": {
+    "namespace_docs": 10000000,
+    "dimensions": 1024,
+    "cold": {
+      "p50_ms": 874,
+      "p90_ms": 1214,
+      "p99_ms": 1686
+    },
+    "warm": {
+      "p50_ms": 14,
+      "p90_ms": 17,
+      "p99_ms": 27
+    }
+  },
+  "openpuffer_measured": [
+    {
+      "artifact": "op-scaling-10k.json",
+      "label": "10k",
+      "path": "cold",
+      "namespace_docs": 10000,
+      "dimensions": 128,
+      "p50_ms": 96,
+      "p90_ms": 99,
+      "p99_ms": 99,
+      "ingest_wall_secs": 11.0,
+      "docs_per_sec": 909.09
+    },
+    {
+      "artifact": "op-scaling-10k-synthetic128.json",
+      "label": "10k-synthetic128",
+      "path": "cold",
+      "namespace_docs": 10000,
+      "dimensions": 128,
+      "p50_ms": 97,
+      "p90_ms": 108,
+      "p99_ms": 108
+    },
+    {
+      "artifact": "op-scaling-50k.json",
+      "label": "50k",
+      "path": "cold",
+      "namespace_docs": 50000,
+      "dimensions": 128,
+      "p50_ms": 412,
+      "p90_ms": 450,
+      "p99_ms": 450,
+      "ingest_wall_secs": 14.0,
+      "docs_per_sec": 3571.43
+    },
+    {
+      "artifact": "op-scaling-100k.json",
+      "label": "100k",
+      "path": "cold",
+      "namespace_docs": 100000,
+      "dimensions": 128,
+      "p50_ms": 880,
+      "p90_ms": 900,
+      "p99_ms": 900,
+      "ingest_wall_secs": 132.0,
+      "docs_per_sec": 757.58
+    },
+    {
+      "artifact": "op-scaling-10k-warm.json",
+      "label": "10k-warm",
+      "path": "warm",
+      "namespace_docs": 10000,
+      "dimensions": 128,
+      "p50_ms": 112,
+      "p90_ms": 123,
+      "p99_ms": 123
+    },
+    {
+      "artifact": "op-scaling-100k-warm.json",
+      "label": "100k-warm",
+      "path": "warm",
+      "namespace_docs": 100000,
+      "dimensions": 128,
+      "p50_ms": 827,
+      "p90_ms": 876,
+      "p99_ms": 876,
+      "ingest_wall_secs": 136.0,
+      "docs_per_sec": 735.29
+    }
+  ],
+  "canonical_extrapolation": {
+    "model": "linear",
+    "namespace_docs": 10000000,
+    "dimensions": 128,
+    "p50_ms": 87321,
+    "p50_10m_1024_sqrt_dim_ms": 246981,
+    "ratio_vs_tpuf_cold": 99.91,
+    "backsolve_n_at_tpuf_p50": 100419
+  },
+  "ratios": {
+    "cold_10m_128_vs_tpuf_cold": 99.91,
+    "heuristic_10m_1024_vs_tpuf_cold": 282.59,
+    "cold_100k_vs_tpuf_cold": 1.007,
+    "warm_10k_vs_tpuf_warm": 8.0,
+    "warm_100k_vs_tpuf_warm": 59.07
+  },
+  "confidence": "low",
+  "verdict_text": "Critical: openpuffer measured 100.0k\u00d7128 cold p50 ~880 ms is the same order of magnitude as turbopuffer official 874 ms @ 10M\u00d71024 (~1.01\u00d7)\u2014**not comparable** (100\u00d7 fewer docs, 8\u00d7 fewer dims, MinIO vs GCP fleet, different load); if doc-count scaling on this harness held to 10M, canonical linear extrapolation gives ~87321 ms @ 10M\u00d7128 (~99.9\u00d7 tpuf cold 874 ms\u2014low confidence, unmeasured); tiers (10.0k=96ms / 50.0k=412ms / 100.0k=880ms) imply power-law \u03b2\u22480.95, \u221adim heuristic ~246981 ms (~283\u00d7 cold). Warm path (POST /warm + eventual, MinIO disk cache): 10.0k warm=112ms (~8.0\u00d7 tpuf 14ms @ 10M), 100.0k warm=827ms (~59.1\u00d7 tpuf 14ms @ 10M)\u2014**not comparable** to tpuf fleet NVMe @ 10M\u00d71024; openpuffer MinIO ingest+index throughput is 10.0k=909 docs/s (11s wall), 50.0k=3571 docs/s (14s wall), 100.0k=758 docs/s (132s wall) (WAL-limited upsert+index wait) vs turbopuffer's published \u2264~200 ms durable write-commit latency (not the same throughput model); extrapolated openpuffer is **~283\u00d7 slower** than tpuf 874 ms \u2014 **not** in the same absolute ballpark on this MinIO harness. Treat as scaling-shape signal only\u2014do not read 100k\u2248874 ms as parity; 10M openpuffer is unmeasured."
+}
