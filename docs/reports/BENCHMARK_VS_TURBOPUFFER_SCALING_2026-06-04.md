@@ -300,6 +300,39 @@ Until then, treat this report as **MinIO scaling shape + official tpuf reference
 
 ---
 
+## FAQ (for confused readers)
+
+### Did you compare them?
+
+**Partly.** openpuffer numbers are **measured** on MinIO (10k / 50k / 100k × 128). turbopuffer numbers come from the **official reference** at 10M × 1024 ([`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json)) — not a live API run in this repo. There is **no** head-to-head at the same doc count, dimensions, or cloud backend. A live tpuf probe at 10k was **blocked** (`TURBOPUFFER_API_KEY` unset); see [What would be needed for a fair test](#what-would-be-needed-for-a-fair-test).
+
+### Is openpuffer 100× slower?
+
+**Only if you linearly extrapolate** measured cold p50 (96 / 412 / 880 ms) to **10M × 128** → **~87 s** (~**100×** turbopuffer’s **874 ms** @ 10M). That extrapolation is **unmeasured** and assumes the MinIO harness curve holds to 10M.
+
+At **100k × 128**, openpuffer cold p50 is **~880 ms** — almost the same **order of magnitude** as tpuf’s **874 ms** @ **10M × 1024**. That is **not** “openpuffer is as fast as tpuf at 10M”; it is **same latency, different scale** (100× fewer docs, 8× fewer dims, MinIO vs GCP, different load model). Do not read ~880 ms ≈ 874 ms as parity.
+
+### Why did numbers change during the run?
+
+Several reasons, all documented in committed JSON and git history:
+
+1. **Debug vs release** — early sweeps used non-release builds; current artifacts use `cargo --release` and `OPENPUFFER_ANN_VERSION=3`.
+2. **100k tier jitter** — reruns landed **813 / 857 / 880 / 906 ms** (σ≈38 ms, ~±4%); committed value is refresh **880 ms** @ `7f7c0f5`, not a single outlier at 10× scale.
+3. **Superseded tiers** — older committed rows (**86/400/824**, then **111/525/813**) changed extrapolation headlines (e.g. log_linear once implied **~2 s** @ 10M); use **96/412/880** and `canonical_model: linear` only.
+4. **Anecdotal outlier** — ~7 s @ 100k was **not** in committed JSON; ignore for citations.
+
+### What would make this fair?
+
+At minimum: **AWS S3** (or same-region object storage) for openpuffer, a **`TURBOPUFFER_API_KEY`** for live tpuf at matched tiers, **same workload** (`queries.json`, seed, `top_k`, distance), and aligned **doc counts / dimensions** where affordable. Same **load model** (sustained QPS vs sequential probes) must be documented or matched. Details: [What would be needed for a fair test](#what-would-be-needed-for-a-fair-test).
+
+### Does openpuffer scale similarly?
+
+**On doc count (MinIO, 128-d, measured tiers):** cold p50 grows **near-linearly** — **~9.2×** latency for **10×** docs (β ≈ 0.95) from 10k → 100k. Extrapolation to 10M is **shape guess**, not measurement.
+
+**For turbopuffer:** we only have **one** official cold point @ 10M; **cannot** fit a doc-count curve or claim “similar scaling” to tpuf’s fleet. openpuffer’s **absolute** gap vs **874 ms** widens to **~100×** only under **linear** extrapolation to 10M — not proof tpuf scales the same way between 100k and 10M.
+
+---
+
 ## Commands to reproduce
 
 **Five-command quickstart:** [`benchmarks/SCALING_VS_TPUF_QUICKSTART.md`](../../benchmarks/SCALING_VS_TPUF_QUICKSTART.md).
