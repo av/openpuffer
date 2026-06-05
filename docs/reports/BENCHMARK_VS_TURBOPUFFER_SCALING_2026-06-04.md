@@ -207,7 +207,16 @@ Sources: [Tradeoffs](https://turbopuffer.com/docs/tradeoffs) (2026-06-05), [tpuf
 | **Write commit** | **Up to ~200 ms** to durable commit | WAL-on-object-storage; **thousands of writes/s per namespace** |
 | **Query bench load** | **8 QPS × 30 min**, 1 namespace | `vectors_10m_cold`; not single-client sequential |
 
-openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the turbopuffer API; those are openpuffer-only cold-path metrics.
+turbopuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the managed API (bench JSON sets them to `null`); those are **openpuffer-only** cold-path metrics.
+
+### Cold-path `storage_roundtrips`
+
+| System | What we know | In this report |
+|--------|--------------|----------------|
+| **openpuffer** | `performance.storage_roundtrips` on strong cold vector queries; probed path via [`plan_cold_query`](../ARCHITECTURE.md#cold-query-s3_batch-roundtrips) | **3** on every op-scaling tier (10k–100k); program gate **≤ 4** on caught-up strong cold ([`BENCHMARKS.md` § Phase 4 cold protocol](../BENCHMARKS.md#phase-4--cold-query-protocol-mandatory), [§ Phase 6 rubric](../BENCHMARKS.md#phase-6--passfail-rubric)) |
+| **turbopuffer** | [Architecture](https://turbopuffer.com/docs/architecture): SPFresh centroid index **minimizes roundtrips** vs graph indexes (HNSW/DiskANN); cold diagram shows **~3 logical** object-storage roundtrips (metadata → indexes/WAL → clusters); docs cite **3–4** roundtrips × ~100ms RTT → **~400ms** class before fleet tuning | **No measured counter** — managed storage; marketing cold p50 **874 ms** @ 10M is latency-only |
+
+**Comparison:** **Cannot compare numerically to tpuf** — no per-query `storage_roundtrips` in tpuf API or `tpuf-l*.json`. Qualitatively both target a **small fixed number** of cold S3 roundtrips (tpuf architecture claim; openpuffer **≤ 4** gate with **3** measured here). openpuffer cold **p50** still grows **96 → 880 ms** across tiers while roundtrips stay **3**: work scales inside each round (keys fetched, MinIO RTT), not extra planner rounds on this sweep.
 
 ### openpuffer — cold-path efficiency by tier
 
