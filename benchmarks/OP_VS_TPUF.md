@@ -1,6 +1,10 @@
 # openpuffer vs turbopuffer — scaling (one page)
 
-**Updated:** 2026-06-05 · **Artifacts through:** `b73cc02` · **Confidence:** low for extrapolation (both models); high for measured MinIO tiers.
+**Updated:** 2026-06-05 · **Artifacts through:** `adb3d38` · **Confidence:** low for extrapolation (both models); high for measured MinIO tiers.
+
+## USER ANSWER
+
+We measured openpuffer cold/warm query latency at **10k / 50k / 100k × 128-d** on a local **MinIO** harness and compared it to turbopuffer’s **single official** cold point at **10M × 1024-d** (874 ms p50 on GCP)—not a like-for-like benchmark. On measured tiers, openpuffer cold p50 grows **96 → 412 → 880 ms**, implying power-law **β ≈ 0.95** (near-linear doc-count scaling on this harness); turbopuffer publishes **no** (N, p50) curve, so shape similarity to tpuf is **unprovable**. The **100k ≈ 874 ms** coincidence is **not parity** (100× fewer docs, 8× fewer dims, different storage and load). Extrapolating openpuffer to **10M×128** yields **~87 s** (linear, canonical) or **~67 s** (power-law)—**~100×** or **~77×** slower than tpuf’s 874 ms, with **low confidence** because 10M was never measured. **Verdict:** openpuffer shows a **usable scaling-shape signal** on MinIO only; it does **not** scale to similar **absolute** latency or production ballpark as turbopuffer at 10M—do not treat this harness as evidence of tpuf-class performance.
 
 ---
 
