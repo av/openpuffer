@@ -1,7 +1,7 @@
 {
   "schema_version": "op_scaling_v1",
   "timestamp_utc": "2026-06-04T23:13:52Z",
-  "git_commit": "a2c1fd68066fab7551d54cdc2faa73fb58b10de9",
+  "git_commit": "ac8bffad2c1f70098d49dd2b838b32257664d53a",
   "environment": "minio-testcontainers",
   "path": "cold",
   "namespace_docs": 10000,
