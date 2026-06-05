@@ -168,6 +168,8 @@ Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/be
 
 #### openpuffer vs turbopuffer scaling (committed JSON)
 
+**One-page summary:** [OP_VS_TPUF.md](OP_VS_TPUF.md) — scaling verdict, caveats, and artifact pointers (MinIO tiers vs tpuf official 10M×1024).
+
 **CI / offline smoke** (no Docker; uses committed results):
 
 ```bash

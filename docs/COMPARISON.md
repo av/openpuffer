@@ -74,6 +74,8 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 
 ### Scaling vs turbopuffer official (MinIO extrapolation)
 
+**One-page summary:** [`benchmarks/OP_VS_TPUF.md`](../benchmarks/OP_VS_TPUF.md).
+
 Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Canonical numbers: [`scaling-comparison-summary.json`](../benchmarks/results/scaling-comparison-summary.json). Reproduce: `make bench-compare-tpuf` · `./scripts/print-scaling-verdict.sh`.
 
 - **turbopuffer (official):** cold p50 **874 ms** at **10M × 1024** on GCP (`c2-standard-30`, 8 QPS × 30m, cache disabled) — [`tpuf-official-reference.json`](../benchmarks/results/tpuf-official-reference.json). **Single published doc-count point** for cold; extrapolation uncertainty dominates any ratio vs 874 ms.
