@@ -21,7 +21,6 @@ mkdir -p "$RESULTS_DIR"
 
 GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 TIMESTAMP_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-CARGO_PROFILE=release
 
 build_release() {
   echo "run-op-scaling: building release openpuffer + bench tests..."

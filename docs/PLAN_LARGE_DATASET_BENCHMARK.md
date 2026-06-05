@@ -10,7 +10,7 @@ This plan complements implementation-focused [PLAN_SPFRESH_AND_COLD_1M.md](PLAN_
 |-------|--------|---------|
 | **Harness (offline)** | **COMPLETE — operator handoff** | Final audit: `./scripts/verify-large-benchmark-program.sh` **exit 0** @ `7a38d7f` (2026-06-04T02:54:51Z); A1–A6 scripts, G2 MinIO gates, G3/G4 operator wrappers, G5 measured-mode renderer, G6 CI/nightly dry-run — **PR-style summary:** [reports/LARGE_DATASET_HARNESS_HANDOFF.md](reports/LARGE_DATASET_HARNESS_HANDOFF.md) |
 | **Live measurement (G3–G5)** | **BLOCKED** | Needs EC2 in target region + real AWS S3 + `TURBOPUFFER_API_KEY` (test org); this dev host: MinIO endpoint + no tpuf key — **do not** re-run live G3/G4 here; see [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPERATOR_G3_G4_ATTEMPT.md) |
-| **Scaling vs tpuf official (MinIO)** | **PUBLISHED** | Doc-count extrapolation vs tpuf 10M×1024 reference: [reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md) (`make bench-compare-tpuf`) |
+| **Scaling vs tpuf official (MinIO)** | **PUBLISHED** | Doc-count extrapolation vs tpuf 10M×1024 reference: [reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md); `make bench-compare-tpuf`; offline gate `./scripts/verify-op-scaling-comparison.sh` (nested in `verify-large-benchmark-program.sh`, exit **0** @ `b7dac2b`) |
 
 ### Harness audit (operator handoff)
 
