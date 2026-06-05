@@ -219,12 +219,16 @@ def build_scaling_comparison_summary(
             str(n): round(dps, 2) for n, _wall, dps in ingest_rows
         }
     backsolve_n = backsolve_n_for_target(canonical, float(tpuf_p50))
+    fits, extrapolations, recommended = build_fit_extrapolation_block(collapsed)
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "timestamp_utc": utc_now_timestamp(),
         "git_commit": resolve_git_commit(),
         "tpuf_official": load_tpuf_official_block(),
         "openpuffer_measured": load_op_measured_tiers(),
+        "fits": fits,
+        "extrapolations": extrapolations,
+        "recommended_extrapolation": recommended,
         "canonical_extrapolation": {
             "model": snap.canonical_model,
             "namespace_docs": N_REF,
@@ -653,6 +657,41 @@ def resolve_canonical_model(
         if m.name == name:
             return m
     raise SystemExit(f"canonical model {name!r} missing from fit set")
+
+
+def fit_ab_params(fit: ModelFit) -> tuple[float, float]:
+    """Serialize fit params as (a, b) for dashboard JSON.
+
+    - power_law: L ≈ a·N^b
+    - linear: L ≈ a + b·N  (intercept=a, slope=b)
+    """
+    if fit.name == "power_law":
+        return (fit.params["a"], fit.params["b"])
+    if fit.name == "linear":
+        return (fit.params["intercept"], fit.params["slope"])
+    raise ValueError(f"fit_ab_params: unsupported model {fit.name!r}")
+
+
+def fit_summary_block(fit: ModelFit) -> dict[str, float]:
+    a, b = fit_ab_params(fit)
+    return {"a": round(a, 6), "b": round(b, 6), "r2": round(fit.r2, 6)}
+
+
+def build_fit_extrapolation_block(
+    collapsed: list[tuple[int, float]],
+) -> tuple[dict[str, dict[str, float]], dict[str, int], str]:
+    """fits + extrapolations + recommended_extrapolation for summary JSON."""
+    linear = fit_linear(collapsed)
+    power = fit_power_law(collapsed)
+    fits = {
+        "linear": fit_summary_block(linear),
+        "power_law": fit_summary_block(power),
+    }
+    extrapolations = {
+        "linear_10m_ms": round(linear.predict(N_REF)),
+        "power_law_10m_ms": round(power.predict(N_REF)),
+    }
+    return fits, extrapolations, CANONICAL_MODEL
 
 
 def extrap_confidence() -> str:

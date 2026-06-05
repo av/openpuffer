@@ -155,8 +155,23 @@ if summary.get("schema_version") != "scaling_comparison_summary_v1":
 tpuf = summary["tpuf_official"]
 if tpuf["cold"]["p50_ms"] != 874 or tpuf["warm"]["p50_ms"] != 14:
     raise SystemExit("tpuf_official latencies mismatch")
+if summary.get("recommended_extrapolation") != "linear":
+    raise SystemExit("recommended_extrapolation must be linear")
+extrap_block = summary.get("extrapolations") or {}
+linear_10m = int(extrap_block.get("linear_10m_ms", 0))
+power_10m = int(extrap_block.get("power_law_10m_ms", 0))
+if linear_10m < 80_000 or linear_10m > 95_000:
+    raise SystemExit(f"linear_10m_ms {linear_10m} out of range")
+if power_10m < 60_000 or power_10m > 75_000:
+    raise SystemExit(f"power_law_10m_ms {power_10m} out of range")
+fits = summary.get("fits") or {}
+for model in ("linear", "power_law"):
+    if not {"a", "b", "r2"} <= set(fits.get(model, {})):
+        raise SystemExit(f"fits[{model}] missing a/b/r2")
 canon = summary["canonical_extrapolation"]
 extrap = int(canon["p50_ms"])
+if extrap != linear_10m:
+    raise SystemExit(f"canonical p50_ms {extrap} != linear_10m_ms {linear_10m}")
 if extrap < 80_000 or extrap > 95_000:
     raise SystemExit(f"canonical extrap {extrap} out of range")
 if summary["ratios"]["cold_10m_128_vs_tpuf_cold"] != canon["ratio_vs_tpuf_cold"]:

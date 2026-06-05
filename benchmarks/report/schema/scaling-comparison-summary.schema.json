@@ -11,6 +11,9 @@
     "git_commit",
     "tpuf_official",
     "openpuffer_measured",
+    "fits",
+    "extrapolations",
+    "recommended_extrapolation",
     "canonical_extrapolation",
     "ratios",
     "confidence",
@@ -69,6 +72,28 @@
         }
       }
     },
+    "fits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linear", "power_law"],
+      "properties": {
+        "linear": { "$ref": "#/$defs/fit_ab_r2" },
+        "power_law": { "$ref": "#/$defs/fit_ab_r2" }
+      }
+    },
+    "extrapolations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linear_10m_ms", "power_law_10m_ms"],
+      "properties": {
+        "linear_10m_ms": { "type": "integer", "minimum": 0 },
+        "power_law_10m_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "recommended_extrapolation": {
+      "const": "linear",
+      "description": "Canonical doc-count extrapolation model (matches canonical_extrapolation.model)."
+    },
     "canonical_extrapolation": {
       "type": "object",
       "additionalProperties": true,
@@ -112,6 +137,16 @@
     "verdict_text": { "type": "string", "minLength": 80 }
   },
   "$defs": {
+    "fit_ab_r2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b", "r2"],
+      "properties": {
+        "a": { "type": "number" },
+        "b": { "type": "number" },
+        "r2": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
     "latency_triple": {
       "type": "object",
       "additionalProperties": false,

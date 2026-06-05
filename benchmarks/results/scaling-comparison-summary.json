@@ -1,7 +1,7 @@
 {
   "schema_version": "scaling_comparison_summary_v1",
-  "timestamp_utc": "2026-06-05T00:30:18Z",
-  "git_commit": "ac8bffad2c1f70098d49dd2b838b32257664d53a",
+  "timestamp_utc": "2026-06-05T00:38:38Z",
+  "git_commit": "2e6b01e2d18faa56752f58232d46ecde909c6691",
   "tpuf_official": {
     "namespace_docs": 10000000,
     "dimensions": 1024,
@@ -86,6 +86,23 @@
       "docs_per_sec": 735.29
     }
   ],
+  "fits": {
+    "linear": {
+      "a": -2.893443,
+      "b": 0.008732,
+      "r2": 0.997713
+    },
+    "power_law": {
+      "a": 0.015063,
+      "b": 0.949722,
+      "r2": 0.993863
+    }
+  },
+  "extrapolations": {
+    "linear_10m_ms": 87321,
+    "power_law_10m_ms": 66981
+  },
+  "recommended_extrapolation": "linear",
   "canonical_extrapolation": {
     "model": "linear",
     "namespace_docs": 10000000,

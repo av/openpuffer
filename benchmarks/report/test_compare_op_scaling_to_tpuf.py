@@ -16,6 +16,7 @@ import compare_op_scaling_to_tpuf as compare_mod
 from compare_op_scaling_to_tpuf import (
     CANONICAL_MODEL,
     CSV_COLUMNS,
+    N_REF,
     SUMMARY_SCHEMA_VERSION,
     ballpark_verdict,
     build_scaling_comparison_csv_rows,
@@ -23,7 +24,10 @@ from compare_op_scaling_to_tpuf import (
     compute_comparison,
     dim_scale_sqrt,
     dry_run_compare,
+    fit_linear,
+    fit_ab_params,
     fit_power_law,
+    load_op_scaling_points,
     load_op_warm_points,
     load_tpuf_warm_p50,
     operator_verdict_paragraph,
@@ -31,6 +35,7 @@ from compare_op_scaling_to_tpuf import (
     warm_ratios_vs_tpuf,
     write_scaling_comparison_csv,
 )
+from compare_op_scaling_to_tpuf import collapse_by_n
 
 
 def test_fit_power_law_near_linear() -> None:
@@ -74,12 +79,36 @@ def test_canonical_model_linear_on_committed_json() -> None:
     assert snap.confidence == "low"
 
 
+def test_summary_fits_match_recomputed_models() -> None:
+    collapsed = collapse_by_n(load_op_scaling_points())
+    linear = fit_linear(collapsed)
+    power = fit_power_law(collapsed)
+    summary = build_scaling_comparison_summary()
+    for model, fit in (("linear", linear), ("power_law", power)):
+        a, b = fit_ab_params(fit)
+        assert summary["fits"][model]["a"] == pytest.approx(round(a, 6), abs=0)
+        assert summary["fits"][model]["b"] == pytest.approx(round(b, 6), abs=0)
+        assert summary["fits"][model]["r2"] == pytest.approx(round(fit.r2, 6), abs=0)
+    assert summary["extrapolations"]["linear_10m_ms"] == round(linear.predict(N_REF))
+    assert summary["extrapolations"]["power_law_10m_ms"] == round(power.predict(N_REF))
+
+
 def test_build_scaling_comparison_summary() -> None:
     summary = build_scaling_comparison_summary()
     assert summary["schema_version"] == SUMMARY_SCHEMA_VERSION
     assert summary["tpuf_official"]["cold"]["p50_ms"] == 874
     assert summary["tpuf_official"]["warm"]["p50_ms"] == 14
     assert len(summary["openpuffer_measured"]) >= 5
+    assert summary["recommended_extrapolation"] == "linear"
+    fits = summary["fits"]
+    assert set(fits) == {"linear", "power_law"}
+    for name in ("linear", "power_law"):
+        assert set(fits[name]) == {"a", "b", "r2"}
+        assert 0.9 <= fits[name]["r2"] <= 1.0
+    extrap = summary["extrapolations"]
+    assert extrap["linear_10m_ms"] == summary["canonical_extrapolation"]["p50_ms"]
+    assert 60_000 <= extrap["power_law_10m_ms"] <= 75_000
+    assert extrap["linear_10m_ms"] > extrap["power_law_10m_ms"]
     canon = summary["canonical_extrapolation"]
     assert canon["model"] == "linear"
     assert 80_000 <= canon["p50_ms"] <= 95_000
