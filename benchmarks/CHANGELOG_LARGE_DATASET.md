@@ -8,7 +8,9 @@ Chronological record of commits that built the **offline harness** for [PLAN_LAR
 
 **Session log:** timeboxed run 2026-06-04 (**114** iterations); progress file `/tmp/timeboxed-large-dataset-benchmark-plan-1780525473.md`
 
-**Op-vs-tpuf scaling program (2026-06-04 → 2026-06-05):** timeboxed comparison through `31dfc8e`; progress `/tmp/timeboxed-op-vs-tpuf-comparison-1780613123.md`
+**Op-vs-tpuf scaling program (2026-06-04 → 2026-06-05):** timeboxed comparison through `HEAD`; progress `/tmp/timeboxed-op-vs-tpuf-comparison-1780613123.md`
+
+**Suggested milestone tag (not published):** `bench-op-scaling-v1` → commit range **`76875cb`..`HEAD`** (offline measurements, compare/verify gates, CI smoke, docs). Annotated tag is **documentation only** here — do not create it from automation. Pin with `git checkout dc893f2` or `HEAD` until an operator publishes the tag.
 
 ---
 
@@ -99,7 +101,26 @@ See **[SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md)** (`make be
 
 ### Program status
 
-**Offline comparison program complete** through `31dfc8e`: committed measurements, extrapolation tooling, verify gate, CI smoke, warm/ingest/dimension analysis, 100k outlier gate, and published scaling report. **Live** tpuf re-measure at matched tiers remains operator-pending (API key / EC2).
+**Offline comparison program complete** through `HEAD` (`76875cb`..`HEAD`): committed measurements, extrapolation tooling, verify gate, CI smoke, warm/ingest/dimension analysis, 100k outlier gate, nightly smoke, and published scaling report. **Live** tpuf re-measure at matched tiers remains operator-pending (API key / EC2).
+
+### Suggested tag `bench-op-scaling-v1` (not created)
+
+Documented for reproducibility; **no `git tag` was run** for this note.
+
+```bash
+# When an operator publishes the annotated tag:
+git fetch --tags
+git checkout bench-op-scaling-v1   # 76875cb..<tip at tag time>
+
+# Until then, pin the scaling comparison program at:
+git checkout dc893f2   # ci: green verify after scaling comparison program
+# or
+git checkout HEAD      # latest op-scaling JSON + docs
+
+make bench-verify-op-scaling   # offline gate (committed op-scaling-*.json)
+```
+
+See [OP_VS_TPUF.md](OP_VS_TPUF.md) § Reproduce at tag and [SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md) for remeasure steps.
 
 ---
 

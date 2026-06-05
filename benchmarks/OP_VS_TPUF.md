@@ -55,6 +55,30 @@ Structured summary: `benchmarks/results/scaling-comparison-summary.json` · CSV:
 
 ---
 
+## Reproduce at tag
+
+The op-vs-tpuf scaling comparison program is documented for annotated tag **`bench-op-scaling-v1`** (commit range **`76875cb`..`HEAD`**). The tag is **suggested, not yet published** — `git fetch --tags` will not find it until an operator creates it (see [CHANGELOG_LARGE_DATASET.md](CHANGELOG_LARGE_DATASET.md) § Suggested tag `bench-op-scaling-v1`).
+
+**Until the tag exists**, pin the tree at:
+
+```bash
+git checkout dc893f2   # last known green verify for the scaling program
+# or
+git checkout HEAD      # latest committed op-scaling artifacts and docs
+```
+
+**When `bench-op-scaling-v1` is published:**
+
+```bash
+git fetch --tags
+git checkout bench-op-scaling-v1
+make bench-verify-op-scaling   # offline gate only
+```
+
+Use the commands below to **remeasure** tiers (slow; Docker MinIO). For verify/compare only, stay on the pinned commit and run steps **2** and **3**.
+
+---
+
 ## Reproduce (3 commands)
 
 ```bash
