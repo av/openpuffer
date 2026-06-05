@@ -11,8 +11,43 @@
 # See benchmarks/README.md § openpuffer vs turbopuffer scaling
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+verify-op-scaling-comparison.sh — offline CI gate for op vs tpuf scaling artifacts.
+
+Purpose:
+  Validate committed op-scaling JSON (schema, pytest, synthetic128), run compare smoke
+  test, and validate scaling-comparison-summary.json — no Docker, no MinIO bench.
+
+Usage:
+  ./scripts/verify-op-scaling-comparison.sh
+  ./scripts/verify-op-scaling-comparison.sh -h|--help
+  make bench-verify-op-scaling
+
+Environment:
+  (none required; uses benchmarks/requirements.txt via ensure_benchmark_python_deps)
+
+Does not run:
+  run-op-scaling-benchmark.sh / 100k ingest (refresh: make bench-op-scaling)
+
+Input tiers (committed benchmarks/results/):
+  op-scaling-*.json, tpuf-official-reference.json, scaling-comparison-summary.json
+
+Output:
+  Exit 0 + "verify-op-scaling-comparison: OK" on success; no new artifacts.
+
+Quickstart:
+  benchmarks/SCALING_VS_TPUF_QUICKSTART.md  (step 3 offline gate)
+EOF
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
 
 # shellcheck source=scripts/lib/benchmark-python-deps.sh
 source "$ROOT/scripts/lib/benchmark-python-deps.sh"

@@ -14,8 +14,57 @@
 #
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+run-op-scaling-benchmark.sh — regenerate openpuffer MinIO scaling tiers (release + ANN v3).
+
+Purpose:
+  Run cold/warm doc-count benchmarks (10k / 50k / 100k × 128-d) via cargo integration
+  tests; write benchmarks/results/op-scaling-*.json for comparison vs turbopuffer.
+
+Usage:
+  ./scripts/run-op-scaling-benchmark.sh              # all tiers (~1–3 h)
+  ./scripts/run-op-scaling-benchmark.sh 10k warm     # subset
+  ./scripts/run-op-scaling-benchmark.sh 100k-warm      # warm @ 100k (~3–8 min ingest+index)
+  ./scripts/run-op-scaling-benchmark.sh -h|--help
+
+Environment (set by this script):
+  OPENPUFFER_ANN_VERSION=3
+  RUST_BACKTRACE=1
+
+Prerequisites:
+  Docker (MinIO testcontainers), Rust release build, integration + bench features.
+
+Tiers (optional args; default = all):
+  10k           cold query @ 10k docs
+  50k           cold @ 50k (stress_50k, --ignored)
+  100k          cold @ 100k (ingest+index ~8–15 min)
+  warm          10k warm path
+  100k-warm     100k warm path (~3–8 min)
+  synthetic128  10k synthetic-128 workload gate
+
+Output files (under benchmarks/results/):
+  op-scaling-10k.json
+  op-scaling-50k.json
+  op-scaling-100k.json
+  op-scaling-10k-warm.json
+  op-scaling-100k-warm.json
+  op-scaling-10k-synthetic128.json
+
+Post-run: validate-benchmark-json.sh on each op-scaling-*.json (100k cold p50 gate).
+
+Quickstart:
+  benchmarks/SCALING_VS_TPUF_QUICKSTART.md  (make bench-op-scaling → bench-compare-tpuf)
+EOF
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
 
 export OPENPUFFER_ANN_VERSION=3
 export RUST_BACKTRACE=1
@@ -256,7 +305,7 @@ fi
 
 if [[ "$ran" -eq 0 ]]; then
   echo "run-op-scaling: no tiers matched args: $*" >&2
-  echo "usage: $0 [10k] [50k] [100k] [warm] [100k-warm] [synthetic128]" >&2
+  echo "usage: $0 [-h|--help] [10k] [50k] [100k] [warm] [100k-warm] [synthetic128]" >&2
   exit 1
 fi
 
