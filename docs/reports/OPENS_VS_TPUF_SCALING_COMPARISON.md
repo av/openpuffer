@@ -49,6 +49,8 @@
 | **Cold** (cache disabled) | **874** | **1214** | **1686** |
 | **Warm** (cache hot) | **14** | **17** | **27** |
 
+> **Footnote — [ANN v3 blog](https://turbopuffer.com/blog/ann-v3)** (updated 2026-05-05, cross-ref 2026-06-05): turbopuffer’s fleet post targets **≤200 ms p99** and **>1k QPS** at **100 billion × 1024-d** (~**200 TiB** on SSD-backed deployments)—**not** a second official **(document_count, cold p50)** point for the **10M × 1024** homepage calculator. **Not comparable** to openpuffer **100k × 128** MinIO tiers (**1000×** fewer documents, **8×** fewer dimensions, different load model). Captured in [`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json) → `secondary_sources`; `scaling_curve_official.no_additional_doc_count_curve` remains **true**.
+
 ---
 
 ## 2. openpuffer analogous benchmark matrix (local, no API key)

@@ -76,8 +76,36 @@
     }
   },
   "comparison_report": "docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md",
+  "secondary_sources": [
+    {
+      "id": "ann_v3_blog",
+      "url": "https://turbopuffer.com/blog/ann-v3",
+      "title": "ANN v3: 200ms p99 query latency over 100 billion vectors",
+      "updated": "2026-05-05",
+      "note": "Fleet-scale ANN v3 engineering post (100B×1024×f16, ~200 TiB): p99≤200 ms and >1k QPS targets on SSD-backed deployments. Interactive Latency/QPS charts have no extractable (document_count, cold p50) series. Not comparable to openpuffer 100k×128 MinIO scaling (1000× fewer docs, 8× fewer dims, 7 sequential probes vs sustained QPS).",
+      "workload": {
+        "document_count": 100000000000,
+        "dimensions": 1024,
+        "bytes_per_dimension": 2,
+        "approx_storage_tib": 200,
+        "distance_note": "cosine / SPFresh + RaBitQ binary quantization (blog)"
+      },
+      "published_targets": {
+        "query_latency_ms": { "p99": 200 },
+        "qps": ">1000"
+      },
+      "theoretical_qps_roofline_ms": {
+        "hierarchical_only_disk_bound": 100,
+        "with_binary_quantization": 10000,
+        "production_saturated": 1000,
+        "note": "Blog roofline tables; not measured cold p50 at 10M or 100B for calculator protocol"
+      },
+      "cold_p50_by_doc_count": null
+    }
+  ],
   "scaling_curve_official": {
-    "note": "No second official cold p50 at a different document_count was found for the Vector Perf calculator workload (1024-d, top_k=10, 8 QPS × 30m). Homepage calculator and tpuf-benchmark benchmarks/website/ are fixed at 10M docs.",
+    "no_additional_doc_count_curve": true,
+    "note": "No second official cold p50 at a different document_count was found for the Vector Perf calculator workload (1024-d, top_k=10, 8 QPS × 30m). Homepage calculator and tpuf-benchmark benchmarks/website/ are fixed at 10M docs. ANN v3 blog (secondary_sources) adds 100B-scale p99/QPS targets only—not a doc-count cold p50 curve.",
     "searched_at": "2026-06-05",
     "sources_checked": [
       {
@@ -93,7 +121,7 @@
       {
         "id": "ann_v3_blog",
         "url": "https://turbopuffer.com/blog/ann-v3",
-        "finding": "100B-vector scale / p99 targets; not a second published (N, cold p50) point for 10M×1024 comparison"
+        "finding": "100B×1024×f16 (~200 TiB): p99≤200 ms, >1k QPS fleet targets; roofline ~100–10k QPS; no (N, cold p50) point — see secondary_sources[ann_v3_blog]"
       }
     ],
     "same_doc_count_different_path": {

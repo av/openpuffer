@@ -57,6 +57,8 @@
 | **Artifact** | [`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json) | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json), [`50k`](../../benchmarks/results/op-scaling-50k.json), [`100k`](../../benchmarks/results/op-scaling-100k.json), [`10k-synthetic128`](../../benchmarks/results/op-scaling-10k-synthetic128.json) |
 | **Extrapolation** | N/A (single published N) | [`compare_op_scaling_to_tpuf.py`](../../benchmarks/report/compare_op_scaling_to_tpuf.py) via `make bench-compare-tpuf` |
 
+> **Footnote — [ANN v3 blog](https://turbopuffer.com/blog/ann-v3)** (updated 2026-05-05): **100B × 1024-d** fleet targets (**p99 ≤ 200 ms**, **>1k QPS**, ~**200 TiB**) are documented in `tpuf-official-reference.json` → `secondary_sources` but are **not** comparable to this report’s **100k × 128** MinIO measurements or the **10M × 1024** calculator cold **p50 874 ms** point. No additional official **doc-count → cold p50** curve was found (`scaling_curve_official.no_additional_doc_count_curve`).
+
 ---
 
 ## Measured data (cold p50, ms)
