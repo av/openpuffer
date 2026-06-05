@@ -6,6 +6,8 @@ import csv
 import math
 from pathlib import Path
 
+import pytest
+
 from compare_op_scaling_to_tpuf import (
     CANONICAL_MODEL,
     CSV_COLUMNS,
@@ -75,6 +77,10 @@ def test_build_scaling_comparison_summary() -> None:
     assert canon["model"] == "linear"
     assert 80_000 <= canon["p50_ms"] <= 95_000
     assert summary["ratios"]["cold_10m_128_vs_tpuf_cold"] == canon["ratio_vs_tpuf_cold"]
+    ingest = summary["ratios"]["ingest_docs_per_sec"]
+    assert ingest["10000"] == pytest.approx(909.09, rel=0.01)
+    assert ingest["50000"] == pytest.approx(3571.43, rel=0.01)
+    assert ingest["100000"] == pytest.approx(757.58, rel=0.01)
     assert summary["confidence"] == "low"
     assert "874" in summary["verdict_text"]
     assert summary["verdict_text"] == operator_verdict_paragraph(compute_comparison())

@@ -97,8 +97,16 @@
         "cold_100k_vs_tpuf_cold",
         "warm_10k_vs_tpuf_warm",
         "warm_100k_vs_tpuf_warm",
-        "heuristic_10m_1024_vs_tpuf_cold"
-      ]
+        "heuristic_10m_1024_vs_tpuf_cold",
+        "ingest_docs_per_sec"
+      ],
+      "properties": {
+        "ingest_docs_per_sec": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 },
+          "minProperties": 3
+        }
+      }
     },
     "confidence": { "enum": ["low", "medium", "high"] },
     "verdict_text": { "type": "string", "minLength": 80 }

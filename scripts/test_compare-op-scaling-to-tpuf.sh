@@ -161,6 +161,11 @@ if extrap < 80_000 or extrap > 95_000:
     raise SystemExit(f"canonical extrap {extrap} out of range")
 if summary["ratios"]["cold_10m_128_vs_tpuf_cold"] != canon["ratio_vs_tpuf_cold"]:
     raise SystemExit("ratio mismatch in summary")
+ingest = summary["ratios"].get("ingest_docs_per_sec") or {}
+for tier, expect in (("10000", 909.09), ("50000", 3571.43), ("100000", 757.58)):
+    got = ingest.get(tier)
+    if got is None or abs(got - expect) / expect > 0.02:
+        raise SystemExit(f"ingest_docs_per_sec[{tier}]={got} expected ~{expect}")
 if summary["confidence"] != "low":
     raise SystemExit("confidence must be low")
 if len(summary.get("openpuffer_measured", [])) < 5:

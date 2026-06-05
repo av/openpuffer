@@ -200,7 +200,7 @@ def build_scaling_comparison_summary(
     p100 = next((ms for n, ms in snap.measured_tiers if n == 100_000), None)
     warm_10k = snap.warm_ratios_vs_tpuf.get(10_000)
     warm_100k = snap.warm_ratios_vs_tpuf.get(100_000)
-    ratios: dict[str, float] = {
+    ratios: dict[str, Any] = {
         "cold_10m_128_vs_tpuf_cold": round(snap.ratio_vs_tpuf, 2),
         "heuristic_10m_1024_vs_tpuf_cold": round(extrap_10m_sqrt / tpuf_p50, 2),
     }
@@ -210,6 +210,11 @@ def build_scaling_comparison_summary(
         ratios["warm_10k_vs_tpuf_warm"] = round(warm_10k, 2)
     if warm_100k is not None:
         ratios["warm_100k_vs_tpuf_warm"] = round(warm_100k, 2)
+    ingest_rows = load_op_ingest_throughput()
+    if ingest_rows:
+        ratios["ingest_docs_per_sec"] = {
+            str(n): round(dps, 2) for n, _wall, dps in ingest_rows
+        }
     backsolve_n = backsolve_n_for_target(canonical, float(tpuf_p50))
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
