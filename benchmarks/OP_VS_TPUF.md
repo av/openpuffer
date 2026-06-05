@@ -1,6 +1,8 @@
 # openpuffer vs turbopuffer — scaling (one page)
 
-**Updated:** 2026-06-05 · **Artifacts through:** `adb3d38` · **Confidence:** low for extrapolation (both models); high for measured MinIO tiers.
+**Updated:** 2026-06-05 · **Artifacts through:** `aa4163f` · **Verified offline:** `make bench-compare-tpuf` + `./scripts/verify-op-scaling-comparison.sh` OK · **Confidence:** low for extrapolation (both models); high for measured MinIO tiers.
+
+**Start here →** one-page answer below · **Numbers:** [`scaling-comparison-summary.json`](results/scaling-comparison-summary.json) · **Verdict:** `./scripts/print-scaling-verdict.sh`
 
 ## USER ANSWER
 
@@ -96,10 +98,24 @@ make bench-verify-op-scaling
 
 ---
 
+## Artifact index
+
+| Artifact | Path |
+|----------|------|
+| openpuffer cold/warm tiers | `benchmarks/results/op-scaling-{10k,50k,100k,10k-warm,100k-warm,10k-synthetic128}.json` |
+| turbopuffer official reference | `benchmarks/results/tpuf-official-reference.json` |
+| Derived summary + CSV | `benchmarks/results/scaling-comparison-summary.json`, `scaling-comparison.csv` |
+| Compare script | `scripts/compare-op-scaling-to-tpuf.sh` · `benchmarks/report/compare_op_scaling_to_tpuf.py` |
+| Offline CI gate | `scripts/verify-op-scaling-comparison.sh` |
+| Quickstart | [`SCALING_VS_TPUF_QUICKSTART.md`](SCALING_VS_TPUF_QUICKSTART.md) |
+
+---
+
 ## Full report
 
 - **User report (tables, models, warm/ingest):** [`docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md`](../docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md)
 - **Iteration log / confidence matrix:** [`docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md`](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md)
+- **Program changelog:** [`CHANGELOG_LARGE_DATASET.md`](CHANGELOG_LARGE_DATASET.md)
 
 ---
 
