@@ -104,6 +104,31 @@
 
 ---
 
+## Dimension scaling (128 vs 1024)
+
+| Workload | Dimensions | Embedding source | Measured on openpuffer? |
+|----------|------------|------------------|-------------------------|
+| **turbopuffer (official)** | **1024** | Cohere Wikipedia (`tpuf-benchmark` / homepage calculator) | N/A (reference only) |
+| **openpuffer (scaling harness)** | **128** | Deterministic synthetic (`bench_sin_v1` / inline stress vectors) | **Yes** — §3 tiers |
+
+**Heuristics (not measured):** ANN distance work often scales ~**√d**; index footprint and brute/dot-dominated paths scale ~**linearly in d**. Ratio **1024 / 128 = 8** → multiply extrapolated or measured p50 by **√8 ≈ 2.83** (√d) or by **8** (linear-d).
+
+| Scale | Measured / extrap p50 @ **128-d** (ms) | × **√8 ≈ 2.83** → 1024-d heuristic (ms) | × **8** → linear-d heuristic (ms) |
+|-------|------------------------------------------|-------------------------------------------|-------------------------------------|
+| 10k (measured) | 96 | 272 | 768 |
+| 50k (measured) | 412 | 1,166 | 3,296 |
+| 100k (measured) | 880 | 2,490 | 7,040 |
+| 10M (canonical linear extrap) | 87,321 | 247,130 | 698,568 |
+| tpuf official @ 10M×1024 | — | **874** (measured) | **874** (measured) |
+
+**Read:** At **100k**, √d-adjusted **~2.5 s** and linear-d **~7.0 s** are still the same order as measured **880 ms** @ 128-d—not tpuf’s **874 ms** @ **10M**×1024 (different **N** and backend). At **10M** extrap, √d (**~247 s**) and linear-d (**~699 s**) sit **~283×** and **~799×** above tpuf **874 ms**.
+
+**Schema:** openpuffer accepts `[N]f32` for arbitrary **N** (no hard 128 cap in indexer). A **10k × 1024** cold smoke (`bench_cold_1k_dims_smoke`, one query) was **not** added—ingest payload is **8×** larger than 128-d tiers and needs a non-trivial harness fork (>30 lines).
+
+**Conclusion:** Without a **1024-d** bench on openpuffer, **dimension scaling cannot be confirmed**—only bounded by √d and linear-d heuristics above. Reproduce heuristics: `./scripts/compare-op-scaling-to-tpuf.sh` (`p50_10m_1024_sqrt_dim_ms`, linear-d row in §4.0).
+
+---
+
 ## 4. Extrapolation and “similar scaling?” rubric
 
 Reproduce: `./scripts/compare-op-scaling-to-tpuf.sh` ([`compare_op_scaling_to_tpuf.py`](../../benchmarks/report/compare_op_scaling_to_tpuf.py)). `EXTRAP_JSON` emits `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf` (cold extrap), `ratio_warm_10k_vs_tpuf`, `ratio_warm_100k_vs_tpuf`, `warm_ratios_vs_tpuf`, `confidence` (override: `--model=`).
@@ -165,7 +190,8 @@ make bench-op-scaling
 - [x] Canonical **linear** extrap model (no auto-switch to log_linear)
 - [x] `EXTRAP_JSON`: `canonical_model`, `ratio_vs_tpuf` (cold), `ratio_warm_*_vs_tpuf`, `warm_ratios_vs_tpuf`, `confidence`
 - [x] Reconcile docs vs superseded log_linear ~2.5× and ~81 s linear stories
-- [ ] Optional: live tpuf run; AWS L2/L3; MinIO 500k
+- [x] § Dimension scaling (128 vs 1024): √d / linear-d heuristics; 1024-d smoke skipped (heavy harness)
+- [ ] Optional: live tpuf run; AWS L2/L3; MinIO 500k; measured 10k×1024 cold
 
 ---
 
