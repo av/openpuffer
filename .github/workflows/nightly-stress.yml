@@ -5,6 +5,8 @@
 #                         Same doc count as tier l1; inline MinIO ingest, not `bench-large.sh` / `queries.json`.
 #   • large-dataset-program — comparison harness regression (G2 @ 10k + L1 shell dry-run G3–G5).
 #                         Does NOT run ignored 100k tests (that is bench-100k only).
+#                         Ends with verify-op-scaling-comparison.sh (offline op vs tpuf JSON smoke;
+#                         same gate as ci.yml op-scaling-comparison — no MinIO bench / no Docker).
 #   • stress-50k          — mid-tier v3 cold probed (50k); between CI 10k and nightly 100k.
 #   • facts-check         — optional full `facts check` after bench-100k + stress-50k (continue-on-error).
 #
@@ -132,6 +134,10 @@ jobs:
         run: |
           facts check --tags bench-large
           facts check --tags bench-tpuf
+
+      # Offline op vs tpuf scaling regression (committed JSON; mirrors ci.yml op-scaling-comparison).
+      - name: verify-op-scaling-comparison.sh (offline; no MinIO bench)
+        run: ./scripts/verify-op-scaling-comparison.sh
 
   # Does not need large-dataset-program (that job already runs bench-large + bench-tpuf facts).
   facts-check:
