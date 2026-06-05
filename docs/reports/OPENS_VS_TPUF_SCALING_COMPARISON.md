@@ -106,7 +106,7 @@
 
 ## 4. Extrapolation and “similar scaling?” rubric
 
-Reproduce: `./scripts/compare-op-scaling-to-tpuf.sh` ([`compare_op_scaling_to_tpuf.py`](../../benchmarks/report/compare_op_scaling_to_tpuf.py)). `EXTRAP_JSON` emits `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf`, `confidence` (override: `--model=`).
+Reproduce: `./scripts/compare-op-scaling-to-tpuf.sh` ([`compare_op_scaling_to_tpuf.py`](../../benchmarks/report/compare_op_scaling_to_tpuf.py)). `EXTRAP_JSON` emits `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf` (cold extrap), `ratio_warm_10k_vs_tpuf`, `ratio_warm_100k_vs_tpuf`, `warm_ratios_vs_tpuf`, `confidence` (override: `--model=`).
 
 ### 4.0 Extrapolation (canonical **linear**)
 
@@ -163,7 +163,7 @@ make bench-op-scaling
 - [x] Unified v3 + release across 10k / 50k / 100k cold + 10k / 100k warm
 - [x] Tier refresh @ `7f7c0f5` (96 / 412 / 880 ms)
 - [x] Canonical **linear** extrap model (no auto-switch to log_linear)
-- [x] `EXTRAP_JSON`: `canonical_model`, `ratio_vs_tpuf`, `confidence`
+- [x] `EXTRAP_JSON`: `canonical_model`, `ratio_vs_tpuf` (cold), `ratio_warm_*_vs_tpuf`, `warm_ratios_vs_tpuf`, `confidence`
 - [x] Reconcile docs vs superseded log_linear ~2.5× and ~81 s linear stories
 - [ ] Optional: live tpuf run; AWS L2/L3; MinIO 500k
 

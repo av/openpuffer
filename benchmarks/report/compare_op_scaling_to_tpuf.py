@@ -88,6 +88,10 @@ def load_tpuf_cold_p50() -> int:
     return int(load_tpuf_reference()["latencies_ms"]["cold"]["p50"])
 
 
+def load_tpuf_warm_p50() -> int:
+    return int(load_tpuf_reference()["latencies_ms"]["warm"]["p50"])
+
+
 def load_tpuf_write_commit_ms_claim() -> int:
     ref = load_tpuf_reference()
     write_path = ref.get("write_path") or {}
@@ -121,6 +125,36 @@ def _read_cold_json(path: Path) -> MeasuredPoint | None:
     n = int(row["namespace_docs"])
     label = path.stem.removeprefix("op-scaling-")
     return MeasuredPoint(n=n, p50_ms=float(row["p50_ms"]), label=label)
+
+
+def _read_warm_json(path: Path) -> MeasuredPoint | None:
+    if not path.is_file():
+        return None
+    row = json.loads(path.read_text(encoding="utf-8"))
+    if row.get("path") != "warm":
+        return None
+    n = int(row["namespace_docs"])
+    label = path.stem.removeprefix("op-scaling-")
+    return MeasuredPoint(n=n, p50_ms=float(row["p50_ms"]), label=label)
+
+
+def load_op_warm_points() -> list[MeasuredPoint]:
+    """Warm tiers from op-scaling-*-warm.json (10k, 100k)."""
+    points: list[MeasuredPoint] = []
+    for path in sorted(RESULTS.glob("op-scaling-*-warm.json")):
+        mp = _read_warm_json(path)
+        if mp is not None:
+            points.append(mp)
+    points.sort(key=lambda p: p.n)
+    return points
+
+
+def warm_ratios_vs_tpuf(
+    warm_points: list[MeasuredPoint], tpuf_warm_p50: int
+) -> dict[int, float]:
+    if tpuf_warm_p50 <= 0:
+        return {}
+    return {p.n: p.p50_ms / tpuf_warm_p50 for p in warm_points}
 
 
 def load_op_scaling_points() -> list[MeasuredPoint]:
@@ -413,7 +447,10 @@ def fmt_n(n: float) -> str:
 @dataclass(frozen=True)
 class ComparisonSnapshot:
     tpuf_p50: int
+    tpuf_warm_p50: int
     measured_tiers: list[tuple[int, float]]  # (N, p50_ms) primary tiers only
+    warm_tiers: list[tuple[int, float]]  # (N, p50_ms) warm tiers only
+    warm_ratios_vs_tpuf: dict[int, float]  # N → op warm p50 / tpuf warm p50
     extrap_10m_128: float
     extrap_10m_sqrt: float
     canonical_model: str
@@ -425,7 +462,9 @@ class ComparisonSnapshot:
 def compute_comparison(model_override: str | None = None) -> ComparisonSnapshot:
     """Load committed JSON, fit models, return summary for verdict/charts."""
     tpuf_p50 = load_tpuf_cold_p50()
+    tpuf_warm_p50 = load_tpuf_warm_p50()
     points = load_op_scaling_points()
+    warm_points = load_op_warm_points()
     collapsed = collapse_by_n(points)
     models = [
         fit_power_law(collapsed),
@@ -436,10 +475,14 @@ def compute_comparison(model_override: str | None = None) -> ComparisonSnapshot:
     power = next(m for m in models if m.name == "power_law")
     primary = [(n, ms) for n, ms in collapsed if n in (10_000, 50_000, 100_000)]
     primary.sort(key=lambda t: t[0])
+    warm_tiers = [(p.n, p.p50_ms) for p in warm_points]
     extrap_128 = canonical.predict(N_REF)
     return ComparisonSnapshot(
         tpuf_p50=tpuf_p50,
+        tpuf_warm_p50=tpuf_warm_p50,
         measured_tiers=primary,
+        warm_tiers=warm_tiers,
+        warm_ratios_vs_tpuf=warm_ratios_vs_tpuf(warm_points, tpuf_warm_p50),
         extrap_10m_128=extrap_128,
         extrap_10m_sqrt=dim_scale_sqrt(extrap_128),
         canonical_model=canonical.name,
@@ -483,12 +526,23 @@ def operator_verdict_paragraph(
             f"(WAL-limited upsert+index wait) vs turbopuffer's published "
             f"≤~{tpuf_commit_ms} ms durable write-commit latency (not the same throughput model);"
         )
+    warm_clause = ""
+    if s.warm_tiers:
+        warm_parts = [
+            f"{fmt_n(n)} warm={ms:.0f}ms (~{s.warm_ratios_vs_tpuf[n]:.1f}× tpuf {s.tpuf_warm_p50}ms @ 10M)"
+            for n, ms in s.warm_tiers
+            if n in s.warm_ratios_vs_tpuf
+        ]
+        warm_clause = (
+            f" Warm path (POST /warm + eventual, MinIO disk cache): {', '.join(warm_parts)}—"
+            f"**not comparable** to tpuf fleet NVMe @ 10M×1024;"
+        )
     return (
         f"{coincidence}if doc-count scaling on this harness held to 10M, canonical "
         f"{s.canonical_model} extrapolation gives ~{s.extrap_10m_128:.0f} ms @ 10M×128 "
-        f"(~{s.ratio_vs_tpuf:.1f}× tpuf—{s.confidence} confidence, unmeasured); "
+        f"(~{s.ratio_vs_tpuf:.1f}× tpuf cold {s.tpuf_p50} ms—{s.confidence} confidence, unmeasured); "
         f"tiers ({tier_str}) imply power-law β≈{s.power_beta:.2f}, "
-        f"√dim heuristic ~{s.extrap_10m_sqrt:.0f} ms (~{ratio_sqrt:.0f}×).{ingest_clause} "
+        f"√dim heuristic ~{s.extrap_10m_sqrt:.0f} ms (~{ratio_sqrt:.0f}× cold).{warm_clause}{ingest_clause} "
         f"{ballpark}. Treat as scaling-shape signal only—do not read 100k≈874 ms as parity; "
         "10M openpuffer is unmeasured."
     )
@@ -623,7 +677,10 @@ def main() -> int:
         return 0
 
     tpuf_p50 = load_tpuf_cold_p50()
+    tpuf_warm_p50 = load_tpuf_warm_p50()
     points = load_op_scaling_points()
+    warm_points = load_op_warm_points()
+    warm_ratio_map = warm_ratios_vs_tpuf(warm_points, tpuf_warm_p50)
     collapsed = collapse_by_n(points)
 
     models = [
@@ -651,11 +708,18 @@ def main() -> int:
     backsolve_canonical = backsolve[canonical.name]
 
     print("=== openpuffer scaling → turbopuffer 10M reference ===\n")
-    print(f"tpuf official cold p50: {tpuf_p50} ms (10M × 1024, GCP, 8 QPS × 30m)\n")
+    print(f"tpuf official cold p50: {tpuf_p50} ms (10M × 1024, GCP, 8 QPS × 30m)")
+    print(f"tpuf official warm p50: {tpuf_warm_p50} ms (10M × 1024, hint_cache_warm)\n")
 
     print("Measured openpuffer cold p50 (MinIO, release + v3):")
     for p in points:
         print(f"  {p.n:>7} docs × 128-d ({p.label}): {p.p50_ms:.0f} ms")
+    if warm_points:
+        print("\nMeasured openpuffer warm p50 (POST /warm + eventual, disk cache):")
+        for p in warm_points:
+            ratio = warm_ratio_map.get(p.n)
+            ratio_s = f" (~{ratio:.1f}× tpuf warm {tpuf_warm_p50} ms)" if ratio else ""
+            print(f"  {p.n:>7} docs × 128-d ({p.label}): {p.p50_ms:.0f} ms{ratio_s}")
     print(f"\nCollapsed tiers for regression (mean @ duplicate N): {collapsed}\n")
 
     print("### Model comparison (fit on collapsed tiers)")
@@ -749,9 +813,27 @@ def main() -> int:
     print("### Are we in the same ballpark vs tpuf 874 ms?")
     print(ballpark_verdict(extrap_10m_sqrt, tpuf_p50))
     print()
-    print(f"Canonical 10M×128 / tpuf: {ratio_vs_tpuf:.1f}× (confidence: {confidence})")
-    print(f"√dim 10M×1024 / tpuf: {extrap_10m_sqrt / tpuf_p50:.1f}×")
-    print(f"Linear-d 10M×1024 / tpuf: {extrap_10m_linear_d / tpuf_p50:.1f}×")
+    print(f"Canonical 10M×128 / tpuf cold: {ratio_vs_tpuf:.1f}× (confidence: {confidence})")
+    print(f"√dim 10M×1024 / tpuf cold: {extrap_10m_sqrt / tpuf_p50:.1f}×")
+    print(f"Linear-d 10M×1024 / tpuf cold: {extrap_10m_linear_d / tpuf_p50:.1f}×")
+    if warm_points:
+        print("\n### Side-by-side (warm p50)")
+        print("| System | Docs × dims | Environment | p50 (ms) | vs tpuf warm |")
+        print("|--------|-------------|-------------|----------|--------------|")
+        print(
+            f"| turbopuffer (official) | 10M × 1024 | GCP managed | "
+            f"**{tpuf_warm_p50}** | 1.0× |"
+        )
+        for p in warm_points:
+            ratio = warm_ratio_map[p.n]
+            print(
+                f"| openpuffer (measured) | {p.n:,} × 128 | MinIO warm | "
+                f"**{p.p50_ms:.0f}** | **{ratio:.1f}×** |"
+            )
+        print(
+            "\nWarm ratios use tpuf official 14 ms @ 10M×1024; openpuffer tiers are "
+            "10k/100k × 128 on MinIO—not comparable N/D/backend."
+        )
 
     md = markdown_appendix(
         points,
@@ -806,6 +888,19 @@ def main() -> int:
         "extrap_10m_1024_heuristic_p50_ms": round(extrap_10m_sqrt),
         "extrap_10m_1024_linear_d_estimate_p50_ms": round(extrap_10m_linear_d),
         "tpuf_official_cold_p50_ms": tpuf_p50,
+        "tpuf_official_warm_p50_ms": tpuf_warm_p50,
+        "warm_measured_points": [
+            {"n": p.n, "p50_ms": p.p50_ms, "label": p.label} for p in warm_points
+        ],
+        "warm_ratios_vs_tpuf": {
+            str(n): round(r, 2) for n, r in sorted(warm_ratio_map.items())
+        },
+        "ratio_warm_10k_vs_tpuf": round(warm_ratio_map[10_000], 2)
+        if 10_000 in warm_ratio_map
+        else None,
+        "ratio_warm_100k_vs_tpuf": round(warm_ratio_map[100_000], 2)
+        if 100_000 in warm_ratio_map
+        else None,
         "ratio_heuristic_vs_tpuf": round(extrap_10m_sqrt / tpuf_p50, 2),
         "ratio_linear_d_vs_tpuf": round(extrap_10m_linear_d / tpuf_p50, 2),
         "backsolve_n_at_tpuf_p50": {

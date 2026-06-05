@@ -109,6 +109,16 @@ xychart-beta
     bar [87321, 874]
 ```
 
+### Mermaid — warm path (measured openpuffer vs tpuf @ 10M)
+
+```mermaid
+xychart-beta
+    title "Warm p50 (ms) — openpuffer 10k/100k vs tpuf official @ 10M"
+    x-axis ["op 10k×128", "op 100k×128", "tpuf 10M×1024"]
+    y-axis "p50 (ms)" 0 --> 900
+    bar [112, 827, 14]
+```
+
 ### ASCII (terminal / plain-text)
 
 ```
@@ -327,4 +337,4 @@ Canonical model: linear — extrap 10M×128 = 87321 ms (ratio_vs_tpuf ~100×, co
 Verdict: ./scripts/print-scaling-verdict.sh — ingest 10k=909 docs/s, 50k=3571, 100k=758
 ```
 
-Full tables: run `make bench-compare-tpuf`. `EXTRAP_JSON` fields: `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf`, `confidence` (override: `--model=`). See `benchmarks/report/compare_op_scaling_to_tpuf.py`.
+Full tables: run `make bench-compare-tpuf`. `EXTRAP_JSON` fields: `canonical_model`, `extrap_p50_10m_128_ms`, `ratio_vs_tpuf` (cold), `ratio_warm_10k_vs_tpuf`, `ratio_warm_100k_vs_tpuf`, `warm_ratios_vs_tpuf`, `tpuf_official_warm_p50_ms`, `confidence` (override: `--model=`). See `benchmarks/report/compare_op_scaling_to_tpuf.py`.

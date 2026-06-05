@@ -8,7 +8,9 @@ cd "$ROOT"
 for f in benchmarks/results/tpuf-official-reference.json \
   benchmarks/results/op-scaling-10k.json \
   benchmarks/results/op-scaling-50k.json \
-  benchmarks/results/op-scaling-100k.json; do
+  benchmarks/results/op-scaling-100k.json \
+  benchmarks/results/op-scaling-10k-warm.json \
+  benchmarks/results/op-scaling-100k-warm.json; do
   if [[ ! -f "$f" ]]; then
     echo "test_compare-op-scaling-to-tpuf: missing required $f" >&2
     exit 1
@@ -33,6 +35,12 @@ grep -q 'extrap 10M × 128' "$out" \
 
 grep -q 'Canonical extrapolation model: \*\*linear\*\*' "$out" \
   || { echo "test_compare-op-scaling-to-tpuf: expected canonical linear model line" >&2; exit 1; }
+
+grep -q 'tpuf official warm p50: 14 ms' "$out" \
+  || { echo "test_compare-op-scaling-to-tpuf: expected tpuf warm 14 ms in output" >&2; exit 1; }
+
+grep -q 'Side-by-side (warm p50)' "$out" \
+  || { echo "test_compare-op-scaling-to-tpuf: expected warm side-by-side table" >&2; exit 1; }
 
 extrap_line="$(grep '^EXTRAP_JSON=' "$out" || true)"
 if [[ -z "$extrap_line" ]]; then
@@ -84,10 +92,26 @@ if not isinstance(notes, list) or len(notes) < 2:
     raise SystemExit("expected notes[] with stability/outlier caveats in EXTRAP_JSON")
 if not any("SUPERSEDED" in str(n) for n in notes):
     raise SystemExit("expected SUPERSEDED outlier note in EXTRAP_JSON notes")
+tpuf_warm = int(data.get("tpuf_official_warm_p50_ms", 0))
+if tpuf_warm != 14:
+    raise SystemExit(f"tpuf_official_warm_p50_ms={tpuf_warm}, want 14")
+warm_pts = data.get("warm_measured_points")
+if not isinstance(warm_pts, list) or len(warm_pts) < 2:
+    raise SystemExit("expected warm_measured_points with 10k and 100k tiers")
+ratio_10k = float(data.get("ratio_warm_10k_vs_tpuf", 0))
+ratio_100k = float(data.get("ratio_warm_100k_vs_tpuf", 0))
+if ratio_10k < 7 or ratio_10k > 9:
+    raise SystemExit(f"ratio_warm_10k_vs_tpuf={ratio_10k}, want ~8 (112/14)")
+if ratio_100k < 55 or ratio_100k > 65:
+    raise SystemExit(f"ratio_warm_100k_vs_tpuf={ratio_100k}, want ~59 (827/14)")
+warm_ratios = data.get("warm_ratios_vs_tpuf", {})
+if warm_ratios.get("10000") != ratio_10k or warm_ratios.get("100000") != ratio_100k:
+    raise SystemExit("warm_ratios_vs_tpuf must match ratio_warm_* fields")
 print(
     f"test_compare-op-scaling-to-tpuf: EXTRAP_JSON ok "
     f"(canonical={data['canonical_model']}, 10M×128={extrap_128} ms, "
-    f"ratio_vs_tpuf={ratio}, heuristic={extrap_1024} ms)"
+    f"ratio_vs_tpuf={ratio}, warm_10k={ratio_10k}×, warm_100k={ratio_100k}×, "
+    f"heuristic={extrap_1024} ms)"
 )
 PY
 

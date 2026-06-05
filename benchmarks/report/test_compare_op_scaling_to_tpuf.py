@@ -10,7 +10,10 @@ from compare_op_scaling_to_tpuf import (
     compute_comparison,
     dim_scale_sqrt,
     fit_power_law,
+    load_op_warm_points,
+    load_tpuf_warm_p50,
     operator_verdict_paragraph,
+    warm_ratios_vs_tpuf,
 )
 
 
@@ -53,3 +56,18 @@ def test_canonical_model_linear_on_committed_json() -> None:
     assert 80_000 <= snap.extrap_10m_128 <= 95_000
     assert 95 <= snap.ratio_vs_tpuf <= 105
     assert snap.confidence == "low"
+
+
+def test_warm_metrics_on_committed_json() -> None:
+    assert load_tpuf_warm_p50() == 14
+    warm = load_op_warm_points()
+    assert len(warm) >= 2
+    ratios = warm_ratios_vs_tpuf(warm, 14)
+    assert 7 <= ratios[10_000] <= 9
+    assert 55 <= ratios[100_000] <= 65
+    snap = compute_comparison()
+    assert snap.tpuf_warm_p50 == 14
+    assert snap.warm_ratios_vs_tpuf[10_000] == ratios[10_000]
+    para = operator_verdict_paragraph(snap)
+    assert "warm=" in para.lower() or "warm " in para.lower()
+    assert "14" in para
