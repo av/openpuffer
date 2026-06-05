@@ -1,6 +1,6 @@
 # openpuffer vs turbopuffer — scaling (one page)
 
-**Updated:** 2026-06-05 · **Artifacts through:** `517f351` · **Confidence:** low for extrapolation; high for measured MinIO tiers.
+**Updated:** 2026-06-05 · **Artifacts through:** `b73cc02` · **Confidence:** low for extrapolation (both models); high for measured MinIO tiers.
 
 ---
 
@@ -24,7 +24,7 @@
 - **Doc-count shape (openpuffer only):** cold p50 **96 → 412 → 880 ms** (10k → 50k → 100k) implies power-law **β ≈ 0.95**—near-linear in log–log space on this harness.
 - **vs turbopuffer:** only **one** official cold point at 10M exists; no published (N, p50) curve to fit against.
 - **Accidental overlap:** 100k cold p50 **880 ms** ≈ tpuf **874 ms** (~**1.01×**) — **not parity** (100× fewer docs, 8× fewer dims, different backend/load).
-- **If linear extrapolation held to 10M×128:** **~87 s** p50 (**~100×** tpuf cold 874 ms). √dim heuristic @ 10M×1024: **~247 s** (**~283×**).
+- **10M×128 extrapolation (unmeasured, low confidence):** **linear** **~87 s** p50 (**~100×** tpuf 874 ms); **power-law** **~67 s** (**~77×**). **Canonical** = linear (`recommended_extrapolation` in summary JSON). √dim heuristic @ 10M×1024: **~247 s** (**~283×**).
 - **Warm:** 10k **112 ms** (~8× tpuf 14 ms @ 10M); 100k **827 ms** (~59×)—not comparable to fleet NVMe @ 10M×1024.
 - **Ingest:** openpuffer **909 / 3571 / 758 docs/s** (WAL-limited); tpuf publishes **≤~200 ms durable write-commit** (different model).
 
@@ -43,8 +43,9 @@
 | **openpuffer** | 100k | 100,000 | 128 | cold | **880** | 900 | 900 | `op-scaling-100k.json` |
 | **openpuffer** | 10k | 10,000 | 128 | warm | **112** | 123 | 123 | `op-scaling-10k-warm.json` |
 | **openpuffer** | 100k | 100,000 | 128 | warm | **827** | 876 | 876 | `op-scaling-100k-warm.json` |
-| **openpuffer (extrap.)** | 10M | 10,000,000 | 128 | cold | **87321** | — | — | linear model; unmeasured |
-| **openpuffer (heuristic)** | 10M | 10,000,000 | 1024 | cold | **246981** | — | — | √dim from 128-d tiers |
+| **openpuffer (extrap., canonical)** | 10M | 10,000,000 | 128 | cold | **87321** (~87 s) | — | — | linear; **~100×** tpuf; low confidence |
+| **openpuffer (extrap., alt.)** | 10M | 10,000,000 | 128 | cold | **66981** (~67 s) | — | — | power-law β≈0.95; **~77×** tpuf; low confidence |
+| **openpuffer (heuristic)** | 10M | 10,000,000 | 1024 | cold | **246981** (~247 s) | — | — | √dim from 128-d tiers |
 
 Structured summary: `benchmarks/results/scaling-comparison-summary.json` · CSV: `scaling-comparison.csv`.
 
@@ -86,4 +87,4 @@ These numbers **do not** predict openpuffer on AWS/GCP or turbopuffer on your la
 | Query load | 7 samples, cold cache flush | 8 QPS × 30 minutes |
 | ANN v3 blog (100B) | not comparable | p99/QPS targets only—no doc-count p50 curve |
 
-Do **not** cite **100k ≈ 874 ms** as production parity. Extrapolation to 10M is **unmeasured** and **low confidence**.
+Do **not** cite **100k ≈ 874 ms** as production parity. Extrapolation to 10M is **unmeasured**; linear (~87 s) and power-law (~67 s) both **low confidence**—use **linear** as canonical only for reporting consistency.
