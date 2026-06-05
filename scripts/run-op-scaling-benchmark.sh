@@ -3,6 +3,10 @@
 #
 # Runs 10k / 50k / 100k cold and 10k / 100k warm; writes benchmarks/results/op-scaling-*.json.
 #
+# Post-run validation (validate-benchmark-json.sh) gates op-scaling-100k.json cold p50:
+#   - FAIL if p50 > 2000 ms (likely resource contention — re-run on a quiet host)
+#   - WARN if p50 < 200 ms (suspiciously fast — check cache/warm contamination)
+#
 # Usage:
 #   ./scripts/run-op-scaling-benchmark.sh           # all tiers
 #   ./scripts/run-op-scaling-benchmark.sh 10k warm       # subset

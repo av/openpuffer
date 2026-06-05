@@ -374,11 +374,22 @@ def validate_op_scaling_cross_fields(path: Path, data: dict) -> None:
                 f"{path}: {path.name} requires ingest_wall_secs and docs_per_sec"
             )
     if path.name == "op-scaling-100k.json" and data.get("path") == "cold":
+        op_p50 = int(data.get("p50_ms") or 0)
+        if op_p50 > 2000:
+            raise SystemExit(
+                f"{path}: cold p50 {op_p50} ms > 2000 ms — "
+                "likely resource contention - re-run"
+            )
+        if 0 < op_p50 < 200:
+            print(
+                f"validate-benchmark-json: WARNING {path}: cold p50 {op_p50} ms < 200 ms — "
+                "suspiciously fast",
+                file=sys.stderr,
+            )
         tpuf_path = path.parent / "tpuf-official-reference.json"
         if tpuf_path.is_file():
             tpuf = json.loads(tpuf_path.read_text())
             tp_cold = int((tpuf.get("latencies_ms") or {}).get("cold", {}).get("p50", 0))
-            op_p50 = int(data.get("p50_ms") or 0)
             if tp_cold == 874 and op_p50 > 0:
                 ratio = max(op_p50, tp_cold) / min(op_p50, tp_cold)
                 if ratio > 2.0:
