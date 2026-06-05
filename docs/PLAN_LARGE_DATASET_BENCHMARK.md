@@ -507,6 +507,7 @@ Decisions operators must still make (or accept defaults below) before G3–G5 ar
 | MinIO schema example JSON (100k full + 10k CI fast path) | [x] | `run-minio-large-schema-example.sh` (`--warm` default; `--docs 10000` in CI); `large-aws-l1-schema-minio*.example.json`, `ingest-large-l1-schema-minio*.example.json`; facts `3np`, `ccb`; `833e1bc`, `33a14d1` |
 | G5 exemplar report (`NOT MEASURED`) | [x] skeleton / [ ] measured | `docs/reports/BENCHMARK_VS_TURBOPUFFER_EXEMPLAR.md`; fact `ye8`; live: `./scripts/render-report.sh` without `--dry-run` + [COMPARISON.md](COMPARISON.md) L1 rows (`5ec9851` placeholder) |
 | `facts check --tags "ann or cold"` | [x] verify on change | Run before release if ann/cold gates touched (2026-06-04) |
+| Scaling vs tpuf official reference (MinIO) — **not** substitute for G4 live `tpuf-l1.json` | [x] offline | [BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md); `make bench-compare-tpuf`; [`verify-op-scaling-comparison.sh`](../scripts/verify-op-scaling-comparison.sh) (nested in `verify-large-benchmark-program.sh`) |
 
 **Offline harness complete (operator handoff)** — `./scripts/verify-large-benchmark-program.sh` exit **0** @ **`7a38d7f`** (2026-06-04T02:54:51Z). Every checklist row is `[x]` except **live** G3/G4/3.3 and **measured** G5 (credentials + EC2). See [§ Harness audit](#harness-audit-operator-handoff).
 
