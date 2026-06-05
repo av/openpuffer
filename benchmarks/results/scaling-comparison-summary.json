@@ -1,7 +1,7 @@
 {
   "schema_version": "scaling_comparison_summary_v1",
-  "timestamp_utc": "2026-06-05T00:38:38Z",
-  "git_commit": "2e6b01e2d18faa56752f58232d46ecde909c6691",
+  "timestamp_utc": "2026-06-05T00:44:39Z",
+  "git_commit": "af5f6a58ec64f9202abf7f8ab227ef87f5c82c07",
   "tpuf_official": {
     "namespace_docs": 10000000,
     "dimensions": 1024,
