@@ -20,7 +20,7 @@
 - **openpuffer (measured, MinIO):** cold p50 **96 / 412 / 880 ms** at **10k / 50k / 100k × 128**; synthetic-128 @ 10k: **97 ms** — [`op-scaling-*.json`](../../benchmarks/results/op-scaling-10k.json).
 - **openpuffer (extrapolated to 10M, canonical linear):** **~87 s** p50 @ 10M×128 (**~100×** tpuf **874 ms** on doc count alone); √dim heuristic → **~247 s** (**~283×**); linear-d estimate → **~699 s** (**~799×**). **Not** validated on AWS or 1024-d. Back-solve **~100k docs** for 874 ms (linear).
 - **Write path (not comparable):** ingest **909 / 3571 / 758 docs/s** @ 10k/50k/100k — **does not** track query scaling; **~1 WAL commit/s** caps 100k effective ingest; tpuf comparison in this report is **query latency only**.
-- **Superseded conclusions (do not cite):** log_linear on **111/525/813** tiers → **~2.2 s** @ 10M (~**2.5×** tpuf); older linear on **86/400/824** → **~81 s** (~**93×**); anecdotal **~7 s** @ 100k—not in committed JSON.
+- **Canonical only:** cold **96 / 412 / 880 ms** @ 10k/50k/100k×128; **100k≈874 ms** vs tpuf @ 10M is coincidence not parity; linear extrap **87321 ms (~100×)** @ 10M×128 (`canonical_model: linear` in summary JSON).
 
 **One-sentence answer:** **100k p50 ~880 ms ≈ tpuf 874 ms @ 10M is not comparable**; measured tiers **96 / 412 / 880 ms** grow with doc count (β ≈ 0.95); **linear** extrapolation → **~87 s** @ **10M × 128** (~**100×** tpuf)—**not** parity on AWS/1024-d/10M; warm **827 ms** @ 100k (~**59×** tpuf **14 ms**); 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
 
@@ -313,7 +313,7 @@ Leave-one-out on a **linear** fit (collapsed tiers) predicts **~770 ms** @ 100k;
 4. **Load model** — 7 sequential cold samples, not **8 QPS × 30 min**; tail latency and queueing differ.
 5. **Doc-count curve for tpuf** — only **one** official cold point at 10M; cannot fit β for turbopuffer from public data.
 6. **500k tier skipped** — MinIO L2 ingest + index ≫ 45 min on dev host; not in fit set.
-7. **Extrapolation to 10M** — unmeasured; **canonical linear** fixed in compare script (~**87 s** @ 10M×128 on 96/412/880). Prior auto best-by-R² swung **~2 s** (log_linear on 111/525/813) vs **~87 s**—use `EXTRAP_JSON.canonical_model` only for headlines.
+7. **Extrapolation to 10M** — unmeasured; **canonical linear** fixed in compare script (**87321 ms**, **~100×** @ 10M×128 on **96/412/880**). Use `EXTRAP_JSON.canonical_model` only for headlines.
 8. **turbopuffer official** — **one** cold point @ 10M; extrapolation uncertainty dominates any ratio vs **874 ms**.
 9. **100k rerun variance** — ±6% p50 across three runs; not instability at 10× level.
 
@@ -353,7 +353,7 @@ Several reasons, all documented in committed JSON and git history:
 
 1. **Debug vs release** — early sweeps used non-release builds; current artifacts use `cargo --release` and `OPENPUFFER_ANN_VERSION=3`.
 2. **100k tier jitter** — reruns landed **813 / 857 / 880 / 906 ms** (σ≈38 ms, ~±4%); committed value is refresh **880 ms** @ `7f7c0f5`, not a single outlier at 10× scale.
-3. **Superseded tiers** — older committed rows (**86/400/824**, then **111/525/813**) changed extrapolation headlines (e.g. log_linear once implied **~2 s** @ 10M); use **96/412/880** and `canonical_model: linear` only.
+3. **Tier refresh** — committed cold tiers are **96/412/880 ms**; extrap headlines use `canonical_model: linear` → **87321 ms (~100×)** only.
 4. **Anecdotal outlier** — ~7 s @ 100k was **not** in committed JSON; ignore for citations.
 
 ### What would make this fair?
