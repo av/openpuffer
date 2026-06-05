@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import csv
 import math
+from pathlib import Path
 
 from compare_op_scaling_to_tpuf import (
     CANONICAL_MODEL,
+    CSV_COLUMNS,
     SUMMARY_SCHEMA_VERSION,
     ballpark_verdict,
+    build_scaling_comparison_csv_rows,
     build_scaling_comparison_summary,
     compute_comparison,
     dim_scale_sqrt,
@@ -16,6 +20,7 @@ from compare_op_scaling_to_tpuf import (
     load_tpuf_warm_p50,
     operator_verdict_paragraph,
     warm_ratios_vs_tpuf,
+    write_scaling_comparison_csv,
 )
 
 
@@ -73,6 +78,51 @@ def test_build_scaling_comparison_summary() -> None:
     assert summary["confidence"] == "low"
     assert "874" in summary["verdict_text"]
     assert summary["verdict_text"] == operator_verdict_paragraph(compute_comparison())
+
+
+def test_build_scaling_comparison_csv_rows() -> None:
+    rows = build_scaling_comparison_csv_rows()
+    assert len(rows) == 9  # 2 tpuf + 6 measured + 1 extrap
+    assert list(rows[0].keys()) == list(CSV_COLUMNS)
+    tpuf_cold = next(
+        r for r in rows if r["system"] == "turbopuffer" and r["cache"] == "cold"
+    )
+    assert tpuf_cold["tier"] == "10m"
+    assert tpuf_cold["docs"] == "10000000"
+    assert tpuf_cold["dims"] == "1024"
+    assert tpuf_cold["p50"] == "874"
+    assert tpuf_cold["extrapolated"] == "false"
+    extrap = next(r for r in rows if r["extrapolated"] == "true")
+    assert extrap["system"] == "openpuffer"
+    assert extrap["tier"] == "10m-extrap"
+    assert extrap["docs"] == "10000000"
+    assert extrap["dims"] == "128"
+    assert extrap["cache"] == "cold"
+    assert extrap["p90"] == ""
+    assert extrap["p99"] == ""
+    assert 80_000 <= int(extrap["p50"]) <= 95_000
+    assert extrap["source"].startswith("compare_op_scaling_to_tpuf.py:linear@10M")
+    measured = [r for r in rows if r["system"] == "openpuffer" and r["extrapolated"] == "false"]
+    assert len(measured) == 6
+    assert {r["tier"] for r in measured} == {
+        "10k",
+        "10k-synthetic128",
+        "50k",
+        "100k",
+        "10k-warm",
+        "100k-warm",
+    }
+
+
+def test_write_scaling_comparison_csv(tmp_path: Path) -> None:
+    out = tmp_path / "scaling-comparison.csv"
+    write_scaling_comparison_csv(path=out)
+    with out.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        assert reader.fieldnames == list(CSV_COLUMNS)
+        rows = list(reader)
+    assert len(rows) == 9
+    assert sum(1 for r in rows if r["extrapolated"] == "true") == 1
 
 
 def test_warm_metrics_on_committed_json() -> None:

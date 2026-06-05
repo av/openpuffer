@@ -16,6 +16,11 @@ make bench-compare-tpuf
 python3 benchmarks/report/compare_op_scaling_to_tpuf.py --write-summary
 ./scripts/validate-benchmark-json.sh benchmarks/results/scaling-comparison-summary.json
 
+# 2c. Export spreadsheet-friendly CSV (tpuf official + all op tiers + 10M extrap row)
+python3 benchmarks/report/compare_op_scaling_to_tpuf.py --csv
+# → benchmarks/results/scaling-comparison.csv
+# Columns: system, tier, docs, dims, cache, p50, p90, p99, source, extrapolated
+
 # 3. Offline CI gate on committed artifacts (schema + compare smoke; no Docker)
 make bench-verify-op-scaling
 

@@ -148,4 +148,33 @@ print(
 )
 PY
 
+if ! python3 benchmarks/report/compare_op_scaling_to_tpuf.py --csv >/dev/null; then
+  echo "test_compare-op-scaling-to-tpuf: --csv failed" >&2
+  exit 1
+fi
+
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+csv_path = Path("benchmarks/results/scaling-comparison.csv")
+with csv_path.open(encoding="utf-8", newline="") as fh:
+    rows = list(csv.DictReader(fh))
+if len(rows) != 9:
+    raise SystemExit(f"expected 9 CSV rows, got {len(rows)}")
+extrap = [r for r in rows if r["extrapolated"] == "true"]
+if len(extrap) != 1 or extrap[0]["tier"] != "10m-extrap":
+    raise SystemExit("expected single 10m-extrap row with extrapolated=true")
+tpuf = [r for r in rows if r["system"] == "turbopuffer"]
+if len(tpuf) != 2 or {r["cache"] for r in tpuf} != {"cold", "warm"}:
+    raise SystemExit("expected turbopuffer cold+warm official rows")
+measured = [r for r in rows if r["system"] == "openpuffer" and r["extrapolated"] == "false"]
+if len(measured) != 6:
+    raise SystemExit(f"expected 6 measured openpuffer rows, got {len(measured)}")
+p50 = int(extrap[0]["p50"])
+if p50 < 80_000 or p50 > 95_000:
+    raise SystemExit(f"extrap p50={p50} out of range")
+print(f"test_compare-op-scaling-to-tpuf: scaling-comparison.csv ok ({len(rows)} rows)")
+PY
+
 echo "test_compare-op-scaling-to-tpuf: OK"

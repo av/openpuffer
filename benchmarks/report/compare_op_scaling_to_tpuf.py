@@ -17,6 +17,7 @@ Usage:
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --verdict-only
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --write-summary
+  python3 benchmarks/report/compare_op_scaling_to_tpuf.py --csv
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --model=log_linear
   ./scripts/compare-op-scaling-to-tpuf.sh
   ./scripts/print-scaling-verdict.sh
@@ -27,6 +28,7 @@ Writes ``benchmarks/results/scaling-comparison-summary.json`` on every full run
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import subprocess
@@ -40,7 +42,20 @@ ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "benchmarks" / "results"
 TPUF_REF = RESULTS / "tpuf-official-reference.json"
 SUMMARY_PATH = RESULTS / "scaling-comparison-summary.json"
+CSV_PATH = RESULTS / "scaling-comparison.csv"
 SUMMARY_SCHEMA_VERSION = "scaling_comparison_summary_v1"
+CSV_COLUMNS = (
+    "system",
+    "tier",
+    "docs",
+    "dims",
+    "cache",
+    "p50",
+    "p90",
+    "p99",
+    "source",
+    "extrapolated",
+)
 DIM_REF = 1024
 DIM_OP = 128
 N_REF = 10_000_000
@@ -225,6 +240,112 @@ def write_scaling_comparison_summary(
 ) -> Path:
     summary = build_scaling_comparison_summary(model_override)
     path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _csv_row(
+    *,
+    system: str,
+    tier: str,
+    docs: int,
+    dims: int,
+    cache: str,
+    p50: int | float | None,
+    p90: int | float | None,
+    p99: int | float | None,
+    source: str,
+    extrapolated: bool,
+) -> dict[str, str]:
+    def cell(v: int | float | None) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        return str(int(v)) if isinstance(v, float) else str(v)
+
+    return {
+        "system": system,
+        "tier": tier,
+        "docs": str(docs),
+        "dims": str(dims),
+        "cache": cache,
+        "p50": cell(p50),
+        "p90": cell(p90),
+        "p99": cell(p99),
+        "source": source,
+        "extrapolated": "true" if extrapolated else "false",
+    }
+
+
+def build_scaling_comparison_csv_rows(
+    model_override: str | None = None,
+) -> list[dict[str, str]]:
+    """Rows for spreadsheets: tpuf official, openpuffer measured, canonical extrap."""
+    rows: list[dict[str, str]] = []
+    ref = load_tpuf_reference()
+    tpuf_docs = int(ref["workload"]["document_count"])
+    tpuf_dims = int(ref["workload"]["dimensions"])
+    tpuf_source = TPUF_REF.name
+    for cache in ("cold", "warm"):
+        lat = load_tpuf_latency_triple(cache)
+        rows.append(
+            _csv_row(
+                system="turbopuffer",
+                tier="10m",
+                docs=tpuf_docs,
+                dims=tpuf_dims,
+                cache=cache,
+                p50=lat["p50_ms"],
+                p90=lat["p90_ms"],
+                p99=lat["p99_ms"],
+                source=tpuf_source,
+                extrapolated=False,
+            )
+        )
+    for measured in load_op_measured_tiers():
+        rows.append(
+            _csv_row(
+                system="openpuffer",
+                tier=str(measured["label"]),
+                docs=int(measured["namespace_docs"]),
+                dims=int(measured["dimensions"]),
+                cache=str(measured["path"]),
+                p50=int(measured["p50_ms"]),
+                p90=int(measured["p90_ms"]),
+                p99=int(measured["p99_ms"]),
+                source=str(measured["artifact"]),
+                extrapolated=False,
+            )
+        )
+    snap = compute_comparison(model_override)
+    extrap_p50 = round(snap.extrap_10m_128)
+    rows.append(
+        _csv_row(
+            system="openpuffer",
+            tier="10m-extrap",
+            docs=N_REF,
+            dims=DIM_OP,
+            cache="cold",
+            p50=extrap_p50,
+            p90=None,
+            p99=None,
+            source=f"compare_op_scaling_to_tpuf.py:{snap.canonical_model}@10M",
+            extrapolated=True,
+        )
+    )
+    return rows
+
+
+def write_scaling_comparison_csv(
+    model_override: str | None = None,
+    path: Path = CSV_PATH,
+) -> Path:
+    rows = build_scaling_comparison_csv_rows(model_override)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
     return path
 
 
@@ -823,6 +944,19 @@ def main() -> int:
         if not other_flags:
             summary_path = write_scaling_comparison_summary(model_override)
             print(f"Wrote dashboard summary: {summary_path.relative_to(ROOT)}")
+            return 0
+
+    if "--csv" in sys.argv:
+        other_flags = [
+            a
+            for a in sys.argv[1:]
+            if a.startswith("--")
+            and a not in ("--csv",)
+            and not a.startswith("--model=")
+        ]
+        if not other_flags:
+            csv_path = write_scaling_comparison_csv(model_override)
+            print(f"Wrote analysis CSV: {csv_path.relative_to(ROOT)}")
             return 0
 
     tpuf_p50 = load_tpuf_cold_p50()

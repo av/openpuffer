@@ -1,0 +1,10 @@
+system,tier,docs,dims,cache,p50,p90,p99,source,extrapolated
+turbopuffer,10m,10000000,1024,cold,874,1214,1686,tpuf-official-reference.json,false
+turbopuffer,10m,10000000,1024,warm,14,17,27,tpuf-official-reference.json,false
+openpuffer,10k,10000,128,cold,96,99,99,op-scaling-10k.json,false
+openpuffer,10k-synthetic128,10000,128,cold,97,108,108,op-scaling-10k-synthetic128.json,false
+openpuffer,50k,50000,128,cold,412,450,450,op-scaling-50k.json,false
+openpuffer,100k,100000,128,cold,880,900,900,op-scaling-100k.json,false
+openpuffer,10k-warm,10000,128,warm,112,123,123,op-scaling-10k-warm.json,false
+openpuffer,100k-warm,100000,128,warm,827,876,876,op-scaling-100k-warm.json,false
+openpuffer,10m-extrap,10000000,128,cold,87321,,,compare_op_scaling_to_tpuf.py:linear@10M,true
