@@ -175,7 +175,7 @@ Runs pytest (workloads, tpuf driver, id-overlap), render-report tests, ingest/be
 # or: make bench-verify-op-scaling
 ```
 
-**Refresh full MinIO scaling suite** (slow — 10k/50k/100k/warm + synthetic-128; **not** run in CI):
+**Refresh full MinIO scaling suite** (slow — 10k/50k/100k/warm + synthetic-128; **not** on push/PR CI):
 
 ```bash
 make bench-op-scaling          # regenerate benchmarks/results/op-scaling-*.json
@@ -183,6 +183,16 @@ make bench-compare-tpuf        # print extrapolation vs tpuf-official-reference.
 ./scripts/validate-benchmark-json.sh benchmarks/results/op-scaling-*.json
 git add benchmarks/results/op-scaling-*.json
 ```
+
+**Optional GitHub Actions** ([`op-scaling-refresh.yml`](../.github/workflows/op-scaling-refresh.yml)):
+
+| Trigger | What runs | Cost |
+|---------|-----------|------|
+| **Weekly** (Sun 04:00 UTC) | `verify-op-scaling-comparison.sh` smoke on committed JSON | ~2 min |
+| **workflow_dispatch** (default) | Same offline smoke | ~2 min |
+| **workflow_dispatch** + `full_refresh=true` | `run-op-scaling-benchmark.sh 10k 50k 100k warm 100k-warm` (120 min cap); uploads `op-scaling-*.json` + comparison artifacts — **does not commit**; operator `git add -f` after download | **~30 min** |
+
+Full MinIO refresh stays **off by default** (overlaps nightly `bench-100k` ingest). Prefer local `make bench-op-scaling` for committed JSON updates.
 
 Report: [docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](../docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md) (charts + methodology); iteration log: [OPENS_VS_TPUF_SCALING_COMPARISON.md](../docs/reports/OPENS_VS_TPUF_SCALING_COMPARISON.md). **5-command quickstart:** [SCALING_VS_TPUF_QUICKSTART.md](SCALING_VS_TPUF_QUICKSTART.md). Operator verdict: `./scripts/print-scaling-verdict.sh`. Skip scaling inside full verify: `VERIFY_FLAGS="--skip-op-scaling"`.
 
@@ -336,6 +346,8 @@ facts check --tags bench-op-scaling
 - **Dispatch (dry-run):** [.github/workflows/benchmark-large-dispatch.yml](../.github/workflows/benchmark-large-dispatch.yml)
 - **Nightly (G6):** [.github/workflows/nightly-stress.yml](../.github/workflows/nightly-stress.yml) — `large-dataset-program` (G2 @ 10k + l1 dry-run) runs **parallel** with `bench-100k` (L1 engine @ 100k MinIO; only one 100k ingest/night). See [docs/BENCHMARKS.md § G6 nightly](../docs/BENCHMARKS.md#github-actions-nightly-regression-g6).
 - **G2 + 10k schema:** `g2-minio-correctness` in [.github/workflows/ci.yml](../.github/workflows/ci.yml)
+- **op vs tpuf scaling smoke (push/PR):** `op-scaling-comparison` in [.github/workflows/ci.yml](../.github/workflows/ci.yml) — `verify-op-scaling-comparison.sh`
+- **op-scaling refresh (optional):** [.github/workflows/op-scaling-refresh.yml](../.github/workflows/op-scaling-refresh.yml) — weekly smoke; manual `full_refresh` for MinIO tier regeneration (~30 min)
 
 ## Further reading
 

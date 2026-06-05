@@ -1,0 +1,107 @@
+# Optional openpuffer vs turbopuffer scaling refresh (not on push/PR).
+#
+# • Weekly schedule (Sunday 04:00 UTC): offline smoke only — verify-op-scaling-comparison.sh
+#   (committed op-scaling-*.json; no MinIO bench spend).
+# • workflow_dispatch (default): same smoke (~2 min).
+# • workflow_dispatch + full_refresh=true: regenerate MinIO tiers via
+#   run-op-scaling-benchmark.sh 10k 50k 100k warm 100k-warm (~30 min CI; 120 min cap).
+#   Does not auto-commit JSON — download artifacts and git add -f locally.
+#
+# Full refresh is disabled by default (cost + duplicate 100k ingest vs nightly-stress bench-100k).
+name: op-scaling refresh (optional)
+
+on:
+  schedule:
+    # 04:00 UTC Sundays — smoke only
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: >-
+          Regenerate op-scaling JSON on MinIO (10k/50k/100k + warm; ~30 min).
+          Default false = offline smoke only.
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_BIN_EXE_openpuffer: ${{ github.workspace }}/target/release/openpuffer
+
+jobs:
+  smoke:
+    name: verify op-scaling comparison (offline)
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_refresh != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: benchmarks/requirements.txt
+
+      - name: Python tooling (benchmark harness)
+        run: ./scripts/install-benchmark-python-deps.sh
+
+      - name: verify-op-scaling-comparison.sh
+        run: ./scripts/verify-op-scaling-comparison.sh
+
+  full-refresh:
+    name: run-op-scaling-benchmark (MinIO tiers)
+    if: github.event_name == 'workflow_dispatch' && inputs.full_refresh == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: op-scaling-refresh
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: benchmarks/requirements.txt
+
+      - name: Python tooling (benchmark harness)
+        run: ./scripts/install-benchmark-python-deps.sh
+
+      - name: Build openpuffer (release, integration + bench + large_stress)
+        run: cargo build --release --features integration,bench,large_stress
+
+      - name: Regenerate op-scaling tiers (10k 50k 100k warm 100k-warm)
+        id: bench
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: >-
+          ./scripts/run-op-scaling-benchmark.sh
+          10k 50k 100k warm 100k-warm
+
+      - name: Compare + dashboard summary (best-effort)
+        if: steps.bench.outcome == 'success' || steps.bench.outcome == 'failure'
+        continue-on-error: true
+        run: ./scripts/compare-op-scaling-to-tpuf.sh
+
+      - name: Upload op-scaling artifacts (non-blocking)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: op-scaling-refresh-${{ github.run_id }}
+          path: |
+            benchmarks/results/op-scaling-*.json
+            benchmarks/results/scaling-comparison-summary.json
+            benchmarks/results/scaling-comparison.csv
+          if-no-files-found: warn
