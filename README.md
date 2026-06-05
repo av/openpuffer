@@ -85,6 +85,8 @@ export OPENPUFFER_COLD_S3_CONCURRENCY=32 # parallel GETs per cold sub-batch (def
 
 After upserts and `index_cursor == wal_commit_seq`, vector queries report `performance.storage_roundtrips`, `cold_s3_keys_fetched`, and `ann_probed_clusters`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for probe/cold tuning.
 
+**Benchmarks / performance (MinIO vs turbopuffer scaling):** measured doc-count scaling and extrapolation vs turbopuffer’s official 10M×1024 reference — [docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md); reproduce with `make bench-compare-tpuf` (offline gate: `./scripts/verify-op-scaling-comparison.sh`).
+
 ### Large-dataset comparison harness
 
 Apples-to-apples **openpuffer vs turbopuffer** on a shared synthetic workload (L1 default: **100k × 128-dim**). Workloads, result JSON, and operator scripts: [benchmarks/README.md](benchmarks/README.md). Program plan: [docs/PLAN_LARGE_DATASET_BENCHMARK.md](docs/PLAN_LARGE_DATASET_BENCHMARK.md).

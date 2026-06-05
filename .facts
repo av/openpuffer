@@ -615,7 +615,7 @@
   tags: [bench-op-scaling, bench, implemented]
 - label: op-scaling 100k×128 MinIO cold p50 is within 2× of tpuf official 10M×1024 cold p50 (order of magnitude; not comparable—different N, D, backend)
   command: python3 -c "import json; op=json.load(open(\"benchmarks/results/op-scaling-100k.json\"))[\"p50_ms\"]; tp=json.load(open(\"benchmarks/results/tpuf-official-reference.json\"))[\"latencies_ms\"][\"cold\"][\"p50\"]; r=max(op,tp)/min(op,tp); assert r<=2.0, f\"ratio {r:.3f} op={op} tp={tp}\""
-  tags: [spec, bench-op-scaling, bench-tpuf]
+  tags: [spec, bench-op-scaling, bench-tpuf, implemented]
 - label: scaling-comparison-summary.json exists and validates (dashboard summary from compare-op-scaling-to-tpuf)
   command: ./scripts/validate-benchmark-json.sh benchmarks/results/scaling-comparison-summary.json
   tags: [bench-op-scaling, bench, implemented]

@@ -18,6 +18,31 @@ for f in benchmarks/results/tpuf-official-reference.json \
   fi
 done
 
+# @spec 4xt: 100k×128 cold p50 within 2× of tpuf official 10M×1024 cold p50 (order of magnitude)
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+op = int(json.loads(Path("benchmarks/results/op-scaling-100k.json").read_text())["p50_ms"])
+tp = int(
+    json.loads(Path("benchmarks/results/tpuf-official-reference.json").read_text())[
+        "latencies_ms"
+    ]["cold"]["p50"]
+)
+if tp != 874:
+    raise SystemExit(f"tpuf_official cold p50={tp}, want 874")
+ratio = max(op, tp) / min(op, tp)
+if ratio > 2.0:
+    raise SystemExit(
+        f"op-scaling 100k cold p50={op} ms vs tpuf official {tp} ms: "
+        f"ratio {ratio:.3f} > 2.0 (fact 4xt order-of-magnitude gate)"
+    )
+print(
+    f"test_compare-op-scaling-to-tpuf: 4xt ok "
+    f"(100k cold p50={op} ms, tpuf={tp} ms, ratio={ratio:.3f}≤2.0)"
+)
+PY
+
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 
