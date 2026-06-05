@@ -865,6 +865,41 @@ Then update [COMPARISON.md](COMPARISON.md) from measured rows ([plan Phase 7](PL
 
 ---
 
+## Scaling comparison vs turbopuffer official (MinIO)
+
+**Purpose:** Document-count **scaling shape** for openpuffer on MinIO testcontainers (10k / 50k / 100k × 128-d cold queries) against turbopuffer’s **published** 10M × 1024 cold reference—not a live head-to-head at 10M.
+
+**Not a substitute for G4:** This track uses committed [`tpuf-official-reference.json`](../benchmarks/results/tpuf-official-reference.json) (website / tpuf-benchmark). It does **not** replace [§ G4 — turbopuffer operator setup](#g4-turbopuffer-operator-setup) or live `benchmarks/results/tpuf-l1.json` from `run-tpuf-large-benchmark.sh` on AWS + `TURBOPUFFER_API_KEY`. MinIO latencies here must **not** appear in the large-dataset tpuf comparison table ([§ Phase 6.3](#63-block-release--block-report-merge)).
+
+| Resource | Link |
+|----------|------|
+| **Report** | [BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md) |
+| **Quickstart** | [benchmarks/SCALING_VS_TPUF_QUICKSTART.md](../benchmarks/SCALING_VS_TPUF_QUICKSTART.md) |
+| **Iteration log** | [OPENS_VS_TPUF_SCALING_COMPARISON.md](reports/OPENS_VS_TPUF_SCALING_COMPARISON.md) |
+| **Dashboard JSON** | [`benchmarks/results/scaling-comparison-summary.json`](../benchmarks/results/scaling-comparison-summary.json) |
+
+### Makefile targets
+
+| Target | What it does |
+|--------|----------------|
+| `make bench-op-scaling` | Regenerate `op-scaling-*.json` (Docker MinIO; ~1–3 h for full sweep) |
+| `make bench-compare-tpuf` | Extrapolate vs `tpuf-official-reference.json`; refresh summary JSON |
+| `make bench-verify-op-scaling` | Offline schema + compare smoke on committed artifacts |
+| `make bench-scaling-full` | `bench-op-scaling` + `bench-compare-tpuf` + verify + verdict (~25–35 min subset) |
+| `make print-scaling-verdict` | One-paragraph verdict from committed JSON |
+
+**Offline gate only (no Docker):** `make bench-verify-op-scaling` — also nested in `make bench-verify` via [`verify-op-scaling-comparison.sh`](../scripts/verify-op-scaling-comparison.sh).
+
+**Scripts:** [`run-op-scaling-benchmark.sh`](../scripts/run-op-scaling-benchmark.sh), [`compare-op-scaling-to-tpuf.sh`](../scripts/compare-op-scaling-to-tpuf.sh), [`print-scaling-verdict.sh`](../scripts/print-scaling-verdict.sh).
+
+### Findings (committed artifacts)
+
+- **Shape vs single tpuf point:** Measured cold p50 **96 / 412 / 880 ms** @ 10k / 50k / 100k × 128 on MinIO grows sub-linearly with doc count (β ≈ 0.95). turbopuffer publishes **one** official cold point (**874 ms** @ 10M × 1024 on GCP)—we cannot claim “similar scaling” to their fleet between 100k and 10M; canonical **linear** extrapolation to 10M × 128 → **~87 s** (~**100×** tpuf 874 ms).
+- **100k ≈ 874 ms is misleading:** openpuffer **880 ms** @ 100k×128 matches tpuf **874 ms** @ 10M×1024 in magnitude only (**~1.01×**); workloads differ (**100×** docs, **8×** dims, MinIO vs managed fleet, 7 cold probes vs 8 QPS × 30 min). **Not** parity.
+- **Warm + ingest are separate stories:** Warm p50 **112 / 827 ms** @ 10k / 100k (~**8× / ~59×** tpuf **14 ms** @ 10M). Ingest **909 / 3571 / 758 docs/s** does not track query scaling; **~1 WAL commit/s** caps 100k wall time—this report compares **query latency only**.
+
+---
+
 ## Feature: `bench`
 
 ```bash
