@@ -98,6 +98,11 @@ def test_build_scaling_comparison_summary() -> None:
     assert summary["schema_version"] == SUMMARY_SCHEMA_VERSION
     assert summary["tpuf_official"]["cold"]["p50_ms"] == 874
     assert summary["tpuf_official"]["warm"]["p50_ms"] == 14
+    wp = summary["tpuf_official"]["write_path"]
+    assert wp["commit_latency_ms_max"] == 200
+    assert wp["writes_per_sec_per_namespace_claim"] == 10000
+    assert "tradeoffs" in wp["source_url"]
+    assert "WAL" in wp["not_comparable_to_openpuffer"]
     assert len(summary["openpuffer_measured"]) >= 5
     assert summary["recommended_extrapolation"] == "linear"
     fits = summary["fits"]
@@ -189,7 +194,11 @@ def _minimal_tpuf_ref() -> dict:
             "cold": {"p50": 874, "p90": 900, "p99": 900},
             "warm": {"p50": 14, "p90": 20, "p99": 25},
         },
-        "write_path": {"durable_commit_latency_ms_claim": 200},
+        "write_path": {
+            "commit_latency_ms_max": 200,
+            "writes_per_sec_per_namespace_claim": 10000,
+            "source_url": "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes",
+        },
     }
 
 

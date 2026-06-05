@@ -22,6 +22,11 @@
       "id": "vector_10m_hot_toml",
       "url": "https://github.com/turbopuffer/tpuf-benchmark/blob/main/benchmarks/website/vector-10m-hot.toml",
       "in_repo_copy": "benchmarks/specs/tpuf/vector-10m-hot.toml"
+    },
+    {
+      "id": "tradeoffs_docs",
+      "url": "https://turbopuffer.com/docs/tradeoffs",
+      "note": "High Latency, High Throughput Writes: object-storage WAL; up to 200ms durable commit; thousands of writes/sec per namespace"
     }
   ],
   "infrastructure": {
@@ -58,9 +63,14 @@
     }
   },
   "write_path": {
-    "source": "turbopuffer.com product docs / COMPARISON.md (2026-06-05)",
-    "durable_commit_latency_ms_claim": 200,
-    "note": "Up to ~200 ms to durable commit per write (latency bound, not openpuffer ~1 WAL commit/s throughput model)"
+    "source_id": "tradeoffs_docs",
+    "source_url": "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes",
+    "commit_latency_ms_max": 200,
+    "writes_per_sec_per_namespace_claim": 10000,
+    "writes_per_sec_per_namespace_claim_source_url": "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes",
+    "architecture_note": "Object-storage write-ahead log; stateless nodes; documents visible to consistent reads faster than eventually-consistent search engines (tradeoffs doc).",
+    "not_comparable_to_openpuffer": "openpuffer MinIO harness: WAL-limited upsert+index wait (~1 durable commit/s, docs/s ingest tiers in op-scaling-*.json). turbopuffer publishes per-write commit latency (≤200ms) and namespace write throughput (thousands/s)—different durability/throughput model; do not compare op ingest_docs_per_sec to tpuf writes_per_sec_per_namespace_claim.",
+    "note": "Tradeoffs § High Latency, High Throughput Writes (2026-06-05): writes take up to 200ms to commit; system supports thousands of writes per second per namespace. Upper bound 10k/s used for structured reference (doc: 'thousands')."
   },
   "latencies_ms": {
     "source": "turbopuffer.com homepage calculator (Vector Perf, 2026-06-05 scrape)",

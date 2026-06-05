@@ -34,12 +34,13 @@
     "tpuf_official": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["namespace_docs", "dimensions", "cold", "warm"],
+      "required": ["namespace_docs", "dimensions", "cold", "warm", "write_path"],
       "properties": {
         "namespace_docs": { "const": 10000000 },
         "dimensions": { "const": 1024 },
         "cold": { "$ref": "#/$defs/latency_triple" },
-        "warm": { "$ref": "#/$defs/latency_triple" }
+        "warm": { "$ref": "#/$defs/latency_triple" },
+        "write_path": { "$ref": "#/$defs/tpuf_write_path" }
       }
     },
     "openpuffer_measured": {
@@ -155,6 +156,27 @@
         "p50_ms": { "type": "integer", "minimum": 0 },
         "p90_ms": { "type": "integer", "minimum": 0 },
         "p99_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "tpuf_write_path": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "reference_artifact",
+        "commit_latency_ms_max",
+        "source_url",
+        "not_comparable_to_openpuffer"
+      ],
+      "properties": {
+        "reference_artifact": { "const": "tpuf-official-reference.json" },
+        "commit_latency_ms_max": { "type": "integer", "const": 200 },
+        "writes_per_sec_per_namespace_claim": { "type": "integer", "const": 10000 },
+        "writes_per_sec_per_namespace_claim_source_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "source_url": { "type": "string", "format": "uri" },
+        "not_comparable_to_openpuffer": { "type": "string", "minLength": 20 }
       }
     }
   }

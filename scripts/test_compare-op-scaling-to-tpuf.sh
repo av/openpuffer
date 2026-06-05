@@ -155,6 +155,15 @@ if summary.get("schema_version") != "scaling_comparison_summary_v1":
 tpuf = summary["tpuf_official"]
 if tpuf["cold"]["p50_ms"] != 874 or tpuf["warm"]["p50_ms"] != 14:
     raise SystemExit("tpuf_official latencies mismatch")
+wp = tpuf.get("write_path") or {}
+if wp.get("commit_latency_ms_max") != 200:
+    raise SystemExit(f"tpuf_official.write_path commit_latency_ms_max={wp.get('commit_latency_ms_max')!r}, want 200")
+if wp.get("writes_per_sec_per_namespace_claim") != 10000:
+    raise SystemExit(
+        "tpuf_official.write_path writes_per_sec_per_namespace_claim must be 10000"
+    )
+if "tradeoffs" not in str(wp.get("source_url", "")):
+    raise SystemExit("tpuf_official.write_path missing tradeoffs source_url")
 if summary.get("recommended_extrapolation") != "linear":
     raise SystemExit("recommended_extrapolation must be linear")
 extrap_block = summary.get("extrapolations") or {}

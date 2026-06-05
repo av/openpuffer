@@ -127,6 +127,38 @@ def load_tpuf_latency_triple(path_key: str) -> dict[str, int]:
     }
 
 
+def load_tpuf_write_path_block() -> dict[str, Any]:
+    """Structured write-path claims from tpuf-official-reference.json (tradeoffs docs)."""
+    ref = load_tpuf_reference()
+    write_path = ref.get("write_path") or {}
+    commit_ms = int(
+        write_path.get(
+            "commit_latency_ms_max",
+            write_path.get("durable_commit_latency_ms_claim", 200),
+        )
+    )
+    writes_per_sec = write_path.get("writes_per_sec_per_namespace_claim")
+    block: dict[str, Any] = {
+        "reference_artifact": TPUF_REF.name,
+        "commit_latency_ms_max": commit_ms,
+        "source_url": write_path.get(
+            "source_url",
+            "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes",
+        ),
+        "not_comparable_to_openpuffer": write_path.get(
+            "not_comparable_to_openpuffer",
+            "openpuffer WAL ingest model is not comparable to turbopuffer object-storage WAL",
+        ),
+    }
+    if writes_per_sec is not None:
+        block["writes_per_sec_per_namespace_claim"] = int(writes_per_sec)
+        block["writes_per_sec_per_namespace_claim_source_url"] = write_path.get(
+            "writes_per_sec_per_namespace_claim_source_url",
+            block["source_url"],
+        )
+    return block
+
+
 def load_tpuf_official_block() -> dict[str, Any]:
     ref = load_tpuf_reference()
     return {
@@ -134,6 +166,7 @@ def load_tpuf_official_block() -> dict[str, Any]:
         "dimensions": int(ref["workload"]["dimensions"]),
         "cold": load_tpuf_latency_triple("cold"),
         "warm": load_tpuf_latency_triple("warm"),
+        "write_path": load_tpuf_write_path_block(),
     }
 
 
@@ -362,9 +395,13 @@ def write_scaling_comparison_csv(
 
 
 def load_tpuf_write_commit_ms_claim() -> int:
-    ref = load_tpuf_reference()
-    write_path = ref.get("write_path") or {}
-    return int(write_path.get("durable_commit_latency_ms_claim", 200))
+    return int(load_tpuf_write_path_block()["commit_latency_ms_max"])
+
+
+def load_tpuf_writes_per_sec_claim() -> int | None:
+    block = load_tpuf_write_path_block()
+    value = block.get("writes_per_sec_per_namespace_claim")
+    return int(value) if value is not None else None
 
 
 def load_op_ingest_throughput() -> list[tuple[int, float, float]]:
@@ -818,6 +855,7 @@ def operator_verdict_paragraph(
     ratio_sqrt = s.extrap_10m_sqrt / s.tpuf_p50
     ballpark = ballpark_verdict(s.extrap_10m_sqrt, s.tpuf_p50)
     tpuf_commit_ms = load_tpuf_write_commit_ms_claim()
+    tpuf_writes_per_sec = load_tpuf_writes_per_sec_claim()
     ingest_rows = load_op_ingest_throughput()
     ingest_clause = ""
     if ingest_rows:
@@ -825,10 +863,18 @@ def operator_verdict_paragraph(
             f"{fmt_n(n)}={dps:.0f} docs/s ({wall:.0f}s wall)"
             for n, wall, dps in ingest_rows
         ]
+        tpuf_write_note = (
+            f"≤~{tpuf_commit_ms} ms durable write-commit latency"
+            + (
+                f" and up to ~{tpuf_writes_per_sec:,} writes/s per namespace (tradeoffs doc)"
+                if tpuf_writes_per_sec is not None
+                else ""
+            )
+            + " (object-storage WAL—not comparable to openpuffer WAL ingest docs/s)"
+        )
         ingest_clause = (
             f" openpuffer MinIO ingest+index throughput is {', '.join(parts)} "
-            f"(WAL-limited upsert+index wait) vs turbopuffer's published "
-            f"≤~{tpuf_commit_ms} ms durable write-commit latency (not the same throughput model);"
+            f"(WAL-limited upsert+index wait) vs turbopuffer's published {tpuf_write_note};"
         )
     warm_clause = ""
     if s.warm_tiers:

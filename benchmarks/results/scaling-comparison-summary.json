@@ -1,7 +1,7 @@
 {
   "schema_version": "scaling_comparison_summary_v1",
-  "timestamp_utc": "2026-06-05T00:44:39Z",
-  "git_commit": "af5f6a58ec64f9202abf7f8ab227ef87f5c82c07",
+  "timestamp_utc": "2026-06-05T00:47:57Z",
+  "git_commit": "a5e91c439bcb69b1144b49975dbc2dc7a5a9f359",
   "tpuf_official": {
     "namespace_docs": 10000000,
     "dimensions": 1024,
@@ -14,6 +14,14 @@
       "p50_ms": 14,
       "p90_ms": 17,
       "p99_ms": 27
+    },
+    "write_path": {
+      "reference_artifact": "tpuf-official-reference.json",
+      "commit_latency_ms_max": 200,
+      "source_url": "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes",
+      "not_comparable_to_openpuffer": "openpuffer MinIO harness: WAL-limited upsert+index wait (~1 durable commit/s, docs/s ingest tiers in op-scaling-*.json). turbopuffer publishes per-write commit latency (\u2264200ms) and namespace write throughput (thousands/s)\u2014different durability/throughput model; do not compare op ingest_docs_per_sec to tpuf writes_per_sec_per_namespace_claim.",
+      "writes_per_sec_per_namespace_claim": 10000,
+      "writes_per_sec_per_namespace_claim_source_url": "https://turbopuffer.com/docs/tradeoffs#high-latency-high-throughput-writes"
     }
   },
   "openpuffer_measured": [
@@ -125,5 +133,5 @@
     }
   },
   "confidence": "low",
-  "verdict_text": "Critical: openpuffer measured 100.0k\u00d7128 cold p50 ~880 ms is the same order of magnitude as turbopuffer official 874 ms @ 10M\u00d71024 (~1.01\u00d7)\u2014**not comparable** (100\u00d7 fewer docs, 8\u00d7 fewer dims, MinIO vs GCP fleet, different load); if doc-count scaling on this harness held to 10M, canonical linear extrapolation gives ~87321 ms @ 10M\u00d7128 (~99.9\u00d7 tpuf cold 874 ms\u2014low confidence, unmeasured); tiers (10.0k=96ms / 50.0k=412ms / 100.0k=880ms) imply power-law \u03b2\u22480.95, \u221adim heuristic ~246981 ms (~283\u00d7 cold). Warm path (POST /warm + eventual, MinIO disk cache): 10.0k warm=112ms (~8.0\u00d7 tpuf 14ms @ 10M), 100.0k warm=827ms (~59.1\u00d7 tpuf 14ms @ 10M)\u2014**not comparable** to tpuf fleet NVMe @ 10M\u00d71024; openpuffer MinIO ingest+index throughput is 10.0k=909 docs/s (11s wall), 50.0k=3571 docs/s (14s wall), 100.0k=758 docs/s (132s wall) (WAL-limited upsert+index wait) vs turbopuffer's published \u2264~200 ms durable write-commit latency (not the same throughput model); extrapolated openpuffer is **~283\u00d7 slower** than tpuf 874 ms \u2014 **not** in the same absolute ballpark on this MinIO harness. Treat as scaling-shape signal only\u2014do not read 100k\u2248874 ms as parity; 10M openpuffer is unmeasured."
+  "verdict_text": "Critical: openpuffer measured 100.0k\u00d7128 cold p50 ~880 ms is the same order of magnitude as turbopuffer official 874 ms @ 10M\u00d71024 (~1.01\u00d7)\u2014**not comparable** (100\u00d7 fewer docs, 8\u00d7 fewer dims, MinIO vs GCP fleet, different load); if doc-count scaling on this harness held to 10M, canonical linear extrapolation gives ~87321 ms @ 10M\u00d7128 (~99.9\u00d7 tpuf cold 874 ms\u2014low confidence, unmeasured); tiers (10.0k=96ms / 50.0k=412ms / 100.0k=880ms) imply power-law \u03b2\u22480.95, \u221adim heuristic ~246981 ms (~283\u00d7 cold). Warm path (POST /warm + eventual, MinIO disk cache): 10.0k warm=112ms (~8.0\u00d7 tpuf 14ms @ 10M), 100.0k warm=827ms (~59.1\u00d7 tpuf 14ms @ 10M)\u2014**not comparable** to tpuf fleet NVMe @ 10M\u00d71024; openpuffer MinIO ingest+index throughput is 10.0k=909 docs/s (11s wall), 50.0k=3571 docs/s (14s wall), 100.0k=758 docs/s (132s wall) (WAL-limited upsert+index wait) vs turbopuffer's published \u2264~200 ms durable write-commit latency and up to ~10,000 writes/s per namespace (tradeoffs doc) (object-storage WAL\u2014not comparable to openpuffer WAL ingest docs/s); extrapolated openpuffer is **~283\u00d7 slower** than tpuf 874 ms \u2014 **not** in the same absolute ballpark on this MinIO harness. Treat as scaling-shape signal only\u2014do not read 100k\u2248874 ms as parity; 10M openpuffer is unmeasured."
 }
