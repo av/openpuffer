@@ -616,8 +616,15 @@
 - label: op-scaling 100k×128 MinIO cold p50 is within 2× of tpuf official 10M×1024 cold p50 (order of magnitude; not comparable—different N, D, backend)
   command: python3 -c "import json; op=json.load(open(\"benchmarks/results/op-scaling-100k.json\"))[\"p50_ms\"]; tp=json.load(open(\"benchmarks/results/tpuf-official-reference.json\"))[\"latencies_ms\"][\"cold\"][\"p50\"]; r=max(op,tp)/min(op,tp); assert r<=2.0, f\"ratio {r:.3f} op={op} tp={tp}\""
   tags: [spec, bench-op-scaling, bench-tpuf]
+- label: scaling-comparison-summary.json exists and validates (dashboard summary from compare-op-scaling-to-tpuf)
+  command: ./scripts/validate-benchmark-json.sh benchmarks/results/scaling-comparison-summary.json
+  tags: [bench-op-scaling, bench, implemented]
+- label: print-scaling-verdict.sh exits 0 (operator one-line scaling verdict)
+  command: ./scripts/print-scaling-verdict.sh >/dev/null
+  tags: [bench-op-scaling, bench, implemented]
 
 # bench-op-scaling live
-- label: live tpuf scaling probe JSON benchmarks/results/tpuf-scaling-10k-live.json at 10k docs when TURBOPUFFER_API_KEY set
+- label: live tpuf scaling probe JSON benchmarks/results/tpuf-scaling-10k-live.json at 10k docs when TURBOPUFFER_API_KEY set (optional; MinIO op-scaling + tpuf-official-reference + scaling-comparison-summary.json satisfies scaling comparison without live tpuf)
+  id: rkx
   command: if test -f benchmarks/results/tpuf-scaling-10k-live.json; then ./scripts/validate-benchmark-json.sh benchmarks/results/tpuf-scaling-10k-live.json && python3 -c "import json; d=json.load(open(\"benchmarks/results/tpuf-scaling-10k-live.json\")); assert d.get(\"namespace_docs\", d.get(\"num_docs\", 0))==10000"; else echo "PENDING @spec (skipped): benchmarks/results/tpuf-scaling-10k-live.json — export TURBOPUFFER_API_KEY; minimal 10k tpuf probe via tpuf_driver; git add benchmarks/results/tpuf-scaling-10k-live.json; then facts at <id> implemented --remove-tag pending --remove-tag skipped"; ! test -f benchmarks/results/tpuf-scaling-10k-live.json; fi
   tags: [spec, bench-op-scaling, bench-tpuf, pending, skipped]
