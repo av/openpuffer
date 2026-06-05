@@ -74,7 +74,14 @@ Blocked on this host? See [OPERATOR_G3_G4_ATTEMPT.md](../benchmarks/results/OPER
 
 ### Scaling vs turbopuffer official (MinIO extrapolation)
 
-Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Latest measured cold p50 **96 / 412 / 880 ms** (@ `7f7c0f5`); **canonical linear** extrapolation (fixed default, not auto best-by-R²) gives **~87 s** @ 10M×128 vs tpuf **874 ms** (~**100×**); √dim @ 10M×1024 **~247 s** (~**283×**). Prior **log_linear ~2.2 s** (~2.5×) used superseded **111 / 525 / 813** tiers—do not mix. **Low confidence** for 10M extrap (turbopuffer official is **one** cold point @ 10M). **Not** validated on AWS or 1024-d. Report: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md`](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md). Reproduce: `make bench-compare-tpuf` (`EXTRAP_JSON.canonical_model`).
+Separate from the AWS L1 head-to-head program: **document-count scaling shape** on MinIO (10k / 50k / 100k × 128 + synthetic-128 @ 10k, release + ANN v3) compared to turbopuffer’s published **10M × 1024** cold/warm reference—not a claim of parity on absolute latency. Canonical numbers: [`scaling-comparison-summary.json`](../benchmarks/results/scaling-comparison-summary.json). Reproduce: `make bench-compare-tpuf` · `./scripts/print-scaling-verdict.sh`.
+
+- **turbopuffer (official):** cold p50 **874 ms** at **10M × 1024** on GCP (`c2-standard-30`, 8 QPS × 30m, cache disabled) — [`tpuf-official-reference.json`](../benchmarks/results/tpuf-official-reference.json). **Single published doc-count point** for cold; extrapolation uncertainty dominates any ratio vs 874 ms.
+- **openpuffer (measured, MinIO):** cold p50 **96 / 412 / 880 ms** at **10k / 50k / 100k × 128**; synthetic-128 @ 10k: **97 ms** — [`op-scaling-*.json`](../benchmarks/results/op-scaling-10k.json).
+- **openpuffer (extrapolated to 10M, canonical linear):** **~87 s** p50 @ 10M×128 (**~100×** tpuf **874 ms** on doc count alone); √dim heuristic → **~247 s** (**~283×**); linear-d estimate → **~699 s** (**~799×**). **Not** validated on AWS or 1024-d. Back-solve **~100k docs** for 874 ms (linear).
+- **Superseded conclusions (do not cite):** log_linear on **111/525/813** tiers → **~2.2 s** @ 10M (~**2.5×** tpuf); older linear on **86/400/824** → **~81 s** (~**93×**); anecdotal **~7 s** @ 100k—not in committed JSON.
+
+Report: [`docs/reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md`](reports/BENCHMARK_VS_TURBOPUFFER_SCALING_2026-06-04.md). Iteration log: [`OPENS_VS_TPUF_SCALING_COMPARISON.md`](reports/OPENS_VS_TPUF_SCALING_COMPARISON.md).
 
 ---
 

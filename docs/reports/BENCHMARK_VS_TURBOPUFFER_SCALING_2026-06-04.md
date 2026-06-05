@@ -16,11 +16,14 @@
 
 ## Executive summary
 
-**Do not equate 100k ≈ 874 ms with parity.** Measured openpuffer **880 ms** @ **100k × 128** (MinIO) matches tpuf official **874 ms** @ **10M × 1024** (GCP) only as a **coincidence of magnitude**—different **N**, **D**, and backend. A **2026-06-05** refresh @ git `7f7c0f5` (p90/p99 + ingest in `op-scaling-*.json`) measures **96 / 412 / 880 ms** @ 10k / 50k / 100k. **Linear** extrapolation to **10M × 128** gives **~87 s** cold p50 vs tpuf **874 ms** (~**100×**; **~283×** with √dim heuristic to 1024-d)—if scaling holds, openpuffer does **not** track tpuf’s fleet scaling. Prior **log-linear ~2.2 s** narrative used an older **111 / 525 / 813** sweep—**superseded**. Extrapolation remains **illustrative** (MinIO vs GCP, 128-d vs 1024-d).
+- **turbopuffer (official):** cold p50 **874 ms** at **10M × 1024** on GCP (`c2-standard-30`, 8 QPS × 30m, cache disabled) — [`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json). **Single published doc-count point** for cold; extrapolation uncertainty dominates any ratio vs 874 ms.
+- **openpuffer (measured, MinIO):** cold p50 **96 / 412 / 880 ms** at **10k / 50k / 100k × 128**; synthetic-128 @ 10k: **97 ms** — [`op-scaling-*.json`](../../benchmarks/results/op-scaling-10k.json).
+- **openpuffer (extrapolated to 10M, canonical linear):** **~87 s** p50 @ 10M×128 (**~100×** tpuf **874 ms** on doc count alone); √dim heuristic → **~247 s** (**~283×**); linear-d estimate → **~699 s** (**~799×**). **Not** validated on AWS or 1024-d. Back-solve **~100k docs** for 874 ms (linear).
+- **Superseded conclusions (do not cite):** log_linear on **111/525/813** tiers → **~2.2 s** @ 10M (~**2.5×** tpuf); older linear on **86/400/824** → **~81 s** (~**93×**); anecdotal **~7 s** @ 100k—not in committed JSON.
 
-**One-sentence answer:** **100k p50 ~880 ms ≈ tpuf 874 ms @ 10M is not comparable**; measured tiers **96 / 412 / 880 ms** grow with doc count (β ≈ 0.95); **linear** extrapolation → **~87 s** @ **10M × 128** (~**100×** tpuf)—**not** parity on AWS/1024-d/10M; 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
+**One-sentence answer:** **100k p50 ~880 ms ≈ tpuf 874 ms @ 10M is not comparable**; measured tiers **96 / 412 / 880 ms** grow with doc count (β ≈ 0.95); **linear** extrapolation → **~87 s** @ **10M × 128** (~**100×** tpuf)—**not** parity on AWS/1024-d/10M; warm **827 ms** @ 100k (~**59×** tpuf **14 ms**); 100k ingest **132 s** @ **758 docs/s** (WAL+index wall).
 
-**Superseded (do not cite):** linear-only fit on older **86/400/824 ms** tiers → **~81 s** @ 10M (~**93×** slower); anecdotal **~7 s** @ 100k from debug build or contention.
+**Operator verdict:** [`scaling-comparison-summary.json`](../../benchmarks/results/scaling-comparison-summary.json) · `./scripts/print-scaling-verdict.sh`
 
 ---
 
