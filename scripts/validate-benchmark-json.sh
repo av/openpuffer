@@ -97,8 +97,13 @@ scaling_summary_validator = Draft202012Validator(
     json.loads(scaling_summary_schema_path.read_text())
 )
 
-SCHEMA_VERSION_PATH = Path(op_schema_path).parent / ".." / "LARGE_BENCHMARK_JSON_SCHEMA_VERSION"
-EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION_PATH.resolve().read_text(encoding="utf-8").strip()
+_REPORT_DIR = Path(op_schema_path).parent.parent
+EXPECTED_SCHEMA_VERSION = (_REPORT_DIR / "LARGE_BENCHMARK_JSON_SCHEMA_VERSION").read_text(
+    encoding="utf-8"
+).strip()
+EXPECTED_OP_SCALING_SCHEMA_VERSION = (
+    _REPORT_DIR / "OP_SCALING_JSON_SCHEMA_VERSION"
+).read_text(encoding="utf-8").strip()
 
 TIER_META = {
     "l1": {
@@ -330,9 +335,11 @@ def validate_ingest_cross_fields(path: Path, data: dict) -> None:
 
 
 def validate_op_scaling_cross_fields(path: Path, data: dict) -> None:
-    if data.get("schema_version") != "op_scaling_v1":
+    if data.get("schema_version") != EXPECTED_OP_SCALING_SCHEMA_VERSION:
         raise SystemExit(
-            f"{path}: schema_version {data.get('schema_version')!r} != 'op_scaling_v1'"
+            f"{path}: schema_version {data.get('schema_version')!r} != "
+            f"{EXPECTED_OP_SCALING_SCHEMA_VERSION!r} "
+            "(regenerate with run-op-scaling-benchmark.sh)"
         )
     if data.get("ann_version") != 3:
         raise SystemExit(f"{path}: ann_version must be 3 for unified scaling runs")

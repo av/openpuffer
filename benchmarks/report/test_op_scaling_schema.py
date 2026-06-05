@@ -9,10 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from schema_version import op_scaling_json_schema_version
+
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "benchmarks" / "results"
 VALIDATE = ROOT / "scripts" / "validate-benchmark-json.sh"
 BASE_100K = RESULTS / "op-scaling-100k.json"
+EXPECTED_SCHEMA_VERSION = op_scaling_json_schema_version()
 
 
 def _run_validate(path: Path) -> subprocess.CompletedProcess[str]:
@@ -53,6 +56,17 @@ def test_op_scaling_100k_outlier_gate_warns_fast(tmp_path: Path) -> None:
     proc = _run_validate(path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "suspiciously fast" in proc.stderr
+
+
+def test_op_scaling_committed_schema_version() -> None:
+    paths = sorted(RESULTS.glob("op-scaling-*.json"))
+    assert paths, "expected benchmarks/results/op-scaling-*.json"
+    for path in paths:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data.get("schema_version") == EXPECTED_SCHEMA_VERSION, (
+            f"{path.name}: schema_version {data.get('schema_version')!r} != "
+            f"{EXPECTED_SCHEMA_VERSION!r}"
+        )
 
 
 def test_op_scaling_artifacts_validate() -> None:

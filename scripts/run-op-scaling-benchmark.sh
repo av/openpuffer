@@ -63,6 +63,10 @@ EOF
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/lib/op-scaling-json-version.sh
+source "$ROOT/scripts/lib/op-scaling-json-version.sh"
+op_scaling_json_schema_version >/dev/null
+
 DRY_RUN=0
 TIER_ARGS=()
 for arg in "$@"; do
@@ -215,11 +219,11 @@ write_op_scaling_json() {
     out="$RESULTS_DIR/op-scaling-${tier_label}.json"
   fi
 
-  python3 - "$tier_label" "$path_kind" "$bench_json" "$harness" "$out" "$GIT_COMMIT" "$TIMESTAMP_UTC" <<'PY'
+  python3 - "$tier_label" "$path_kind" "$bench_json" "$harness" "$out" "$GIT_COMMIT" "$TIMESTAMP_UTC" "$OP_SCALING_JSON_SCHEMA_VERSION" <<'PY'
 import json
 import sys
 
-tier, path_kind, bench_raw, harness, out_path, git_commit, ts = sys.argv[1:8]
+tier, path_kind, bench_raw, harness, out_path, git_commit, ts, schema_version = sys.argv[1:9]
 bench = json.loads(bench_raw)
 
 
@@ -258,7 +262,7 @@ if doc_key and docs != doc_key:
     raise SystemExit(f"namespace_docs {docs} != expected {doc_key} for tier {tier}")
 
 artifact = {
-    "schema_version": "op_scaling_v1",
+    "schema_version": schema_version,
     "timestamp_utc": ts,
     "git_commit": git_commit,
     "environment": "minio-testcontainers",
