@@ -1,12 +1,15 @@
 # Large-dataset benchmark program — convenience targets (see benchmarks/README.md).
 .PHONY: help bench-verify bench-verify-op-scaling bench-dry-run bench-g2-minio bench-preflight \
-	bench-op-scaling bench-compare-tpuf
+	bench-op-scaling bench-compare-tpuf bench-scaling-full print-scaling-verdict
 
 # Extra flags for verify, e.g. make bench-verify VERIFY_FLAGS="--skip-l2-l3 --skip-facts"
 VERIFY_FLAGS ?=
 
 # Extra flags for preflight, e.g. make bench-preflight PREFLIGHT_FLAGS="--live --tier l1"
 PREFLIGHT_FLAGS ?=
+
+# Optional tier subset for bench-op-scaling, e.g. OP_SCALING_TIERS="10k 50k 100k warm 100k-warm"
+OP_SCALING_TIERS ?=
 
 help:
 	@echo "Large-dataset benchmark targets:"
@@ -17,6 +20,8 @@ help:
 	@echo "  make bench-preflight  G3+G4+overlap preflights (offline default; see PREFLIGHT_FLAGS)"
 	@echo "  make bench-op-scaling MinIO op-scaling tiers (10k/50k/100k/warm; slow)"
 	@echo "  make bench-compare-tpuf  Extrapolate op-scaling vs tpuf official 10M ref"
+	@echo "  make bench-scaling-full  Full op-vs-tpuf sweep + compare + verify + verdict (~25–35 min)"
+	@echo "  make print-scaling-verdict  One-paragraph operator verdict (offline JSON)"
 	@echo ""
 	@echo "Options:"
 	@echo "  VERIFY_FLAGS='--skip-l2-l3 --skip-op-scaling'   Passed to verify-large-benchmark-program.sh"
@@ -50,7 +55,22 @@ bench-preflight:
 	./scripts/preflight-large-benchmark-all.sh $(PREFLIGHT_FLAGS)
 
 bench-op-scaling:
+ifdef OP_SCALING_TIERS
+	./scripts/run-op-scaling-benchmark.sh $(OP_SCALING_TIERS)
+else
 	./scripts/run-op-scaling-benchmark.sh
+endif
 
 bench-compare-tpuf:
 	./scripts/compare-op-scaling-to-tpuf.sh
+
+# Full openpuffer vs turbopuffer scaling pipeline (Docker + release build).
+# Wall time ~25–35 min on a quiet host (10k/50k/100k cold + 10k/100k warm; excludes synthetic128).
+bench-scaling-full:
+	$(MAKE) bench-op-scaling OP_SCALING_TIERS="10k 50k 100k warm 100k-warm"
+	$(MAKE) bench-compare-tpuf
+	$(MAKE) bench-verify-op-scaling
+	$(MAKE) print-scaling-verdict
+
+print-scaling-verdict:
+	./scripts/print-scaling-verdict.sh
