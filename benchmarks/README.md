@@ -78,7 +78,7 @@ Git policy is enforced at **write time** (preflight guards), **add time** (`.git
 | `results/cold-50k-v3.json` | Legacy 50k v3 cold gate snapshot |
 | `results/nightly-100k.json` | Nightly 100k MinIO snapshot |
 | `results/tpuf-official-reference.json` | Official tpuf 10M×1024 homepage latencies + spec pointers (scaling comparison) |
-| `results/op-scaling-{10k,50k,100k}.json`, `op-scaling-10k-warm.json`, `op-scaling-10k-synthetic128.json` | MinIO cold/warm scaling tiers (release+v3); [`scripts/run-op-scaling-benchmark.sh`](../scripts/run-op-scaling-benchmark.sh) |
+| `results/op-scaling-{10k,50k,100k}.json`, `op-scaling-{10k,100k}-warm.json`, `op-scaling-10k-synthetic128.json` | MinIO cold/warm scaling tiers (release+v3); [`scripts/run-op-scaling-benchmark.sh`](../scripts/run-op-scaling-benchmark.sh) |
 | `specs/tpuf/vector-10m-{cold,hot}.toml` | Vendored from [tpuf-benchmark/website](https://github.com/turbopuffer/tpuf-benchmark/tree/main/benchmarks/website) |
 | `results/*-schema-minio*.example.json` | MinIO **shape** exemplars (`environment=minio`) |
 | `results/ingest-large-*-schema-minio*.example.json` | Ingest sidecars for schema examples |

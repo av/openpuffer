@@ -813,3 +813,149 @@ async fn bench_cold_100k_nightly() {
         "storage_roundtrips {roundtrips} must be ≤ 4"
     );
 }
+
+/// 100k warm path for op-scaling tier (ingest+index then `POST …/warm` + eventual queries).
+#[tokio::test]
+#[ignore = "100k MinIO ingest + index (~3–8 min); run: cargo test -F bench bench_cold_100k_warm -- --ignored --nocapture"]
+async fn bench_cold_100k_warm() {
+    let fixture = S3Fixture::from_testcontainers().await;
+    let cache_dir = tempfile::tempdir().expect("warm cache tempdir");
+    let listen = format!("127.0.0.1:{}", free_port());
+    // Single serve with disk cache (same process for ingest + POST /warm avoids WAL read races).
+    let serve = spawn_bench_serve(
+        &fixture,
+        &listen,
+        Some(cache_dir.path().to_path_buf()),
+        Some(10_000),
+        None,
+    );
+    serve.wait_ready().await;
+    let ingest_started = Instant::now();
+    index_namespace(
+        &fixture,
+        &serve,
+        NAMESPACE_100K,
+        DOCS_100K,
+        Duration::from_secs(900),
+    )
+    .await;
+    let ingest_elapsed = ingest_started.elapsed();
+    // Let WAL segments settle before warm prefetch (avoids transient read wal NNN on MinIO).
+    sleep(Duration::from_secs(2)).await;
+
+    let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.02).cos()).collect();
+    let client = reqwest::Client::new();
+
+    let warm_url = format!(
+        "{}/v1/namespaces/{}/warm",
+        serve.base_url,
+        namespace_path_segment(NAMESPACE_100K)
+    );
+    let mut warm_pin = json!(null);
+    let mut warm_ok = false;
+    for attempt in 0..5 {
+        if attempt > 0 {
+            sleep(Duration::from_millis(500 * attempt as u64)).await;
+        }
+        let warm_resp = client
+            .post(&warm_url)
+            .send()
+            .await
+            .expect("warm request");
+        let warm_status = warm_resp.status();
+        warm_pin = warm_resp.json().await.expect("warm json");
+        if warm_status == StatusCode::OK {
+            warm_ok = true;
+            break;
+        }
+    }
+    assert!(
+        warm_ok,
+        "warm failed after retries: {}",
+        serde_json::to_string(&warm_pin).unwrap_or_default()
+    );
+    assert_eq!(warm_pin["status"], "ok");
+    assert!(warm_pin["pinned"].as_bool().unwrap_or(false));
+
+    let mut warm_latencies_ms = Vec::with_capacity(COLD_QUERY_RUNS);
+    let mut warm_body = json!(null);
+    for _ in 0..COLD_QUERY_RUNS {
+        client
+            .post(format!(
+                "{}/v1/debug/cache-stats/reset",
+                serve.base_url
+            ))
+            .send()
+            .await
+            .expect("cache reset");
+        let t0 = Instant::now();
+        let warm_query = client
+            .post(format!(
+                "{}/v2/namespaces/{}/query",
+                serve.base_url,
+                namespace_path_segment(NAMESPACE_100K)
+            ))
+            .json(&json!({
+                "rank_by": ["vector", "ANN", "embedding", query_vec.clone()],
+                "top_k": 10,
+                "consistency": "eventual"
+            }))
+            .send()
+            .await
+            .expect("warm query");
+        assert_eq!(warm_query.status(), StatusCode::OK);
+        warm_latencies_ms.push(t0.elapsed().as_millis() as u64);
+        warm_body = warm_query.json().await.expect("warm query json");
+    }
+    let (p50_warm_query_latency_ms, p90_warm_query_latency_ms, p99_warm_query_latency_ms) =
+        latency_percentiles_ms(&warm_latencies_ms);
+    let ann_version = ann_version_from_env().unwrap_or(2);
+
+    let warm_perf = warm_body["performance"].as_object().expect("performance");
+    assert!(
+        warm_perf.get("storage_roundtrips").is_none()
+            || warm_perf["storage_roundtrips"].is_null(),
+        "warm query must not report cold storage_roundtrips: {warm_perf:?}"
+    );
+    let warm_cold_keys = warm_perf
+        .get("cold_s3_keys_fetched")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert_eq!(
+        warm_cold_keys, 0,
+        "warm path must not increment cold_s3_keys_fetched"
+    );
+
+    let stats: Value = client
+        .get(format!("{}/v1/debug/cache-stats", serve.base_url))
+        .send()
+        .await
+        .expect("cache stats")
+        .json()
+        .await
+        .expect("stats json");
+    let s3_gets = stats["s3_get_count"].as_u64().unwrap_or(0);
+    assert!(
+        s3_gets <= 2,
+        "warm queries should not refetch index segments (s3_get_count={s3_gets})"
+    );
+
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "benchmark": "warm_100k",
+            "environment": "minio-testcontainers",
+            "ann_version": ann_version,
+            "namespace_docs": DOCS_100K,
+            "dimensions": DIM,
+            "p50_query_latency_ms": p50_warm_query_latency_ms,
+            "p90_query_latency_ms": p90_warm_query_latency_ms,
+            "p99_query_latency_ms": p99_warm_query_latency_ms,
+            "query_latencies_ms": warm_latencies_ms,
+            "warm_query_runs": COLD_QUERY_RUNS,
+            "ingest_elapsed_secs": ingest_elapsed.as_secs(),
+            "notes": "POST /warm + eventual query with disk cache; from bench_cold_100k_warm"
+        }))
+        .expect("warm 100k json")
+    );
+}

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Unified openpuffer MinIO scaling benchmarks (release + OPENPUFFER_ANN_VERSION=3).
 #
-# Runs 10k / 50k / 100k cold and 10k warm; writes benchmarks/results/op-scaling-*.json.
+# Runs 10k / 50k / 100k cold and 10k / 100k warm; writes benchmarks/results/op-scaling-*.json.
 #
 # Usage:
 #   ./scripts/run-op-scaling-benchmark.sh           # all tiers
-#   ./scripts/run-op-scaling-benchmark.sh 10k warm  # subset
+#   ./scripts/run-op-scaling-benchmark.sh 10k warm       # subset
+#   ./scripts/run-op-scaling-benchmark.sh 100k-warm      # warm @ 100k (ingest+index ~3–8 min)
 #
 set -euo pipefail
 
@@ -39,7 +40,11 @@ write_op_scaling_json() {
   local harness="$4"
   local out
   if [[ "$path_kind" == "warm" ]]; then
-    out="$RESULTS_DIR/op-scaling-10k-warm.json"
+    if [[ "$tier_label" == "100k" ]]; then
+      out="$RESULTS_DIR/op-scaling-100k-warm.json"
+    else
+      out="$RESULTS_DIR/op-scaling-10k-warm.json"
+    fi
   elif [[ "$tier_label" == "10k-synthetic128" ]]; then
     out="$RESULTS_DIR/op-scaling-10k-synthetic128.json"
   else
@@ -174,6 +179,18 @@ run_tier_50k_cold() {
   rm -f "$log"
 }
 
+run_tier_100k_warm() {
+  local log
+  log="$(mktemp)"
+  echo "run-op-scaling: 100k warm (ingest+index+warm; may take ~3–8 min)..."
+  cargo test --release -F bench --test bench_cold bench_cold_100k_warm -- --ignored --nocapture 2>&1 | tee "$log"
+  local json
+  json="$(grep -E '"benchmark":"warm_100k"' "$log" | tail -1)"
+  write_op_scaling_json 100k warm "$json" \
+    "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_100k_warm -- --ignored --nocapture"
+  rm -f "$log"
+}
+
 run_tier_100k_cold() {
   local log
   log="$(mktemp)"
@@ -225,6 +242,10 @@ if run_requested warm "$@"; then
   run_tier_10k_warm
   ((ran++)) || true
 fi
+if run_requested 100k-warm "$@"; then
+  run_tier_100k_warm
+  ((ran++)) || true
+fi
 if run_requested synthetic128 "$@"; then
   run_tier_10k_synthetic128
   ((ran++)) || true
@@ -232,7 +253,7 @@ fi
 
 if [[ "$ran" -eq 0 ]]; then
   echo "run-op-scaling: no tiers matched args: $*" >&2
-  echo "usage: $0 [10k] [50k] [100k] [warm] [synthetic128]" >&2
+  echo "usage: $0 [10k] [50k] [100k] [warm] [100k-warm] [synthetic128]" >&2
   exit 1
 fi
 

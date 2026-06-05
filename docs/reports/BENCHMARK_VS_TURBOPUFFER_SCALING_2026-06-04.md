@@ -66,7 +66,7 @@
 
 **Ingest (from `op-scaling-*.json`, same runs):** 10k **11 s** @ **909 docs/s**; 50k **14 s** @ **3571 docs/s**; 100k **132 s** @ **758 docs/s**.
 
-**Warm @ 10k:** p50 **81 ms** ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json)).
+**Warm @ 10k / 100k:** p50 **112 / 827 ms** ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json), [`op-scaling-100k-warm.json`](../../benchmarks/results/op-scaling-100k-warm.json)) vs tpuf **14 ms** @ 10M ([`tpuf-official-reference.json`](../../benchmarks/results/tpuf-official-reference.json)) — **~59×** @ 100k (not comparable scale/backend).
 
 **Scaling read (10k → 100k):** **~9.2×** latency for **10×** docs → power-law **β ≈ 0.95**; per-doc p50 **~0.0088 ms/doc** at 100k.
 
@@ -185,7 +185,18 @@ openpuffer does **not** expose `storage_roundtrips` / `candidates_ratio` on the 
 
 **Read:** `storage_roundtrips` stays **3** (≤ 4 gate) across tiers—cold probe work scales in **latency**, not extra S3 batch rounds on this sweep. `candidates_ratio` falls **0.008 → 0.0016 → 0.0008** as N grows (sub-linear candidate fraction). `recall_at_10` is **1.0** @ 50k/100k on measured gates.
 
-**Warm @ 10k (throughput shape):** p50 **81 ms** with no cold `storage_roundtrips` ([`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json))—not comparable to tpuf **14 ms** warm @ 10M without matched cache tier.
+**Warm path (MinIO, `POST /warm` + 7× eventual):**
+
+| Tier | Docs × dims | openpuffer warm p50 | tpuf warm p50 (official) | Ratio vs tpuf 14 ms |
+|------|-------------|---------------------|--------------------------|---------------------|
+| 10k | 10k × 128 | **112 ms** | **14 ms** @ **10M × 1024** | **~8×** (100× fewer docs, 8× fewer dims) |
+| 100k | 100k × 128 | **827 ms** | same | **~59×** |
+
+Artifacts: [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json), [`op-scaling-100k-warm.json`](../../benchmarks/results/op-scaling-100k-warm.json). Harness: `bench_cold_100k_warm` via `./scripts/run-op-scaling-benchmark.sh 100k-warm` (~**2.5 min** ingest+index + warm on this host @ `ff47227`). **Not** tpuf `hint_cache_warm` @ fleet NVMe; MinIO loopback + full-index warm prefetch (`warm.rs` walks `num_fine_total` cluster keys).
+
+**Corroboration (different harness):** [`large-aws-l1-schema-minio.example.json`](../../benchmarks/results/large-aws-l1-schema-minio.example.json) `bench-large.sh --warm` @ 100k reports warm p50 **860 ms** — same order of magnitude as **827 ms** above.
+
+**Takeaway:** Even with disk cache pinned, openpuffer warm @ **100k** stays **hundreds of ms** on MinIO—orders of magnitude above turbopuffer’s marketing **14 ms** @ **10M** (different N, D, and cache tier). Warm latency grows **~7.4×** from 10k→100k (**112 → 827 ms**) for **10×** docs (β ≈ 0.87), unlike a flat warm floor.
 
 ### Ingest throughput (order-of-magnitude, not apples-to-apples)
 
@@ -288,6 +299,7 @@ make bench-op-scaling
 ./scripts/run-op-scaling-benchmark.sh 50k
 ./scripts/run-op-scaling-benchmark.sh 100k
 ./scripts/run-op-scaling-benchmark.sh warm
+./scripts/run-op-scaling-benchmark.sh 100k-warm   # ~2.5 min ingest+index+warm
 
 # Print extrapolation, models, back-solve (offline; uses committed JSON)
 make bench-compare-tpuf

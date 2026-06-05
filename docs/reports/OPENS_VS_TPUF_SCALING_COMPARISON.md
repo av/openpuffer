@@ -58,7 +58,7 @@
 | T0 | 10k × 128 | MinIO | `scripts/run-op-scaling-benchmark.sh` (10k) | [`op-scaling-10k.json`](../../benchmarks/results/op-scaling-10k.json) |
 | T1 | 50k × 128 | MinIO | same (50k / `stress_50k` v3 cold) | [`op-scaling-50k.json`](../../benchmarks/results/op-scaling-50k.json) |
 | T2 | 100k × 128 | MinIO | same (100k / `bench_cold_100k_nightly`) | [`op-scaling-100k.json`](../../benchmarks/results/op-scaling-100k.json) |
-| Warm | 10k × 128 | MinIO | same (`bench_cold_10k_warm_vs_cold`) | [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json) |
+| Warm | 10k / 100k × 128 | MinIO | `bench_cold_10k_warm_vs_cold` / `bench_cold_100k_warm` | [`op-scaling-10k-warm.json`](../../benchmarks/results/op-scaling-10k-warm.json), [`op-scaling-100k-warm.json`](../../benchmarks/results/op-scaling-100k-warm.json) |
 | T0b | 10k × 128 (synthetic-128) | MinIO | `bench_cold_10k_synthetic_128_workload_gate` | [`op-scaling-10k-synthetic128.json`](../../benchmarks/results/op-scaling-10k-synthetic128.json) |
 | T3 (optional) | 500k × 128 | MinIO / AWS | `scripts/bench-large.sh --tier l2` | **skipped** (ingest+index ≫45 min on MinIO) |
 
@@ -86,7 +86,7 @@
 
 | Docs | Dims | Environment | p50 | p90 | p99 | Notes |
 |------|------|-------------|-----|-----|-----|-------|
-| 10k | 128 | minio-testcontainers | **81** | — | — | release + v3; warm path eliminates cold S3 batch; still not tpuf-class **14 ms** at 10M |
+| 10k / 100k | 128 | minio-testcontainers | **112 / 827** | — | — | warm @ `ff47227`; **~59×** tpuf **14 ms** @ 10M; not fleet NVMe tier |
 
 ### Scaling curve (cold p50 vs doc count)
 
@@ -160,7 +160,7 @@ make bench-op-scaling
 
 ## 7. Iteration checklist
 
-- [x] Unified v3 + release across 10k / 50k / 100k cold + 10k warm
+- [x] Unified v3 + release across 10k / 50k / 100k cold + 10k / 100k warm
 - [x] Tier refresh @ `7f7c0f5` (96 / 412 / 880 ms)
 - [x] Canonical **linear** extrap model (no auto-switch to log_linear)
 - [x] `EXTRAP_JSON`: `canonical_model`, `ratio_vs_tpuf`, `confidence`

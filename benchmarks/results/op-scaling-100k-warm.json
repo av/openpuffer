@@ -1,0 +1,30 @@
+{
+  "schema_version": "op_scaling_v1",
+  "timestamp_utc": "2026-06-05T00:12:01Z",
+  "git_commit": "ff47227311b9293cb0f5c1091e9eef9f06c33acf",
+  "environment": "minio-testcontainers",
+  "path": "warm",
+  "namespace_docs": 100000,
+  "dimensions": 128,
+  "p50_ms": 827,
+  "p90_ms": 876,
+  "p99_ms": 876,
+  "storage_roundtrips": null,
+  "recall_at_10": null,
+  "cold_query_runs": 7,
+  "ann_version": 3,
+  "cargo_profile": "release",
+  "harness": "OPENPUFFER_ANN_VERSION=3 cargo test --release -F bench --test bench_cold bench_cold_100k_warm -- --ignored --nocapture",
+  "query_latencies_ms": [
+    876,
+    827,
+    862,
+    859,
+    820,
+    821,
+    814
+  ],
+  "notes": "POST /warm + eventual query with disk cache; from bench_cold_100k_warm",
+  "ingest_wall_secs": 136.0,
+  "docs_per_sec": 735.29
+}
