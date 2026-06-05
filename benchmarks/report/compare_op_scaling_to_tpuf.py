@@ -20,7 +20,10 @@ Usage:
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --csv
   python3 benchmarks/report/compare_op_scaling_to_tpuf.py --model=log_linear
   ./scripts/compare-op-scaling-to-tpuf.sh
+  ./scripts/compare-op-scaling-to-tpuf.sh --dry-run
   ./scripts/print-scaling-verdict.sh
+
+``--dry-run``: list committed JSON paths and summary ratios only (no writes).
 
 Writes ``benchmarks/results/scaling-comparison-summary.json`` on every full run
 (dashboard artifact; validated by validate-benchmark-json.sh).
@@ -932,8 +935,62 @@ def markdown_appendix(
     return "\n".join(lines)
 
 
+def dry_run_compare(model_override: str | None = None) -> int:
+    """Offline plan: paths that would be read and summary ratios (no file writes)."""
+    read_paths: list[Path] = [TPUF_REF]
+    read_paths.extend(sorted(RESULTS.glob("op-scaling-*.json")))
+    read_paths.extend(sorted(RESULTS.glob("op-scaling-*-warm.json")))
+    # glob above may duplicate *-warm; dedupe while preserving order
+    seen: set[Path] = set()
+    unique_paths: list[Path] = []
+    for p in read_paths:
+        if p in seen:
+            continue
+        seen.add(p)
+        unique_paths.append(p)
+
+    print("compare-op-scaling dry-run OK (committed JSON only; no writes)")
+    print(f"  results_dir: {RESULTS.relative_to(ROOT)}")
+    print("  would_read:")
+    for p in unique_paths:
+        rel = p.relative_to(ROOT)
+        status = "present" if p.is_file() else "MISSING"
+        print(f"    - {rel} ({status})")
+
+    if SUMMARY_PATH.is_file():
+        summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
+        ratios = summary.get("ratios", {})
+        canon = summary.get("canonical_extrapolation", {})
+        print(f"  summary_ratios_source: {SUMMARY_PATH.relative_to(ROOT)} (committed)")
+    else:
+        summary = build_scaling_comparison_summary(model_override)
+        ratios = summary.get("ratios", {})
+        canon = summary.get("canonical_extrapolation", {})
+        print(
+            "  summary_ratios_source: computed from op-scaling-*.json "
+            f"(no committed {SUMMARY_PATH.name})"
+        )
+
+    print("  summary_ratios:")
+    print(json.dumps(ratios, indent=2, sort_keys=True))
+    if canon:
+        print("  canonical_extrapolation:")
+        print(json.dumps(canon, indent=2, sort_keys=True))
+    missing = [p for p in unique_paths if not p.is_file()]
+    if missing:
+        print(
+            f"  warning: {len(missing)} input file(s) missing — full compare may fail",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     model_override = parse_model_arg(sys.argv)
+    if "--dry-run" in sys.argv or "-n" in sys.argv:
+        return dry_run_compare(model_override)
+
     if "--verdict-only" in sys.argv:
         print(operator_verdict_paragraph(model_override=model_override))
         return 0

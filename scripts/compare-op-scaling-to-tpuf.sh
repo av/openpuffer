@@ -15,6 +15,7 @@ Usage:
   ./scripts/compare-op-scaling-to-tpuf.sh --write-summary
   ./scripts/compare-op-scaling-to-tpuf.sh --csv
   ./scripts/compare-op-scaling-to-tpuf.sh --model=linear|power_law|log_linear
+  ./scripts/compare-op-scaling-to-tpuf.sh --dry-run
   ./scripts/compare-op-scaling-to-tpuf.sh -h|--help
   make bench-compare-tpuf
 
@@ -40,9 +41,15 @@ EOF
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
 
-exec python3 "$ROOT/benchmarks/report/compare_op_scaling_to_tpuf.py" "$@"
+exec python3 "$ROOT/benchmarks/report/compare_op_scaling_to_tpuf.py" "${ARGS[@]}"

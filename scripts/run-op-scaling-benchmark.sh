@@ -11,6 +11,7 @@
 #   ./scripts/run-op-scaling-benchmark.sh           # all tiers
 #   ./scripts/run-op-scaling-benchmark.sh 10k warm       # subset
 #   ./scripts/run-op-scaling-benchmark.sh 100k-warm      # warm @ 100k (ingest+index ~3–8 min)
+#   ./scripts/run-op-scaling-benchmark.sh --dry-run      # plan only (no cargo/docker)
 #
 set -euo pipefail
 
@@ -26,6 +27,7 @@ Usage:
   ./scripts/run-op-scaling-benchmark.sh              # all tiers (~1–3 h)
   ./scripts/run-op-scaling-benchmark.sh 10k warm     # subset
   ./scripts/run-op-scaling-benchmark.sh 100k-warm      # warm @ 100k (~3–8 min ingest+index)
+  ./scripts/run-op-scaling-benchmark.sh --dry-run        # plan tiers + est wall; no cargo/docker
   ./scripts/run-op-scaling-benchmark.sh -h|--help
 
 Environment (set by this script):
@@ -61,9 +63,119 @@ EOF
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
+DRY_RUN=0
+TIER_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run|-n) DRY_RUN=1 ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) TIER_ARGS+=("$arg") ;;
+  esac
+done
+set -- "${TIER_ARGS[@]}"
+
+# Wall-time hints from benchmarks/CHANGELOG_LARGE_DATASET.md (ingest) + harness comments.
+tier_est_wall_note() {
+  case "$1" in
+    10k)           echo "~3–5 min tier (CHANGELOG ingest ~11 s @ 909 docs/s; + cold query)" ;;
+    50k)           echo "~5–12 min tier (CHANGELOG ingest ~14 s @ 3571 docs/s; stress_50k)" ;;
+    100k)          echo "~8–15 min tier (CHANGELOG ingest ~132 s @ 758 docs/s; nightly cold)" ;;
+    warm)          echo "~2–4 min tier (10k warm path; no 100k ingest)" ;;
+    100k-warm)     echo "~3–8 min tier (CHANGELOG-class ingest ~136 s + warm @ 100k)" ;;
+    synthetic128)  echo "~3–5 min tier (10k synthetic-128 G2 gate)" ;;
+    *)             echo "unknown tier" ;;
+  esac
+}
+
+tier_output_path() {
+  case "$1" in
+    10k)          echo "$RESULTS_DIR/op-scaling-10k.json" ;;
+    50k)          echo "$RESULTS_DIR/op-scaling-50k.json" ;;
+    100k)         echo "$RESULTS_DIR/op-scaling-100k.json" ;;
+    warm)         echo "$RESULTS_DIR/op-scaling-10k-warm.json" ;;
+    100k-warm)    echo "$RESULTS_DIR/op-scaling-100k-warm.json" ;;
+    synthetic128) echo "$RESULTS_DIR/op-scaling-10k-synthetic128.json" ;;
+  esac
+}
+
+tier_harness_cmd() {
+  case "$1" in
+    10k)
+      echo "cargo test --release -F bench --test bench_cold bench_cold_10k_baseline -- --nocapture"
+      ;;
+    50k)
+      echo "cargo test --release -F large_stress --test stress_50k fifty_thousand_docs_v3_cold_probed_validation -- --ignored --nocapture"
+      ;;
+    100k)
+      echo "cargo test --release -F bench --test bench_cold bench_cold_100k_nightly -- --ignored --nocapture"
+      ;;
+    warm)
+      echo "cargo test --release -F bench --test bench_cold bench_cold_10k_warm_vs_cold -- --nocapture"
+      ;;
+    100k-warm)
+      echo "cargo test --release -F bench --test bench_cold bench_cold_100k_warm -- --ignored --nocapture"
+      ;;
+    synthetic128)
+      echo "cargo test --release -F bench --test bench_cold bench_cold_10k_synthetic_128_workload_gate -- --nocapture"
+      ;;
+  esac
+}
+
+run_op_scaling_dry_run() {
+  local want_all=true
+  if [[ "$#" -gt 0 ]]; then
+    want_all=false
+  fi
+  local -a all_tiers=(10k 50k 100k warm 100k-warm synthetic128)
+  local -a planned=()
+  local t
+  for t in "${all_tiers[@]}"; do
+    if $want_all; then
+      planned+=("$t")
+      continue
+    fi
+    local arg
+    for arg in "$@"; do
+      if [[ "$arg" == "$t" ]]; then
+        planned+=("$t")
+        break
+      fi
+    done
+  done
+  if [[ "${#planned[@]}" -eq 0 ]]; then
+    echo "run-op-scaling dry-run: no tiers matched args: $*" >&2
+    echo "usage: $0 [--dry-run] [10k] [50k] [100k] [warm] [100k-warm] [synthetic128]" >&2
+    exit 1
+  fi
+
+  echo "run-op-scaling dry-run OK (no cargo/docker; committed JSON unchanged)"
+  echo "  OPENPUFFER_ANN_VERSION=3  results_dir=${RESULTS_DIR}"
+  echo "  prerequisites: Docker (MinIO testcontainers), Rust release build"
+  echo "  full sweep est: ~1–3 h (all tiers); subset = sum of tier estimates below"
+  echo ""
+  echo "Planned tiers (${#planned[@]}):"
+  local tier out note cmd
+  for tier in "${planned[@]}"; do
+    out="$(tier_output_path "$tier")"
+    note="$(tier_est_wall_note "$tier")"
+    cmd="$(tier_harness_cmd "$tier")"
+    echo "  - ${tier}: ${note}"
+    echo "      output: ${out}"
+    echo "      harness: OPENPUFFER_ANN_VERSION=3 ${cmd}"
+  done
+  echo ""
+  echo "Would also: cargo build --release --features integration (skipped in dry-run)"
+  echo "Post-run: ./scripts/validate-benchmark-json.sh on each op-scaling-*.json (skipped)"
   exit 0
+}
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  export OPENPUFFER_ANN_VERSION=3
+  RESULTS_DIR="$ROOT/benchmarks/results"
+  run_op_scaling_dry_run "$@"
 fi
 
 export OPENPUFFER_ANN_VERSION=3

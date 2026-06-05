@@ -73,6 +73,9 @@ fi
 step "pytest op_scaling schema (all op-scaling-*.json)"
 python3 -m pytest benchmarks/report/test_op_scaling_schema.py -q
 
+step "op-scaling benchmark dry-run (no cargo/docker)"
+./scripts/test_run-op-scaling-dry-run.sh
+
 step "compare op-scaling to tpuf (committed JSON smoke)"
 ./scripts/test_compare-op-scaling-to-tpuf.sh
 
