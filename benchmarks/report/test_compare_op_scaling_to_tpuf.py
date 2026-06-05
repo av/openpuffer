@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import math
+import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
 
+import compare_op_scaling_to_tpuf as compare_mod
 from compare_op_scaling_to_tpuf import (
     CANONICAL_MODEL,
     CSV_COLUMNS,
@@ -17,10 +22,12 @@ from compare_op_scaling_to_tpuf import (
     build_scaling_comparison_summary,
     compute_comparison,
     dim_scale_sqrt,
+    dry_run_compare,
     fit_power_law,
     load_op_warm_points,
     load_tpuf_warm_p50,
     operator_verdict_paragraph,
+    parse_model_arg,
     warm_ratios_vs_tpuf,
     write_scaling_comparison_csv,
 )
@@ -144,3 +151,130 @@ def test_warm_metrics_on_committed_json() -> None:
     para = operator_verdict_paragraph(snap)
     assert "warm=" in para.lower() or "warm " in para.lower()
     assert "14" in para
+
+
+def _minimal_tpuf_ref() -> dict:
+    return {
+        "workload": {"document_count": 10_000_000, "dimensions": 1024},
+        "latencies_ms": {
+            "cold": {"p50": 874, "p90": 900, "p99": 900},
+            "warm": {"p50": 14, "p90": 20, "p99": 25},
+        },
+        "write_path": {"durable_commit_latency_ms_claim": 200},
+    }
+
+
+def _minimal_op_scaling(
+    *,
+    label: str,
+    docs: int,
+    p50_ms: int,
+    path: str = "cold",
+) -> dict:
+    return {
+        "path": path,
+        "namespace_docs": docs,
+        "dimensions": 128,
+        "p50_ms": p50_ms,
+        "p90_ms": p50_ms + 10,
+        "p99_ms": p50_ms + 20,
+        "ingest_wall_secs": 10.0,
+        "docs_per_sec": docs / 10.0,
+    }
+
+
+def test_read_cold_json_missing_file_returns_none(tmp_path: Path) -> None:
+    assert compare_mod._read_cold_json(tmp_path / "op-scaling-missing.json") is None
+
+
+def test_dry_run_missing_op_scaling_files(tmp_path: Path, monkeypatch) -> None:
+    results = tmp_path / "results"
+    results.mkdir()
+    tpuf_path = results / "tpuf-official-reference.json"
+    tpuf_path.write_text(json.dumps(_minimal_tpuf_ref()), encoding="utf-8")
+    (results / "op-scaling-10k.json").write_text(
+        json.dumps(_minimal_op_scaling(label="10k", docs=10_000, p50_ms=96)),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(compare_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(compare_mod, "RESULTS", results)
+    monkeypatch.setattr(compare_mod, "TPUF_REF", tpuf_path)
+    monkeypatch.setattr(
+        compare_mod,
+        "SYNTH128_PATH",
+        results / "op-scaling-10k-synthetic128.json",
+    )
+    monkeypatch.setattr(compare_mod, "SUMMARY_PATH", results / "scaling-comparison-summary.json")
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        rc = dry_run_compare()
+
+    out = stdout.getvalue()
+    err = stderr.getvalue()
+    assert rc == 1
+    assert "unavailable" in err.lower() or "need ≥3" in err
+    assert "summary_ratios_source: skipped" not in out
+
+
+def test_dry_run_missing_tpuf_reference(tmp_path: Path, monkeypatch) -> None:
+    results = tmp_path / "results"
+    results.mkdir()
+    tpuf_path = results / "tpuf-official-reference.json"
+
+    monkeypatch.setattr(compare_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(compare_mod, "RESULTS", results)
+    monkeypatch.setattr(compare_mod, "TPUF_REF", tpuf_path)
+    monkeypatch.setattr(compare_mod, "SUMMARY_PATH", results / "scaling-comparison-summary.json")
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        rc = dry_run_compare()
+
+    out = stdout.getvalue()
+    err = stderr.getvalue()
+    assert rc == 1
+    assert "MISSING" in out
+    assert "tpuf-official-reference.json" in out
+    assert "missing" in err.lower()
+    assert "skipped (input files missing)" in out
+
+
+def test_canonical_model_power_law_override() -> None:
+    assert parse_model_arg(["--model=power_law"]) == "power_law"
+    snap = compute_comparison(model_override="power_law")
+    assert snap.canonical_model == "power_law"
+    assert 60_000 <= snap.extrap_10m_128 <= 75_000
+    assert 70 <= snap.ratio_vs_tpuf <= 80
+    linear = compute_comparison()
+    assert linear.canonical_model == CANONICAL_MODEL
+    assert snap.extrap_10m_128 < linear.extrap_10m_128
+    summary = build_scaling_comparison_summary(model_override="power_law")
+    assert summary["canonical_extrapolation"]["model"] == "power_law"
+
+
+def test_scaling_comparison_csv_row_count() -> None:
+    rows = build_scaling_comparison_csv_rows()
+    assert len(rows) == 9
+    rows_pl = build_scaling_comparison_csv_rows(model_override="power_law")
+    assert len(rows_pl) == 9
+    assert sum(1 for r in rows if r["system"] == "turbopuffer") == 2
+    assert sum(1 for r in rows if r["extrapolated"] == "true") == 1
+
+
+def test_dry_run_compare_output_contains_tpuf_874() -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        rc = dry_run_compare()
+
+    out = stdout.getvalue()
+    assert rc == 0
+    assert "compare-op-scaling dry-run OK" in out
+    assert "874" in out
+    assert "tpuf_official" in out
+    assert "summary_ratios" in out
+    assert stderr.getvalue() == ""

@@ -957,32 +957,42 @@ def dry_run_compare(model_override: str | None = None) -> int:
         status = "present" if p.is_file() else "MISSING"
         print(f"    - {rel} ({status})")
 
-    if SUMMARY_PATH.is_file():
-        summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
-        ratios = summary.get("ratios", {})
-        canon = summary.get("canonical_extrapolation", {})
-        print(f"  summary_ratios_source: {SUMMARY_PATH.relative_to(ROOT)} (committed)")
-    else:
-        summary = build_scaling_comparison_summary(model_override)
-        ratios = summary.get("ratios", {})
-        canon = summary.get("canonical_extrapolation", {})
-        print(
-            "  summary_ratios_source: computed from op-scaling-*.json "
-            f"(no committed {SUMMARY_PATH.name})"
-        )
-
-    print("  summary_ratios:")
-    print(json.dumps(ratios, indent=2, sort_keys=True))
-    if canon:
-        print("  canonical_extrapolation:")
-        print(json.dumps(canon, indent=2, sort_keys=True))
     missing = [p for p in unique_paths if not p.is_file()]
     if missing:
         print(
             f"  warning: {len(missing)} input file(s) missing — full compare may fail",
             file=sys.stderr,
         )
+        print("  summary_ratios_source: skipped (input files missing)")
         return 1
+
+    try:
+        if SUMMARY_PATH.is_file():
+            summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
+            ratios = summary.get("ratios", {})
+            canon = summary.get("canonical_extrapolation", {})
+            print(f"  summary_ratios_source: {SUMMARY_PATH.relative_to(ROOT)} (committed)")
+        else:
+            summary = build_scaling_comparison_summary(model_override)
+            ratios = summary.get("ratios", {})
+            canon = summary.get("canonical_extrapolation", {})
+            print(
+                "  summary_ratios_source: computed from op-scaling-*.json "
+                f"(no committed {SUMMARY_PATH.name})"
+            )
+    except SystemExit as exc:
+        print(f"  summary_ratios_source: unavailable ({exc})", file=sys.stderr)
+        return 1
+
+    tpuf_block = summary.get("tpuf_official") or load_tpuf_official_block()
+    print("  tpuf_official:")
+    print(json.dumps(tpuf_block, indent=2, sort_keys=True))
+
+    print("  summary_ratios:")
+    print(json.dumps(ratios, indent=2, sort_keys=True))
+    if canon:
+        print("  canonical_extrapolation:")
+        print(json.dumps(canon, indent=2, sort_keys=True))
     return 0
 
 
