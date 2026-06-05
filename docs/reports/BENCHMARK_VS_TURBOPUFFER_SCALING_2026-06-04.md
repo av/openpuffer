@@ -148,28 +148,36 @@ xychart-beta
     bar [112, 827, 14]
 ```
 
-### ASCII (terminal / plain-text)
+### ASCII log-log chart (monospace)
+
+Both axes use **log₁₀** so 10k / 50k / 100k / 10M are evenly spaced; latency spans **~100 ms → ~87 s**. The **╌** path is the **canonical linear** extrapolation in doc count (curved on this log–log view); **·** joins measured openpuffer tiers only.
 
 ```
-Cold p50 (ms) vs document count — log₁₀(N) on horizontal axis
-(● measured openpuffer  ○ extrap  ■ turbopuffer official @ 10M only)
+     ┌────────────────────────────────────────────────────────┐  log₁₀(doc count) →
+100k ││┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╌○┄┄│
+     ││  ┆                ┆                ┆           ╌╌╌╌╌┆  │
+     ││  ┆                ┆                ┆       ╌╌╌╌╌    ┆  │
+     ││  ┆                ┆                ┆    ╌╌╌╌        ┆  │
+ 10k ││┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼┄┄│
+     ││  ┆                ┆             ╌ ╌╌                ┆  │
+     ││  ┆                ┆         ╌ ╌    ┆                ┆  │
+     ││  ┆                ┆      ╌         ┆                ┆  │
+  1k ││┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄│
+     ││  ┆             ···●                ┆                ■  │
+     ││  ┆         ··●··  ┆                ┆                ┆  │
+     ││  ┆     ·····      ┆                ┆                ┆  │
+     ││  ┆ ····           ┆                ┆                ┆  │
+ 100 ││┄┄●·┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄│
+     └────────────────────────────────────────────────────────┘
+       10k         50k 100k                               10M
+      log₁₀(N)  4.0     4.7    5.0                  7.0
 
-p50
-(ms)
-87321 ┤                                                      ○ op extrap (linear)
- 1000 ┤                                              ■ tpuf 874
-  880 ┤                                    ● op 880
-  500 ┤
-  412 ┤                       ● op 412
-  200 ┤
-   96 ┤          ● op 96
-    0 ┼──────────┬──────────┬──────────┬──────────────────────
-      log₁₀(N)=4.0      4.7       5.0                    7.0
-           10k        50k      100k                    10M
+● openpuffer measured @ 10k/50k/100k ×128 (MinIO): 96 / 412 / 880 ms
+· join measured tiers (log–log guide; β≈0.95 on this harness)
+╌ canonical linear extrap 100k→10M×128 → ○ 87,321 ms (unmeasured; ~100× ■)
+■ turbopuffer official cold @ 10M×1024: 874 ms (single published point)
 
-Legend: ● 96 / 412 / 880 ms (MinIO, 128-d, committed JSON @ 7f7c0f5)
-        ○ 87321 ms = linear extrap @ 10M×128 (~100× tpuf on doc count alone)
-        ■ 874 ms = turbopuffer homepage calculator (10M×1024, GCP, 8 QPS×30m)
+↑ log₁₀(p50 ms) on vertical axis. ●@100k and ■@10M share log₁₀(p50)≈2.94 — not parity.
 ```
 
 **Operator one-liner:** `./scripts/print-scaling-verdict.sh` (paragraph verdict from committed JSON).
