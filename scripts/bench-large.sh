@@ -252,24 +252,6 @@ run_dry_run() {
   exit 0
 }
 
-wait_until_indexed() {
-  local deadline=$(( $(date +%s) + INDEX_TIMEOUT_SEC ))
-  while [[ $(date +%s) -lt $deadline ]]; do
-    if verify_namespace_meta >/dev/null 2>&1; then
-      local meta cursor pref
-      meta="$(verify_namespace_meta)"
-      cursor="$(echo "$meta" | jq -r '.index_cursor')"
-      pref="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
-      echo "namespace ${NAMESPACE} ready (cursor=${cursor}, preferred_ann_version=${pref})"
-      return 0
-    fi
-    sleep 2
-  done
-  echo "timeout waiting for index_cursor == wal_commit_seq and preferred_ann_version==3 on ${NAMESPACE}" >&2
-  verify_namespace_meta >&2 || true
-  return 1
-}
-
 reset_cache() {
   # Requires `integration` feature on the serve binary (see cargo build below).
   curl -sf -X POST "${BASE_URL}/v1/debug/cache-stats/reset" >/dev/null \

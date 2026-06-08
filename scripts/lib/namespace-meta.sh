@@ -40,3 +40,25 @@ verify_namespace_meta() {
   echo "$meta"
   return 0
 }
+
+# wait_until_indexed
+# Polls verify_namespace_meta until the namespace is fully indexed or
+# INDEX_TIMEOUT_SEC expires.  Prints a one-line ready message on success.
+# Requires: NS_URL, NAMESPACE, INDEX_TIMEOUT_SEC (set by the sourcing script).
+wait_until_indexed() {
+  local deadline=$(( $(date +%s) + INDEX_TIMEOUT_SEC ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    if verify_namespace_meta >/dev/null 2>&1; then
+      local meta cursor pref
+      meta="$(verify_namespace_meta)"
+      cursor="$(echo "$meta" | jq -r '.index_cursor')"
+      pref="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
+      echo "namespace ${NAMESPACE} ready (cursor=${cursor}, preferred_ann_version=${pref})"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "timeout waiting for index_cursor == wal_commit_seq and preferred_ann_version==3 on ${NAMESPACE}" >&2
+  verify_namespace_meta >&2 || true
+  return 1
+}
