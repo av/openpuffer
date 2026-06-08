@@ -22,11 +22,11 @@ TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 DOCS="${OPENPUFFER_BENCH_DOCS:-100000}"
 SKIP_INGEST=0
 WARM_MODE=1
-for arg in "$@"; do
-  case "$arg" in
-    --tier=*) TIER="${arg#*=}" ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tier=*) TIER="${1#*=}" ;;
     --tier) shift; TIER="${1:?}" ;;
-    --docs=*) DOCS="${arg#*=}" ;;
+    --docs=*) DOCS="${1#*=}" ;;
     --docs) shift; DOCS="${1:?--docs requires a number}" ;;
     --skip-ingest) SKIP_INGEST=1 ;;
     --warm) WARM_MODE=1 ;;
@@ -36,6 +36,7 @@ for arg in "$@"; do
       exit 0
       ;;
   esac
+  shift
 done
 [[ "${OPENPUFFER_BENCH_WARM:-}" == "1" ]] && WARM_MODE=1
 [[ "${OPENPUFFER_BENCH_WARM:-}" == "0" ]] && WARM_MODE=0

@@ -28,17 +28,18 @@ large_benchmark_json_schema_version >/dev/null
 DRY_RUN=0
 WARM_MODE=0
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --dry-run|-n) DRY_RUN=1 ;;
     --warm) WARM_MODE=1 ;;
-    --tier=*) TIER="${arg#*=}" ;;
+    --tier=*) TIER="${1#*=}" ;;
     --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
     -h|--help)
       sed -n '2,15p' "$0"
       exit 0
       ;;
   esac
+  shift
 done
 [[ "${OPENPUFFER_BENCH_DRY_RUN:-}" == "1" ]] && DRY_RUN=1
 [[ "${OPENPUFFER_BENCH_WARM:-}" == "1" ]] && WARM_MODE=1

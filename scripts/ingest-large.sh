@@ -39,16 +39,17 @@ source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --dry-run|-n) DRY_RUN=1 ;;
-    --tier=*) TIER="${arg#*=}" ;;
+    --tier=*) TIER="${1#*=}" ;;
     --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
     -h|--help)
       sed -n '2,18p' "$0"
       exit 0
       ;;
   esac
+  shift
 done
 [[ "${OPENPUFFER_INGEST_DRY_RUN:-}" == "1" ]] && DRY_RUN=1
 

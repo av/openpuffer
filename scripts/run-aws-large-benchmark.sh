@@ -34,14 +34,14 @@ BENCH_ONLY=0
 SKIP_INGEST=0
 SKIP_BENCH=0
 
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --dry-run|-n) DRY_RUN=1 ;;
     --preflight-only) PREFLIGHT_ONLY=1 ;;
     --skip-g2) SKIP_G2=1 ;;
     --ingest-only) INGEST_ONLY=1; SKIP_BENCH=1 ;;
     --bench-only) BENCH_ONLY=1; SKIP_INGEST=1 ;;
-    --tier=*) TIER="${arg#*=}" ;;
+    --tier=*) TIER="${1#*=}" ;;
     --tier) shift; TIER="${1:?--tier requires l1|l2|l3}" ;;
     -h|--help)
       sed -n '2,22p' "$0"
@@ -49,6 +49,7 @@ for arg in "$@"; do
       exit 0
       ;;
   esac
+  shift
 done
 
 validate_tier "$TIER"
