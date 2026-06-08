@@ -154,8 +154,8 @@ impl FilterSegment {
             CmpOp::Ne => {
                 let mut out = self.all_doc_ids.clone();
                 if let Some(m) = field_map {
-                    for ids in m.values() {
-                        for id in ids {
+                    if let Some(eq_ids) = m.get(&value_key(value)) {
+                        for id in eq_ids {
                             out.remove(id);
                         }
                     }
@@ -297,5 +297,33 @@ mod tests {
         let back = FilterSegment::decode(&seg.encode().unwrap()).unwrap();
         assert_eq!(back.segment_id, 3);
         assert_eq!(back.all_doc_ids.len(), 1);
+    }
+
+    #[test]
+    fn ne_index_excludes_only_matching_value() {
+        let docs = vec![
+            doc(
+                "pro",
+                serde_json::Map::from_iter([("tier".into(), json!("pro"))]),
+            ),
+            doc(
+                "free",
+                serde_json::Map::from_iter([("tier".into(), json!("free"))]),
+            ),
+            doc(
+                "no-tier",
+                serde_json::Map::from_iter([("other".into(), json!(1))]),
+            ),
+        ];
+        let seg = FilterSegment::build(1, &json!({}), &docs);
+        let expr = FilterExpr::Cmp {
+            field: "tier".into(),
+            op: CmpOp::Ne,
+            value: FilterValue::String("pro".into()),
+        };
+        let ids = seg.matching_doc_ids(&expr);
+        assert!(ids.contains("free"), "Ne must keep docs with different value");
+        assert!(ids.contains("no-tier"), "Ne must keep docs without the field");
+        assert!(!ids.contains("pro"), "Ne must exclude docs matching the value");
     }
 }
