@@ -288,7 +288,7 @@ fn doc_field_value(doc: &Document, field: &str) -> Option<FilterValue> {
     attr_to_filter_value(attr)
 }
 
-fn attr_to_filter_value(v: &Value) -> Option<FilterValue> {
+pub fn attr_to_filter_value(v: &Value) -> Option<FilterValue> {
     match v {
         Value::Null => None,
         Value::String(s) => Some(FilterValue::String(s.clone())),

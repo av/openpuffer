@@ -2,7 +2,7 @@
 //!
 //! Maps `(field, canonical_value)` → doc id sets for Eq / In / Ne and range scans.
 
-use crate::filter::{CmpOp, FilterExpr, FilterValue};
+use crate::filter::{attr_to_filter_value, CmpOp, FilterExpr, FilterValue};
 use crate::models::Document;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,15 +19,6 @@ pub fn value_key(v: &FilterValue) -> String {
         FilterValue::RefNew(_) => {
             unreachable!("$ref_new is only valid in conditional writes, not filter index")
         }
-    }
-}
-
-fn attr_to_filter_value(v: &Value) -> Option<FilterValue> {
-    match v {
-        Value::String(s) => Some(FilterValue::String(s.clone())),
-        Value::Bool(b) => Some(FilterValue::Bool(*b)),
-        Value::Number(n) => n.as_f64().map(FilterValue::Number),
-        _ => None,
     }
 }
 
