@@ -883,8 +883,8 @@ fn apply_column_batch(
             return Err("column length mismatch".into());
         }
     }
-    for i in 0..n {
-        let id = id_col[i]
+    for (i, id_val) in id_col.iter().enumerate().take(n) {
+        let id = id_val
             .as_str()
             .ok_or_else(|| "id values must be strings".to_string())?
             .to_string();

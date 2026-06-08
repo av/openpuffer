@@ -367,7 +367,7 @@ pub fn segments_per_background_tick(lag: u64, competing_namespaces: usize) -> u6
         return 1;
     }
     if competing_namespaces <= 1 || lag >= BURST_INDEX_LAG_SEGMENTS {
-        return lag.min(MAX_SEGMENTS_BURST_PER_TICK).max(1);
+        return lag.clamp(1, MAX_SEGMENTS_BURST_PER_TICK);
     }
     if lag >= HIGH_INDEX_LAG_SEGMENTS {
         return 2;
