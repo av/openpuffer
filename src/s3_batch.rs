@@ -26,7 +26,7 @@ use crate::meta::{effective_vector_fields, meta_key, vector_index_uses_legacy_pa
 use crate::namespace::fetch_meta;
 use anyhow::{Context, Result};
 use aws_sdk_s3::Client;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 
 /// Default max parallel `GetObject` keys per cold-query round (sub-batches share one roundtrip).
@@ -576,17 +576,7 @@ pub async fn fetch_round(
     bucket: &str,
     keys: &[String],
 ) -> Result<HashMap<String, Vec<u8>>> {
-    if keys.is_empty() {
-        return Ok(HashMap::new());
-    }
-    validate_cold_s3_keys(keys)?;
-    let max = cold_max_keys_per_round();
-    let mut out = HashMap::with_capacity(keys.len());
-    for chunk in keys.chunks(max) {
-        let batch = fetch_round_batch(client, bucket, chunk).await?;
-        out.extend(batch);
-    }
-    Ok(out)
+    fetch_round_inner(client, bucket, keys, false).await
 }
 
 /// Like [`fetch_round`], but omits keys that are not present (probed cluster segments may be absent).
@@ -595,6 +585,15 @@ pub async fn fetch_round_optional(
     bucket: &str,
     keys: &[String],
 ) -> Result<HashMap<String, Vec<u8>>> {
+    fetch_round_inner(client, bucket, keys, true).await
+}
+
+async fn fetch_round_inner(
+    client: &Client,
+    bucket: &str,
+    keys: &[String],
+    allow_missing: bool,
+) -> Result<HashMap<String, Vec<u8>>> {
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
@@ -602,7 +601,7 @@ pub async fn fetch_round_optional(
     let max = cold_max_keys_per_round();
     let mut out = HashMap::with_capacity(keys.len());
     for chunk in keys.chunks(max) {
-        let batch = fetch_round_optional_batch(client, bucket, chunk).await?;
+        let batch = fetch_round_batch(client, bucket, chunk, allow_missing).await?;
         out.extend(batch);
     }
     Ok(out)
@@ -612,27 +611,7 @@ async fn fetch_round_batch(
     client: &Client,
     bucket: &str,
     keys: &[String],
-) -> Result<HashMap<String, Vec<u8>>> {
-    let concurrency = cold_s3_concurrency();
-    let pairs: Vec<(String, Vec<u8>)> = stream::iter(keys.iter().cloned())
-        .map(|key| {
-            let client = client.clone();
-            let bucket = bucket.to_string();
-            async move {
-                let bytes = get_object_bytes(&client, &bucket, &key).await?;
-                Ok::<_, anyhow::Error>((key, bytes))
-            }
-        })
-        .buffer_unordered(concurrency)
-        .try_collect()
-        .await?;
-    Ok(pairs.into_iter().collect())
-}
-
-async fn fetch_round_optional_batch(
-    client: &Client,
-    bucket: &str,
-    keys: &[String],
+    allow_missing: bool,
 ) -> Result<HashMap<String, Vec<u8>>> {
     let concurrency = cold_s3_concurrency();
     let mut out = HashMap::with_capacity(keys.len());
@@ -640,22 +619,23 @@ async fn fetch_round_optional_batch(
         .map(|key| {
             let client = client.clone();
             let bucket = bucket.to_string();
-            async move { get_object_bytes_optional(&client, &bucket, &key).await }
+            async move {
+                let result = get_object_bytes_optional(&client, &bucket, &key).await?;
+                Ok::<_, anyhow::Error>((key, result))
+            }
         })
         .buffer_unordered(concurrency);
     while let Some(result) = stream.next().await {
-        if let Some((key, bytes)) = result? {
-            out.insert(key, bytes);
+        let (key, maybe_bytes) = result?;
+        match maybe_bytes {
+            Some((k, bytes)) => {
+                out.insert(k, bytes);
+            }
+            None if allow_missing => {}
+            None => anyhow::bail!("object not found: {key}"),
         }
     }
     Ok(out)
-}
-
-async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Vec<u8>> {
-    get_object_bytes_optional(client, bucket, key)
-        .await?
-        .map(|(_, bytes)| bytes)
-        .ok_or_else(|| anyhow::anyhow!("object not found: {key}"))
 }
 
 async fn get_object_bytes_optional(
