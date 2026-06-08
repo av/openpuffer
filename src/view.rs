@@ -175,6 +175,8 @@ impl NamespaceView {
         }
         let last = meta.wal_commit_seq;
         let policy = WalCorruptPolicy::current();
+        let mut doc_last_wal_seq = HashMap::new();
+        let wal_seq_threshold = last_applied.max(meta.wal_snapshot_seq);
         if let Some(replay_from) = wal_replay_from(last_applied, last) {
             for seq in replay_from..=last {
                 if let Some(bytes) = wal_bytes.get(&seq) {
@@ -182,25 +184,18 @@ impl NamespaceView {
                         decode_segment_with_policy(bytes, seq, policy)?
                     {
                         apply_entry(&mut docs, &entry)?;
+                        if seq > wal_seq_threshold {
+                            update_doc_wal_seq_map(&mut doc_last_wal_seq, seq, &entry);
+                        }
                     }
                 }
             }
         }
-        let mut doc_last_wal_seq = HashMap::new();
+        // Seed remaining docs (from snapshot or WAL entries at/below wal_snapshot_seq)
+        // with wal_snapshot_seq, matching the pre-merge behavior.
         if meta.wal_snapshot_seq > 0 {
             for id in docs.keys() {
-                doc_last_wal_seq.insert(id.clone(), meta.wal_snapshot_seq);
-            }
-        }
-        if let Some(replay_from) = wal_replay_from(last_applied.max(meta.wal_snapshot_seq), last) {
-            for seq in replay_from..=last {
-                if let Some(bytes) = wal_bytes.get(&seq) {
-                    if let Some(entry) =
-                        decode_segment_with_policy(bytes, seq, policy)?
-                    {
-                        update_doc_wal_seq_map(&mut doc_last_wal_seq, seq, &entry);
-                    }
-                }
+                doc_last_wal_seq.entry(id.clone()).or_insert(meta.wal_snapshot_seq);
             }
         }
         Ok((
