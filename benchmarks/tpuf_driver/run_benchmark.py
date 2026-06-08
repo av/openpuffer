@@ -827,7 +827,12 @@ def dry_run(ctx: RunContext) -> None:
     )
 
 
-def write_partial_ingest_failure(ctx: RunContext, partial: dict[str, Any]) -> None:
+def write_partial_ingest_failure(
+    ctx: RunContext,
+    partial: dict[str, Any],
+    *,
+    started_at: str | None = None,
+) -> None:
     """Write tpuf JSON with ingest failure metadata (no query phase)."""
     payload = build_result_payload(
         ctx,
@@ -841,6 +846,7 @@ def write_partial_ingest_failure(ctx: RunContext, partial: dict[str, Any]) -> No
         p95_ms=0,
         candidates_ratio=None,
         recall_at_10=0.0,
+        started_at=started_at,
     )
     payload["ingest_status"] = partial.get("ingest_status", "failed")
     ctx.results_path.parent.mkdir(parents=True, exist_ok=True)
@@ -887,7 +893,7 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
     client = Turbopuffer(region=ctx.region, api_key=api_key)
     ns = client.namespace(ctx.namespace)
     ingest_stats: dict[str, Any] | None = None
-    ctx.started_at = utc_now_iso()
+    started_at = utc_now_iso()
 
     try:
         if not ctx.skip_ingest:
@@ -905,7 +911,7 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
             try:
                 ingest_stats = ingest_workload(ns, cfg, start_batch=start_batch)
             except IngestBatchError as exc:
-                write_partial_ingest_failure(ctx, exc.partial)
+                write_partial_ingest_failure(ctx, exc.partial, started_at=started_at)
                 raise SystemExit(1) from exc
             print(
                 f"  ingest done: {ingest_stats['ingest_rows_written']} rows in "
@@ -964,6 +970,7 @@ def run_live(ctx: RunContext) -> dict[str, Any]:
             warm_runs=warm_runs_data,
             warm_p50_ms=warm_p50,
             warm_p95_ms=warm_p95,
+            started_at=started_at,
         )
         ctx.results_path.parent.mkdir(parents=True, exist_ok=True)
         with ctx.results_path.open("w", encoding="utf-8") as f:
