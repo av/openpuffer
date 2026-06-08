@@ -660,28 +660,7 @@ impl Storage {
         }
 
         let dest_prefix = crate::models::namespace_prefix(dest);
-        let mut keys = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(&source_prefix);
-            if let Some(t) = &token {
-                req = req.continuation_token(t);
-            }
-            let out = req.send().await.context("list source namespace objects")?;
-            for obj in out.contents() {
-                if let Some(k) = obj.key() {
-                    keys.push(k.to_string());
-                }
-            }
-            token = out.next_continuation_token().map(|s| s.to_string());
-            if token.is_none() {
-                break;
-            }
-        }
+        let keys = list_all_s3_keys(&self.client, &self.bucket, &source_prefix).await?;
 
         if keys.is_empty() {
             return Err(anyhow!("source namespace not found"));
@@ -928,28 +907,7 @@ impl Storage {
         let had_namespace = namespace_exists(&self.client, &self.bucket, name).await?;
 
         let prefix = crate::models::namespace_prefix(name);
-        let mut keys = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(&prefix);
-            if let Some(t) = &token {
-                req = req.continuation_token(t);
-            }
-            let out = req.send().await.context("list namespace objects")?;
-            for obj in out.contents() {
-                if let Some(k) = obj.key() {
-                    keys.push(k.to_string());
-                }
-            }
-            token = out.next_continuation_token().map(|s| s.to_string());
-            if token.is_none() {
-                break;
-            }
-        }
+        let keys = list_all_s3_keys(&self.client, &self.bucket, &prefix).await?;
 
         if keys.is_empty() && !had_namespace {
             return Err(anyhow!("namespace not found"));
@@ -986,6 +944,32 @@ impl Storage {
         self.views.lock().await.remove(name);
         Ok(())
     }
+}
+
+/// Paginated `ListObjectsV2` that collects all object keys under `prefix`.
+async fn list_all_s3_keys(client: &Client, bucket: &str, prefix: &str) -> Result<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(prefix);
+        if let Some(t) = &token {
+            req = req.continuation_token(t);
+        }
+        let out = req.send().await.context("list S3 keys")?;
+        for obj in out.contents() {
+            if let Some(k) = obj.key() {
+                keys.push(k.to_string());
+            }
+        }
+        token = out.next_continuation_token().map(|s| s.to_string());
+        if token.is_none() {
+            break;
+        }
+    }
+    Ok(keys)
 }
 
 async fn namespace_exists(client: &Client, bucket: &str, name: &str) -> Result<bool> {
