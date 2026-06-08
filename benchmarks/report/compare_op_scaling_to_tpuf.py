@@ -32,6 +32,7 @@ Writes ``benchmarks/results/scaling-comparison-summary.json`` on every full run
 from __future__ import annotations
 
 import csv
+import functools
 import json
 import math
 import subprocess
@@ -107,6 +108,7 @@ class LooResult:
     train_labels: tuple[str, ...]
 
 
+@functools.cache
 def load_tpuf_reference() -> dict:
     return json.loads(TPUF_REF.read_text(encoding="utf-8"))
 
