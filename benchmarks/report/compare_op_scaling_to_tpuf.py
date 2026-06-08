@@ -504,17 +504,25 @@ def r2_and_rmse(actual: list[float], predicted: list[float]) -> tuple[float, flo
     return (r2, rmse)
 
 
-def fit_power_law(collapsed: list[tuple[int, float]]) -> ModelFit:
-    xs = [math.log(n) for n, _ in collapsed]
-    ys = [math.log(l) for _, l in collapsed]
-    n = len(collapsed)
+def _ols_regression(
+    xs: list[float], ys: list[float], label: str
+) -> tuple[float, float]:
+    """Ordinary least-squares slope and intercept on pre-transformed xs/ys."""
+    n = len(xs)
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
     var_x = sum((x - mean_x) ** 2 for x in xs)
     if var_x <= 0:
-        raise SystemExit("cannot fit power law: identical doc counts")
-    b = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / var_x
-    log_a = mean_y - b * mean_x
+        raise SystemExit(f"cannot fit {label}: identical doc counts")
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / var_x
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def fit_power_law(collapsed: list[tuple[int, float]]) -> ModelFit:
+    xs = [math.log(n) for n, _ in collapsed]
+    ys = [math.log(l) for _, l in collapsed]
+    b, log_a = _ols_regression(xs, ys, "power law")
     a = math.exp(log_a)
 
     def predict(n_docs: int) -> float:
@@ -536,14 +544,7 @@ def fit_power_law(collapsed: list[tuple[int, float]]) -> ModelFit:
 def fit_linear(collapsed: list[tuple[int, float]]) -> ModelFit:
     xs = [float(n) for n, _ in collapsed]
     ys = [l for _, l in collapsed]
-    n = len(collapsed)
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    var_x = sum((x - mean_x) ** 2 for x in xs)
-    if var_x <= 0:
-        raise SystemExit("cannot fit linear: identical doc counts")
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / var_x
-    intercept = mean_y - slope * mean_x
+    slope, intercept = _ols_regression(xs, ys, "linear")
 
     def predict(n_docs: int) -> float:
         return intercept + slope * n_docs
@@ -565,14 +566,7 @@ def fit_log_linear(collapsed: list[tuple[int, float]]) -> ModelFit:
     """L ≈ a + b·log(N) — sublinear in doc count (not power law)."""
     xs = [math.log(n) for n, _ in collapsed]
     ys = [l for _, l in collapsed]
-    n = len(collapsed)
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    var_x = sum((x - mean_x) ** 2 for x in xs)
-    if var_x <= 0:
-        raise SystemExit("cannot fit log-linear: identical doc counts")
-    b = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / var_x
-    a = mean_y - b * mean_x
+    b, a = _ols_regression(xs, ys, "log-linear")
 
     def predict(n_docs: int) -> float:
         return a + b * math.log(n_docs)
