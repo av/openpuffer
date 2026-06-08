@@ -125,7 +125,7 @@ impl SegmentCache {
             .send()
             .await;
         match out {
-            Ok(resp) => Ok(resp.e_tag().map(|s| Self::normalize_etag(s))),
+            Ok(resp) => Ok(resp.e_tag().map(Self::normalize_etag)),
             Err(e) => {
                 let service = e.into_service_error();
                 if service.is_not_found() {

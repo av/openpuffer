@@ -62,7 +62,7 @@ impl FilterValue {
             }
             _ => bail!(
                 "filter value must be string, number, bool, null, or $ref_new (got {})",
-                v.to_string()
+                v
             ),
         }
     }

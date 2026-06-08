@@ -191,13 +191,13 @@ fn cmp_values(lhs: &FilterValue, rhs: &FilterValue, op: CmpOp) -> bool {
         (FilterValue::Bool(a), FilterValue::Bool(b)) => Some(a.cmp(b)),
         _ => None,
     };
-    match (ord, op) {
-        (Some(std::cmp::Ordering::Greater), CmpOp::Gt) => true,
-        (Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal), CmpOp::Gte) => true,
-        (Some(std::cmp::Ordering::Less), CmpOp::Lt) => true,
-        (Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal), CmpOp::Lte) => true,
-        _ => false,
-    }
+    matches!(
+        (ord, op),
+        (Some(std::cmp::Ordering::Greater), CmpOp::Gt)
+            | (Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal), CmpOp::Gte)
+            | (Some(std::cmp::Ordering::Less), CmpOp::Lt)
+            | (Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal), CmpOp::Lte)
+    )
 }
 
 /// Fields to index from schema (filterable scalars).

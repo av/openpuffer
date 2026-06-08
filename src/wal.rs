@@ -236,7 +236,7 @@ pub fn decode_segment(bytes: &[u8], seq: Option<u64>) -> Result<WalEntry> {
     if bytes.is_empty() {
         return Err(corrupt_err(seq, "empty wal segment"));
     }
-    if bytes[0] == WAL_FORMAT_CRC32 && bytes.len() >= 1 + CRC32_TRAILER_LEN + 1 {
+    if bytes[0] == WAL_FORMAT_CRC32 && bytes.len() > 1 + CRC32_TRAILER_LEN {
         match decode_crc32_format(bytes, seq) {
             Ok(entry) => return Ok(entry),
             Err(e) if is_corrupt_error(&e) => {

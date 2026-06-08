@@ -7,7 +7,7 @@
 //!
 //! Legacy single-vector namespaces may still use `index/centroids-l0.bin` (no field prefix).
 
-use crate::config::{ann_max_probe_clusters_from_env, AnnBuildConfig, AnnProbeConfig};
+use crate::config::{ann_max_probe_clusters_from_env, AnnBuildConfig};
 use crate::meta::NamespaceMeta;
 use crate::meta::DistanceMetric;
 use crate::models::Document;
