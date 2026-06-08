@@ -127,18 +127,17 @@ pub async fn warm_namespace(
                     }
                     for fine_id in 0..l0.num_fine_total {
                         let ckey = ClusterSegment::key(namespace, &field, fine_id);
-                        if cache.get_bytes(client, bucket, &ckey).await?.is_some() {
-                            cluster_segments += 1;
-                        } else if use_legacy
-                            && cache
-                                .get_bytes(
-                                    client,
-                                    bucket,
-                                    &ClusterSegment::legacy_key(namespace, fine_id),
-                                )
-                                .await?
-                                .is_some()
-                        {
+                        let found = cache.get_bytes(client, bucket, &ckey).await?.is_some()
+                            || (use_legacy
+                                && cache
+                                    .get_bytes(
+                                        client,
+                                        bucket,
+                                        &ClusterSegment::legacy_key(namespace, fine_id),
+                                    )
+                                    .await?
+                                    .is_some());
+                        if found {
                             cluster_segments += 1;
                         }
                     }

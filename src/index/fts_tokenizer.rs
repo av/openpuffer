@@ -9,16 +9,10 @@ use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 
 /// Runtime options (env `OPENPUFFER_FTS_STEM`, default off).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FtsTokenizeOptions {
     /// Porter stemming for English tokens (off by default).
     pub stem: bool,
-}
-
-impl Default for FtsTokenizeOptions {
-    fn default() -> Self {
-        Self { stem: false }
-    }
 }
 
 impl FtsTokenizeOptions {

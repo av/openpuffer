@@ -57,7 +57,6 @@ fn clamp_probe_widths_to_cluster_cap(coarse: u32, fine: u32, max_clusters: usize
     if cluster_get_upper_bound_for_probes(c, f) <= max_clusters {
         return (c, f);
     }
-    let mut c = c;
     let mut f = 1u32;
     while c > 1 && cluster_get_upper_bound_for_probes(c, f) > max_clusters {
         c -= 1;
