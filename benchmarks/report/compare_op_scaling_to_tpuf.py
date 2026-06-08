@@ -37,9 +37,10 @@ import math
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from utc_timestamps import utc_now_iso
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "benchmarks" / "results"
@@ -213,10 +214,6 @@ def resolve_git_commit() -> str:
     return commits[-1] if commits else "unknown"
 
 
-def utc_now_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def build_scaling_comparison_summary(
     model_override: str | None = None,
 ) -> dict[str, Any]:
@@ -255,7 +252,7 @@ def build_scaling_comparison_summary(
     fits, extrapolations, recommended = build_fit_extrapolation_block(collapsed)
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
-        "timestamp_utc": utc_now_timestamp(),
+        "timestamp_utc": utc_now_iso(),
         "git_commit": resolve_git_commit(),
         "tpuf_official": load_tpuf_official_block(),
         "openpuffer_measured": load_op_measured_tiers(),
