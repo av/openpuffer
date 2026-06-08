@@ -1942,97 +1942,59 @@ fn top_m_centroids(
     ranked.into_iter().take(m).map(|(id, _)| id).collect()
 }
 
-/// Score query vs candidate (higher is better).
-pub fn score_vector(query: &[f64], candidate: &[f64], metric: DistanceMetric) -> f64 {
-    match metric {
-        DistanceMetric::CosineDistance => cosine_similarity(query, candidate),
-        DistanceMetric::EuclideanSquared => {
-            let d2 = euclidean_squared(query, candidate);
-            if d2.is_finite() {
-                -d2
-            } else {
-                f64::NEG_INFINITY
+/// Generate distance / scoring functions for a concrete float type.
+///
+/// Each invocation emits the three named functions with identical logic, keeping
+/// the hot inner loops index-based for SIMD auto-vectorization while avoiding
+/// four hand-duplicated copies across f32 / f64.
+macro_rules! impl_distance_fns {
+    ($T:ty, $cosine:ident, $euclid:ident, $score:ident) => {
+        pub fn $cosine(a: &[$T], b: &[$T]) -> $T {
+            if a.len() != b.len() || a.is_empty() {
+                return 0.0;
+            }
+            let mut dot: $T = 0.0;
+            let mut na: $T = 0.0;
+            let mut nb: $T = 0.0;
+            for i in 0..a.len() {
+                dot += a[i] * b[i];
+                na += a[i] * a[i];
+                nb += b[i] * b[i];
+            }
+            if na == 0.0 || nb == 0.0 {
+                return 0.0;
+            }
+            dot / (na.sqrt() * nb.sqrt())
+        }
+
+        fn $euclid(a: &[$T], b: &[$T]) -> $T {
+            if a.len() != b.len() {
+                return <$T>::INFINITY;
+            }
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| {
+                    let d = x - y;
+                    d * d
+                })
+                .sum()
+        }
+
+        /// Score query vs candidate (higher is better).
+        pub fn $score(query: &[$T], candidate: &[$T], metric: DistanceMetric) -> $T {
+            match metric {
+                DistanceMetric::CosineDistance => $cosine(query, candidate),
+                DistanceMetric::EuclideanSquared => {
+                    let d2 = $euclid(query, candidate);
+                    if d2.is_finite() { -d2 } else { <$T>::NEG_INFINITY }
+                }
             }
         }
-    }
+    };
 }
 
-/// f32 ANN scoring (used when cluster vectors are stored as f16).
-pub fn score_vector_f32(query: &[f32], candidate: &[f32], metric: DistanceMetric) -> f32 {
-    match metric {
-        DistanceMetric::CosineDistance => cosine_similarity_f32(query, candidate),
-        DistanceMetric::EuclideanSquared => {
-            let d2 = euclidean_squared_f32(query, candidate);
-            if d2.is_finite() {
-                -d2
-            } else {
-                f32::NEG_INFINITY
-            }
-        }
-    }
-}
-
-pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0;
-    let mut na = 0.0;
-    let mut nb = 0.0;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
-}
-
-fn euclidean_squared(a: &[f64], b: &[f64]) -> f64 {
-    if a.len() != b.len() {
-        return f64::INFINITY;
-    }
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum()
-}
-
-pub fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut na = 0.0f32;
-    let mut nb = 0.0f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
-}
-
-fn euclidean_squared_f32(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() {
-        return f32::INFINITY;
-    }
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum()
-}
+impl_distance_fns!(f64, cosine_similarity, euclidean_squared, score_vector);
+impl_distance_fns!(f32, cosine_similarity_f32, euclidean_squared_f32, score_vector_f32);
 
 pub fn extract_vector(attrs: &HashMap<String, Value>, field: &str) -> Result<Vec<f64>> {
     let v = attrs
