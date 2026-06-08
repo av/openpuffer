@@ -890,11 +890,6 @@ def ballpark_verdict(op_equiv_ms: float, tpuf_ms: int) -> str:
             f"extrapolated openpuffer (~{fmt_ms(op_equiv_ms)}) is within **~2×** of tpuf "
             f"official {tpuf_ms} ms — **same order of magnitude** under heroic assumptions"
         )
-    if ratio <= 100:
-        return (
-            f"extrapolated openpuffer is **~{ratio:.0f}× slower** than tpuf {tpuf_ms} ms — "
-            "**not** in the same absolute ballpark on this MinIO harness"
-        )
     return (
         f"extrapolated openpuffer is **~{ratio:.0f}× slower** than tpuf {tpuf_ms} ms — "
         "**not** in the same absolute ballpark on this MinIO harness"
