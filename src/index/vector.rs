@@ -1205,7 +1205,7 @@ impl VectorIndex {
         let end = start.saturating_add(count);
         self.clusters
             .iter()
-            .filter(|(fid, c)| (start..end).contains(fid))
+            .filter(|(fid, _)| (start..end).contains(fid))
             .map(|(_, c)| c.members.len())
             .max()
             .unwrap_or(0)

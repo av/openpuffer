@@ -158,7 +158,6 @@ class RunContext:
     warm_consistency: str
     filter_specs: tuple[dict[str, Any], ...]
     hybrid_specs: tuple[dict[str, Any], ...]
-    started_at: str | None = None
 
 
 def repo_relative(path: str) -> Path:
@@ -788,7 +787,7 @@ def build_result_payload(
             }
         )
     payload.update(
-        benchmark_run_timestamps(started_at=started_at or ctx.started_at)
+        benchmark_run_timestamps(started_at=started_at)
     )
     return payload
 

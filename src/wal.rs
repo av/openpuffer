@@ -144,10 +144,6 @@ impl WalSnapshot {
     }
 }
 
-pub fn wal_snapshot_key(namespace: &str) -> String {
-    WalSnapshot::key(namespace)
-}
-
 pub fn encode_snapshot(snapshot: &WalSnapshot) -> Result<Vec<u8>> {
     serde_json::to_vec(snapshot).context("encode WalSnapshot")
 }
