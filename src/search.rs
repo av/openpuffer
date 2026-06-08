@@ -703,20 +703,18 @@ fn attr_sort_key(doc: Option<&Document>, field: &str) -> AttrSortKey {
     }
 }
 
-fn attr_sort_key_string(key: &AttrSortKey) -> Option<String> {
-    match key {
-        AttrSortKey::Null => None,
-        AttrSortKey::Number(n) => Some(format!("n:{n:032.8}")),
-        AttrSortKey::String(s) => Some(format!("s:{s}")),
-    }
-}
-
 fn compare_attr_keys(a: &AttrSortKey, b: &AttrSortKey, descending: bool) -> std::cmp::Ordering {
-    let ord = match (attr_sort_key_string(a), attr_sort_key_string(b)) {
-        (None, None) => std::cmp::Ordering::Equal,
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(x), Some(y)) => x.cmp(&y),
+    let ord = match (a, b) {
+        (AttrSortKey::Null, AttrSortKey::Null) => std::cmp::Ordering::Equal,
+        (AttrSortKey::Null, _) => std::cmp::Ordering::Less,
+        (_, AttrSortKey::Null) => std::cmp::Ordering::Greater,
+        (AttrSortKey::Number(x), AttrSortKey::Number(y)) => {
+            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (AttrSortKey::String(x), AttrSortKey::String(y)) => x.cmp(y),
+        // Mixed types: numbers sort before strings (stable, deterministic).
+        (AttrSortKey::Number(_), AttrSortKey::String(_)) => std::cmp::Ordering::Less,
+        (AttrSortKey::String(_), AttrSortKey::Number(_)) => std::cmp::Ordering::Greater,
     };
     if descending {
         ord.reverse()
@@ -1980,6 +1978,78 @@ mod tests {
         assert!(
             (scores[0] - scores[1]).abs() < 1e-9 && (scores[1] - scores[2]).abs() < 1e-9,
             "expected tied BM25 scores, got {scores:?}"
+        );
+    }
+
+    #[test]
+    fn order_by_negative_numbers_sorted_correctly() {
+        let tie_text = "tie score match token";
+        let mut map: HashMap<String, Document> = HashMap::new();
+        for (id, value) in [("neg10", -10), ("neg1", -1), ("pos5", 5), ("zero", 0)] {
+            map.insert(
+                id.into(),
+                Document {
+                    id: id.into(),
+                    attributes: [
+                        ("text".into(), json!(tie_text)),
+                        ("val".into(), json!(value)),
+                    ]
+                    .into(),
+                },
+            );
+        }
+        let pairs: Vec<(String, Document)> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let seg = FtsSegment::build(1, "text", &pairs);
+        let meta = NamespaceMeta {
+            index_cursor: 1,
+            wal_commit_seq: 1,
+            fts_segment_id: 1,
+            ..Default::default()
+        };
+        let tail = HashSet::new();
+        let vecs = HashMap::new();
+        let ctx = QueryContext {
+            fts: Some(&seg),
+            ..test_ctx(&map, &meta, &tail, &vecs)
+        };
+        // Ascending: -10, -1, 0, 5
+        let req_asc = QueryRequest {
+            rank_by: json!(["BM25", "text", "tie score"]),
+            top_k: Some(4),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+            order_by: Some(json!(["val", "asc"])),
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let resp = execute_query(&ctx, &req_asc).unwrap();
+        let ids: Vec<_> = resp.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["neg10", "neg1", "zero", "pos5"],
+            "ascending order_by must sort negative numbers correctly"
+        );
+        // Descending: 5, 0, -1, -10
+        let req_desc = QueryRequest {
+            rank_by: json!(["BM25", "text", "tie score"]),
+            top_k: Some(4),
+            filters: None,
+            include_attributes: None,
+            consistency: None,
+            order_by: Some(json!(["val", "desc"])),
+            include_vectors: None,
+            vector_encoding: None,
+        };
+        let resp = execute_query(&ctx, &req_desc).unwrap();
+        let ids: Vec<_> = resp.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["pos5", "zero", "neg1", "neg10"],
+            "descending order_by must sort negative numbers correctly"
         );
     }
 
