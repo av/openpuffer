@@ -377,69 +377,49 @@ validate_tier() {
   esac
 }
 
-render_executive_summary_partial() {
-  local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
-  local have_op="$5" have_tpuf="$6"
-  local warm_line="" overlap_line="" status_line=""
-  local op_p50 tpuf_p50 op_recall tpuf_recall op_warm_p50 tpuf_warm_p50
-  local overlap_mean overlap_mode
-  primary="$(primary_json_file "$op_file" "$tpuf_file")"
-  op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
-  tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
-  op_recall="$(jq_field "$op_file" '.recall_at_10')"
-  tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
-  op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
-  tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
-  if [[ "$op_warm_p50" != "null" || "$tpuf_warm_p50" != "null" ]]; then
-    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio —; partial merge).
-"
-  fi
-  if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
-    overlap_mean="$(jq_field "$overlap_file" '.summary.mean_overlap_at_k')"
-    overlap_mode="$(jq_field "$overlap_file" '.mode')"
-    overlap_line="- **Spot-check overlap@10 (mean):** $(fmt_recall "$overlap_mean") (10 vector queries, mode=${overlap_mode}; Phase 3.3 \`id-overlap-${tier}.json\`).
-"
-  fi
-  if [[ "$have_op" == "1" ]]; then
-    status_line="- **Merge status:** partial — turbopuffer JSON missing; ratios and interpretation omitted."
-  else
-    status_line="- **Merge status:** partial — openpuffer JSON missing; ratios and interpretation omitted."
-  fi
-
-  cat <<EOF
-## Executive summary
-
-- **Workload:** synthetic-128, tier **${tier}** ($(tier_docs_label "$tier") docs × 128-dim cosine, seed from manifest).
-${status_line}
-- **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio —).
-${warm_line}${overlap_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
-- **Self-host vs managed:** openpuffer exposes S3 cold-path metrics when present; turbopuffer is managed (those fields n/a).
-- _Partial merge:_ comparison interpretation skipped until both JSON files exist. [COMPARISON.md](../COMPARISON.md) § measured maturity.
-
-EOF
-}
-
 render_executive_summary() {
   local tier="$1" op_file="$2" tpuf_file="$3" overlap_file="${4:-}"
   local have_op=0 have_tpuf=0
   json_file_exists "$op_file" && have_op=1
   json_file_exists "$tpuf_file" && have_tpuf=1
-  if [[ "$have_op" == "0" || "$have_tpuf" == "0" ]]; then
-    render_executive_summary_partial "$tier" "$op_file" "$tpuf_file" "$overlap_file" "$have_op" "$have_tpuf"
-    return 0
-  fi
-  local op_p50 tpuf_p50 op_recall tpuf_recall ratio
-  local op_warm_p50 tpuf_warm_p50 warm_line="" overlap_line=""
+  local partial=0
+  [[ "$have_op" == "0" || "$have_tpuf" == "0" ]] && partial=1
+
+  # -- shared field extraction (jq_field returns "null" for missing files) --
+  local op_p50 tpuf_p50 op_recall tpuf_recall
+  local op_warm_p50 tpuf_warm_p50
+  local warm_line="" overlap_line="" status_line="" cold_ratio
   local overlap_mean overlap_mode
   op_p50="$(jq_field "$op_file" '.p50_query_latency_ms')"
   tpuf_p50="$(jq_field "$tpuf_file" '.p50_query_latency_ms')"
   op_recall="$(jq_field "$op_file" '.recall_at_10')"
   tpuf_recall="$(jq_field "$tpuf_file" '.recall_at_10')"
-  ratio="$(fmt_ratio "$op_p50" "$tpuf_p50")"
   op_warm_p50="$(jq_field "$op_file" '.p50_warm_query_latency_ms')"
   tpuf_warm_p50="$(jq_field "$tpuf_file" '.p50_warm_query_latency_ms')"
+
+  # -- mode-dependent fragments --
+  local warm_ratio_detail s3_detail footer_line
+  if [[ "$partial" == "1" ]]; then
+    cold_ratio="—"
+    warm_ratio_detail="ratio —; partial merge"
+    s3_detail=" when present"
+    if [[ "$have_op" == "1" ]]; then
+      status_line="- **Merge status:** partial — turbopuffer JSON missing; ratios and interpretation omitted.
+"
+    else
+      status_line="- **Merge status:** partial — openpuffer JSON missing; ratios and interpretation omitted.
+"
+    fi
+    footer_line="- _Partial merge:_ comparison interpretation skipped until both JSON files exist. [COMPARISON.md](../COMPARISON.md) § measured maturity."
+  else
+    cold_ratio="$(fmt_ratio "$op_p50" "$tpuf_p50")"
+    warm_ratio_detail="ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual; tpuf: \`hint_cache_warm\` + eventual, plan §4.3"
+    s3_detail=" (\`storage_roundtrips\`, \`cold_s3_keys_fetched\`)"
+    footer_line="- _Auto-interpretation:_ see [Comparison interpretation (tier ${tier})](#comparison-interpretation-tier-${tier}) below; edit after operator review. [COMPARISON.md](../COMPARISON.md) § measured maturity."
+  fi
+
   if [[ "$op_warm_p50" != "null" || "$tpuf_warm_p50" != "null" ]]; then
-    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (ratio $(fmt_ratio "$op_warm_p50" "$tpuf_warm_p50"); openpuffer: \`POST /warm\` + eventual; tpuf: \`hint_cache_warm\` + eventual, plan §4.3).
+    warm_line="- **Warm query p50:** openpuffer $(fmt_num "$op_warm_p50") ms vs turbopuffer $(fmt_num "$tpuf_warm_p50") ms (${warm_ratio_detail}).
 "
   fi
   if [[ -n "$overlap_file" && -f "$overlap_file" ]]; then
@@ -453,10 +433,10 @@ render_executive_summary() {
 ## Executive summary
 
 - **Workload:** synthetic-128, tier **${tier}** ($(tier_docs_label "$tier") docs × 128-dim cosine, seed from manifest).
-- **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio ${ratio}).
+${status_line}- **Cold query p50:** openpuffer $(fmt_num "$op_p50") ms vs turbopuffer $(fmt_num "$tpuf_p50") ms (ratio ${cold_ratio}).
 ${warm_line}${overlap_line}- **Recall@10 (num=20):** openpuffer $(fmt_recall "$op_recall") vs turbopuffer $(fmt_recall "$tpuf_recall").
-- **Self-host vs managed:** openpuffer exposes S3 cold-path metrics (\`storage_roundtrips\`, \`cold_s3_keys_fetched\`); turbopuffer is managed (those fields n/a).
-- _Auto-interpretation:_ see [Comparison interpretation (tier ${tier})](#comparison-interpretation-tier-${tier}) below; edit after operator review. [COMPARISON.md](../COMPARISON.md) § measured maturity.
+- **Self-host vs managed:** openpuffer exposes S3 cold-path metrics${s3_detail}; turbopuffer is managed (those fields n/a).
+${footer_line}
 
 EOF
 }
