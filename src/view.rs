@@ -57,17 +57,7 @@ impl NamespaceView {
     }
 
     fn record_doc_wal_seq(&mut self, seq: u64, entry: &WalEntry) {
-        for id in &entry.deletes {
-            self.doc_last_wal_seq.remove(id);
-        }
-        if let Ok(docs) = entry.clone().into_documents() {
-            for doc in docs {
-                self.doc_last_wal_seq.insert(doc.id, seq);
-            }
-        }
-        for doc in &entry.patches {
-            self.doc_last_wal_seq.insert(doc.id.clone(), seq);
-        }
+        update_doc_wal_seq_map(&mut self.doc_last_wal_seq, seq, entry);
     }
 
     /// Apply a committed WAL batch locally (after group-commit flush).
@@ -208,17 +198,7 @@ impl NamespaceView {
                     if let Some(entry) =
                         decode_segment_with_policy(bytes, seq, policy)?
                     {
-                        for id in &entry.deletes {
-                            doc_last_wal_seq.remove(id);
-                        }
-                        if let Ok(batch) = entry.clone().into_documents() {
-                            for doc in batch {
-                                doc_last_wal_seq.insert(doc.id, seq);
-                            }
-                        }
-                        for doc in &entry.patches {
-                            doc_last_wal_seq.insert(doc.id.clone(), seq);
-                        }
+                        update_doc_wal_seq_map(&mut doc_last_wal_seq, seq, &entry);
                     }
                 }
             }
@@ -234,6 +214,21 @@ impl NamespaceView {
             wal_roundtrips,
             wal_s3_keys,
         ))
+    }
+}
+
+/// Update a doc-id → WAL-seq map for one entry (deletes remove, upserts/patches insert `seq`).
+fn update_doc_wal_seq_map(map: &mut HashMap<String, u64>, seq: u64, entry: &WalEntry) {
+    for id in &entry.deletes {
+        map.remove(id);
+    }
+    if let Ok(docs) = entry.clone().into_documents() {
+        for doc in docs {
+            map.insert(doc.id, seq);
+        }
+    }
+    for patch in &entry.patches {
+        map.insert(patch.id.clone(), seq);
     }
 }
 
@@ -259,17 +254,7 @@ async fn build_doc_last_wal_seq(
     };
     for seq in from..=meta.wal_commit_seq {
         let entry = read_wal_entry(client, bucket, namespace, seq).await?;
-        for id in &entry.deletes {
-            map.remove(id);
-        }
-        if let Ok(batch) = entry.clone().into_documents() {
-            for doc in batch {
-                map.insert(doc.id, seq);
-            }
-        }
-        for doc in &entry.patches {
-            map.insert(doc.id.clone(), seq);
-        }
+        update_doc_wal_seq_map(&mut map, seq, &entry);
     }
     Ok(map)
 }
