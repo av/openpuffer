@@ -93,7 +93,8 @@ pub fn measure_recall(
         };
         let ann_set: HashSet<_> = ann_results.iter().cloned().collect();
         let hits = brute.iter().filter(|id| ann_set.contains(*id)).count();
-        recall_sum += hits as f64 / top_k as f64;
+        let denom = brute.len().min(top_k).max(1);
+        recall_sum += hits as f64 / denom as f64;
         ann_count_sum += ann_results.len() as f64;
         exhaustive_count_sum += brute.len() as f64;
     }
@@ -304,5 +305,46 @@ mod tests {
         );
         assert_eq!(m.avg_ann_count, 4.0);
         assert_eq!(m.avg_exhaustive_count, 4.0);
+    }
+
+    #[test]
+    fn recall_perfect_when_corpus_smaller_than_top_k() {
+        // When the filtered corpus has fewer docs than top_k, brute-force returns
+        // fewer than top_k results.  Recall denominator must be brute.len(), not
+        // top_k, otherwise perfect ANN recall is reported as < 1.0.
+        let docs: Vec<_> = (0..2)
+            .map(|i| {
+                let mut v = vec![0.0; 4];
+                v[i % 4] = 1.0;
+                vec_doc(&format!("d{i}"), v)
+            })
+            .collect();
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &json!({"embedding": "[4]f32"}),
+            AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("index built");
+        let corpus: Vec<_> = docs
+            .iter()
+            .map(|(id, d)| {
+                (
+                    id.clone(),
+                    extract_vector(&d.attributes, "embedding").unwrap(),
+                )
+            })
+            .collect();
+        let view = |id: &str| corpus.iter().find(|(i, _)| i == id).map(|(_, v)| v.clone());
+        // top_k=10 but only 2 docs in corpus: brute returns 2, ANN returns 2.
+        let m = measure_recall(&index, &corpus, 2, 10, false, view, 42, None);
+        assert!(
+            m.avg_recall >= 1.0 - f64::EPSILON,
+            "recall should be 1.0 when ANN finds all brute-force results, got {}",
+            m.avg_recall
+        );
     }
 }
