@@ -313,27 +313,7 @@ impl CentroidIndexL2 {
 
     /// Top-M fine centroid locals within this L2 partition (higher score is better).
     pub fn nearest_fine(&self, query: &[f64], metric: DistanceMetric, m: usize) -> Vec<u32> {
-        if self.centroids.is_empty() {
-            return Vec::new();
-        }
-        let m = m.min(self.centroids.len());
-        let mut ranked: Vec<(u32, f64)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    i as u32,
-                    score_vector(query, c, metric),
-                )
-            })
-            .collect();
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        ranked.into_iter().take(m).map(|(id, _)| id).collect()
+        top_m_centroids(&self.centroids, query, metric, m)
     }
 }
 
@@ -450,27 +430,7 @@ impl CentroidIndexL0 {
 
     /// Top-M coarse centroid ids by score (higher is better).
     pub fn nearest_coarse(&self, query: &[f64], m: usize) -> Vec<u32> {
-        if self.centroids.is_empty() {
-            return Vec::new();
-        }
-        let m = m.min(self.centroids.len());
-        let mut ranked: Vec<(u32, f64)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    i as u32,
-                    score_vector(query, c, self.distance_metric),
-                )
-            })
-            .collect();
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        ranked.into_iter().take(m).map(|(id, _)| id).collect()
+        top_m_centroids(&self.centroids, query, self.distance_metric, m)
     }
 
     pub fn probe_coarse_count(&self) -> usize {
@@ -539,27 +499,7 @@ impl CentroidIndexL1 {
     }
 
     pub fn nearest_fine(&self, query: &[f64], metric: DistanceMetric, m: usize) -> Vec<u32> {
-        if self.centroids.is_empty() {
-            return Vec::new();
-        }
-        let m = m.min(self.centroids.len());
-        let mut ranked: Vec<(u32, f64)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    i as u32,
-                    score_vector(query, c, metric),
-                )
-            })
-            .collect();
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        ranked.into_iter().take(m).map(|(id, _)| id).collect()
+        top_m_centroids(&self.centroids, query, metric, m)
     }
 }
 
@@ -1976,6 +1916,31 @@ fn nearest_centroid_id(vec: &[f64], centroids: &[Vec<f64>], metric: DistanceMetr
         }
     }
     best
+}
+
+/// Return the top-`m` centroid indices ranked by `score_vector` (higher is better).
+/// Tie-breaks on ascending index to keep results deterministic.
+fn top_m_centroids(
+    centroids: &[Vec<f64>],
+    query: &[f64],
+    metric: DistanceMetric,
+    m: usize,
+) -> Vec<u32> {
+    if centroids.is_empty() {
+        return Vec::new();
+    }
+    let m = m.min(centroids.len());
+    let mut ranked: Vec<(u32, f64)> = centroids
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i as u32, score_vector(query, c, metric)))
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    ranked.into_iter().take(m).map(|(id, _)| id).collect()
 }
 
 /// Score query vs candidate (higher is better).
