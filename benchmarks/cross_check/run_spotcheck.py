@@ -33,6 +33,13 @@ from utc_timestamps import utc_now_iso  # noqa: E402
 
 import id_overlap as xcheck  # noqa: E402
 
+def _rel_workload(workload_dir: Path) -> str:
+    """Relative path string if under ROOT, else absolute."""
+    if workload_dir.is_relative_to(ROOT):
+        return str(workload_dir.relative_to(ROOT))
+    return str(workload_dir)
+
+
 TIER_WORKLOADS: dict[str, str] = {
     "l1": "benchmarks/workloads/synthetic-128/l1-100k",
     "l2": "benchmarks/workloads/synthetic-128/l2-500k",
@@ -208,11 +215,7 @@ def run_mock(
     queries: dict[str, Any],
     fixture_path: Path | None,
 ) -> dict[str, Any]:
-    rel_workload = (
-        str(workload_dir.relative_to(ROOT))
-        if workload_dir.is_relative_to(ROOT)
-        else str(workload_dir)
-    )
+    rel_workload = _rel_workload(workload_dir)
     if fixture_path is not None:
         payload = xcheck.load_json(fixture_path)
         if payload.get("tier") and payload["tier"] != tier:
@@ -348,11 +351,7 @@ def run_live(
             }
         )
 
-    rel_workload = (
-        str(workload_dir.relative_to(ROOT))
-        if workload_dir.is_relative_to(ROOT)
-        else str(workload_dir)
-    )
+    rel_workload = _rel_workload(workload_dir)
     return xcheck.build_result_payload(
         tier=tier,
         workload_dir=rel_workload,
@@ -368,11 +367,7 @@ def run_live(
 def run_dry_run(*, tier: str, workload_dir: Path, queries: dict[str, Any]) -> int:
     spot_cfg = xcheck.spot_check_config(queries)
     specs = xcheck.spot_check_query_specs(queries)
-    rel = (
-        str(workload_dir.relative_to(ROOT))
-        if workload_dir.is_relative_to(ROOT)
-        else str(workload_dir)
-    )
+    rel = _rel_workload(workload_dir)
     print(f"id-overlap spot-check dry-run OK tier={tier} workload={rel}")
     print(f"  spot_check: count={spot_cfg.get('count')} top_k={spot_cfg.get('top_k')}")
     for spec in specs:

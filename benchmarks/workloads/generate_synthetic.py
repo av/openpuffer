@@ -151,12 +151,8 @@ def openpuffer_write_body(
 def turbopuffer_write_kwargs(
     cfg: WorkloadConfig, start: int, count: int, *, include_schema: bool
 ) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "upsert_columns": upsert_columns_batch(cfg, start, count),
-    }
-    if include_schema:
-        out["schema"] = openpuffer_schema(cfg)
-    return out
+    # Identical shape — delegate to avoid duplication.
+    return openpuffer_write_body(cfg, start, count, include_schema=include_schema)
 
 
 def manifest_dict(cfg: WorkloadConfig) -> dict[str, Any]:
