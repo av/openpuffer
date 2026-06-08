@@ -770,14 +770,16 @@ impl Storage {
             }
         }
 
-        let upserts = self
-            .apply_upsert_condition(namespace, upserts, upsert_condition)
-            .await?;
-        let patches = self
-            .apply_patch_condition(namespace, patches, patch_condition)
-            .await?;
-        let deletes = self
-            .apply_delete_condition(namespace, deletes, delete_condition)
+        let (upserts, patches, deletes) = self
+            .apply_write_conditions(
+                namespace,
+                upserts,
+                patches,
+                deletes,
+                upsert_condition,
+                patch_condition,
+                delete_condition,
+            )
             .await?;
 
         let upserted_ids: Vec<String> = upserts.iter().map(|d| d.id.clone()).collect();
@@ -825,91 +827,71 @@ impl Storage {
         Ok(stats)
     }
 
-    /// Filter upserts by `upsert_condition` against committed namespace view (strong read).
-    async fn apply_upsert_condition(
+    /// Apply upsert/patch/delete conditions against a single doc snapshot.
+    ///
+    /// Loads the namespace view and overlays pending writes at most once,
+    /// regardless of how many conditions are present.
+    async fn apply_write_conditions(
         &self,
         namespace: &str,
         upserts: Vec<Document>,
-        upsert_condition: Option<serde_json::Value>,
-    ) -> Result<Vec<Document>> {
-        let Some(cond_val) = upsert_condition.filter(|v| !v.is_null()) else {
-            return Ok(upserts);
-        };
-        let expr = parse_filter(&cond_val)?;
-        let mut docs = self.load_docs_for_conditional_write(namespace).await?;
-        self.write_buffer
-            .overlay_pending_writes(namespace, &mut docs)
-            .await?;
-        let mut out = Vec::with_capacity(upserts.len());
-        for doc in upserts {
-            let current = docs.get(&doc.id);
-            if should_apply_upsert(&expr, current, &doc) {
-                out.push(doc);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Filter `patch_rows` / `patch_columns` by `patch_condition` (missing ids skipped).
-    async fn apply_patch_condition(
-        &self,
-        namespace: &str,
         patches: Vec<Document>,
-        patch_condition: Option<serde_json::Value>,
-    ) -> Result<Vec<Document>> {
-        let Some(cond_val) = patch_condition.filter(|v| !v.is_null()) else {
-            return Ok(patches);
-        };
-        let expr = parse_filter(&cond_val)?;
-        let mut docs = self.load_docs_for_conditional_write(namespace).await?;
-        self.write_buffer
-            .overlay_pending_writes(namespace, &mut docs)
-            .await?;
-        let mut out = Vec::with_capacity(patches.len());
-        for patch in patches {
-            let current = docs.get(&patch.id);
-            if should_apply_patch(&expr, current, &patch) {
-                out.push(patch);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Filter `deletes` by `delete_condition` (missing ids skipped; `$ref_new` resolves to null).
-    async fn apply_delete_condition(
-        &self,
-        namespace: &str,
         deletes: Vec<String>,
+        upsert_condition: Option<serde_json::Value>,
+        patch_condition: Option<serde_json::Value>,
         delete_condition: Option<serde_json::Value>,
-    ) -> Result<Vec<String>> {
-        let Some(cond_val) = delete_condition.filter(|v| !v.is_null()) else {
-            return Ok(deletes);
-        };
-        let expr = parse_filter(&cond_val)?;
-        let mut docs = self.load_docs_for_conditional_write(namespace).await?;
-        self.write_buffer
-            .overlay_pending_writes(namespace, &mut docs)
-            .await?;
-        let mut out = Vec::with_capacity(deletes.len());
-        for id in deletes {
-            let current = docs.get(&id);
-            if should_apply_delete(&expr, current) {
-                out.push(id);
-            }
-        }
-        Ok(out)
-    }
+    ) -> Result<(Vec<Document>, Vec<Document>, Vec<String>)> {
+        let uc = upsert_condition.filter(|v| !v.is_null());
+        let pc = patch_condition.filter(|v| !v.is_null());
+        let dc = delete_condition.filter(|v| !v.is_null());
 
-    /// Current doc map for conditional writes (empty if namespace not yet created).
-    async fn load_docs_for_conditional_write(
-        &self,
-        namespace: &str,
-    ) -> Result<HashMap<String, Document>> {
-        if !namespace_exists(&self.client, &self.bucket, namespace).await? {
-            return Ok(HashMap::new());
+        // No conditions at all — skip S3 load entirely.
+        if uc.is_none() && pc.is_none() && dc.is_none() {
+            return Ok((upserts, patches, deletes));
         }
-        let view = self.load_view_snapshot(namespace).await?;
-        Ok(view.docs)
+
+        // Load docs + overlay pending writes once for all conditions.
+        let docs = if !namespace_exists(&self.client, &self.bucket, namespace).await? {
+            HashMap::new()
+        } else {
+            let mut d = self.load_view_snapshot(namespace).await?.docs;
+            self.write_buffer
+                .overlay_pending_writes(namespace, &mut d)
+                .await?;
+            d
+        };
+
+        let upserts = if let Some(cond_val) = uc {
+            let expr = parse_filter(&cond_val)?;
+            upserts
+                .into_iter()
+                .filter(|doc| should_apply_upsert(&expr, docs.get(&doc.id), doc))
+                .collect()
+        } else {
+            upserts
+        };
+
+        let patches = if let Some(cond_val) = pc {
+            let expr = parse_filter(&cond_val)?;
+            patches
+                .into_iter()
+                .filter(|patch| should_apply_patch(&expr, docs.get(&patch.id), patch))
+                .collect()
+        } else {
+            patches
+        };
+
+        let deletes = if let Some(cond_val) = dc {
+            let expr = parse_filter(&cond_val)?;
+            deletes
+                .into_iter()
+                .filter(|id| should_apply_delete(&expr, docs.get(id)))
+                .collect()
+        } else {
+            deletes
+        };
+
+        Ok((upserts, patches, deletes))
     }
 
     /// Resolve doc ids for filter-based writes via filter index + WAL tail (strong consistency).
