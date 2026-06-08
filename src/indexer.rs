@@ -603,9 +603,7 @@ impl BackgroundIndexer {
     async fn refresh_work_queue(&self) -> Result<()> {
         let mut names: HashSet<String> = self.queued.lock().await.clone();
         for name in list_namespace_names(&self.client, &self.bucket).await? {
-            if self.namespace_has_work(&name).await? {
-                names.insert(name);
-            }
+            names.insert(name);
         }
 
         let mut lag = HashMap::new();
@@ -638,13 +636,6 @@ impl BackgroundIndexer {
         Ok(())
     }
 
-    async fn namespace_has_work(&self, namespace: &str) -> Result<bool> {
-        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
-            return Ok(false);
-        };
-        Ok(needs_indexing(&meta) || crate::wal_compaction::needs_wal_compaction(&meta))
-    }
-
     /// Index up to `max_segments` WAL files; optional per-tick time limit when multiple namespaces compete.
     async fn index_namespace_timeboxed(
         &self,
@@ -675,7 +666,10 @@ impl BackgroundIndexer {
             }
         }
 
-        let still_indexing = self.namespace_still_needs_indexing(namespace).await?;
+        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
+            return Ok(false);
+        };
+        let still_indexing = needs_indexing(&meta);
         if !still_indexing {
             if let Err(e) = crate::wal_compaction::maybe_compact_wal(
                 &self.client,
@@ -689,21 +683,7 @@ impl BackgroundIndexer {
             }
         }
 
-        Ok(still_indexing || self.namespace_needs_compaction_only(namespace).await?)
-    }
-
-    async fn namespace_still_needs_indexing(&self, namespace: &str) -> Result<bool> {
-        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
-            return Ok(false);
-        };
-        Ok(needs_indexing(&meta))
-    }
-
-    async fn namespace_needs_compaction_only(&self, namespace: &str) -> Result<bool> {
-        let Some((meta, _)) = fetch_meta(&self.client, &self.bucket, namespace).await? else {
-            return Ok(false);
-        };
-        Ok(crate::wal_compaction::needs_wal_compaction(&meta))
+        Ok(still_indexing || crate::wal_compaction::needs_wal_compaction(&meta))
     }
 
     #[cfg(test)]
