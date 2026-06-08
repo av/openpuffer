@@ -140,17 +140,8 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     let top_k = parse_top_k(req.top_k)?;
     let consistency = QueryConsistency::parse(req.consistency.as_deref())?;
     let effective_ctx = QueryContext {
-        docs: ctx.docs,
-        meta: ctx.meta,
-        fts: ctx.fts,
-        vectors: ctx.vectors,
-        filter_index: ctx.filter_index,
-        tail_doc_ids: ctx.tail_doc_ids,
         consistency,
-        storage_roundtrips: ctx.storage_roundtrips,
-        cold_s3_keys_fetched: ctx.cold_s3_keys_fetched,
-        ann_probed_clusters: ctx.ann_probed_clusters,
-        ann_rerank: ctx.ann_rerank,
+        ..ctx.clone()
     };
 
     let ranker = parse_rank_by(&req.rank_by)?;
@@ -839,6 +830,30 @@ mod tests {
     use crate::models::{Document, QueryRequest};
     use serde_json::json;
 
+    /// Build a QueryContext with defaults for cold-query and ANN optional fields.
+    /// Tests that need non-default values can override with struct update syntax:
+    /// `QueryContext { fts: Some(&seg), ..test_ctx(&docs, &meta, &tail, &vecs) }`.
+    fn test_ctx<'a>(
+        docs: &'a HashMap<String, Document>,
+        meta: &'a NamespaceMeta,
+        tail_doc_ids: &'a HashSet<String>,
+        vectors: &'a HashMap<String, VectorIndex>,
+    ) -> QueryContext<'a> {
+        QueryContext {
+            docs,
+            meta,
+            fts: None,
+            vectors,
+            filter_index: None,
+            tail_doc_ids,
+            consistency: QueryConsistency::Strong,
+            storage_roundtrips: None,
+            cold_s3_keys_fetched: None,
+            ann_probed_clusters: None,
+            ann_rerank: None,
+        }
+    }
+
     fn doc(id: &str, text: &str, emb: Vec<f64>) -> Document {
         Document {
             id: id.into(),
@@ -885,18 +900,10 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vecs = HashMap::new();
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&seg),
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vecs)
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust programming"]),
@@ -939,18 +946,10 @@ mod tests {
         };
         let mut tail = HashSet::new();
         tail.insert("a".into());
+        let vecs = HashMap::new();
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&seg),
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vecs)
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -1037,18 +1036,12 @@ mod tests {
             dimensions: 3,
             ..Default::default()
         };
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&fts),
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            vectors: &vectors,
             filter_index: Some(&filter_seg),
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!([
@@ -1163,17 +1156,9 @@ mod tests {
         let tail = HashSet::new();
         let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&fts),
             vectors: &vectors,
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
 
         let bm25_resp = execute_query(&ctx, &bm25_only).unwrap();
@@ -1212,18 +1197,11 @@ mod tests {
         };
         let mut tail = HashSet::new();
         tail.insert("a".into());
+        let vecs = HashMap::new();
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&seg),
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
             consistency: QueryConsistency::Eventual,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vecs)
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "rust"]),
@@ -1276,18 +1254,11 @@ mod tests {
         };
         let empty_docs = HashMap::new();
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &empty_docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
-            filter_index: None,
-            tail_doc_ids: &tail,
+            vectors: &vectors,
             consistency: QueryConsistency::Eventual,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&empty_docs, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0]]),
@@ -1321,19 +1292,8 @@ mod tests {
         let mut docs = HashMap::new();
         docs.insert("v".into(), doc);
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&docs, &meta, &tail, &vecs);
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
             top_k: Some(1),
@@ -1369,19 +1329,8 @@ mod tests {
         );
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&docs, &meta, &tail, &vecs);
         let req = QueryRequest {
             rank_by: Value::Array(vec![
                 Value::String("BM25".into()),
@@ -1466,18 +1415,11 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            vectors: &vectors,
             filter_index: Some(&filter_seg),
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1497,18 +1439,15 @@ mod tests {
 
     #[test]
     fn query_performance_includes_storage_roundtrips() {
+        let docs = HashMap::new();
+        let meta = NamespaceMeta::default();
+        let tail = HashSet::new();
+        let vecs = HashMap::new();
         let ctx = QueryContext {
-            docs: &HashMap::new(),
-            meta: &NamespaceMeta::default(),
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &HashSet::new(),
-            consistency: QueryConsistency::Strong,
             storage_roundtrips: Some(4),
             cold_s3_keys_fetched: Some(42),
             ann_probed_clusters: Some(8),
-            ann_rerank: None,
+            ..test_ctx(&docs, &meta, &tail, &vecs)
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
@@ -1557,18 +1496,10 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            vectors: &vectors,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -1637,18 +1568,11 @@ mod tests {
             include_vectors: None,
             vector_encoding: None,
         };
+        let vectors = HashMap::from([("embedding".to_string(), vindex.clone())]);
         let ctx_probe = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex.clone())]),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
+            vectors: &vectors,
             ann_rerank: Some(false),
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let ctx_rerank = QueryContext {
             ann_rerank: Some(true),
@@ -1710,18 +1634,10 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            vectors: &vectors,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let query_vec: Vec<f64> = (0..DIM).map(|d| (d as f64 * 0.01).cos()).collect();
         let req = QueryRequest {
@@ -1752,19 +1668,8 @@ mod tests {
         let docs = HashMap::new();
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&docs, &meta, &tail, &vecs);
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "anything"]),
             top_k: Some(10),
@@ -1789,19 +1694,8 @@ mod tests {
         let docs = HashMap::new();
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&docs, &meta, &tail, &vecs);
         for top_k in [Some(0), Some((MAX_TOP_K as u32) + 1)] {
             let req = QueryRequest {
                 rank_by: json!(["BM25", "text", "x"]),
@@ -1874,19 +1768,8 @@ mod tests {
         let docs = HashMap::new();
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &docs,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&docs, &meta, &tail, &vecs);
         let cases = [
             json!([]),
             json!(["bogus", "x"]),
@@ -1944,18 +1827,10 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            vectors: &vectors,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0]]),
@@ -2009,18 +1884,11 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vectors = HashMap::from([("embedding".to_string(), vindex)]);
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::from([("embedding".to_string(), vindex)]),
+            vectors: &vectors,
             filter_index: Some(&filter_seg),
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vectors)
         };
         let req = QueryRequest {
             rank_by: json!(["vector", "ANN", "embedding", [1.0, 0.0, 0.0, 0.0]]),
@@ -2056,19 +1924,8 @@ mod tests {
         );
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&map, &meta, &tail, &vecs);
         let expr = parse_filter(&json!(["tier", "Eq", "free"])).unwrap();
         let ids = matching_doc_ids_for_filter(&ctx, &expr).unwrap();
         assert_eq!(ids.len(), 1);
@@ -2104,18 +1961,10 @@ mod tests {
             ..Default::default()
         };
         let tail = HashSet::new();
+        let vecs = HashMap::new();
         let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
             fts: Some(&seg),
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
+            ..test_ctx(&map, &meta, &tail, &vecs)
         };
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "tie score"]),
@@ -2142,19 +1991,8 @@ mod tests {
         let map: HashMap<String, Document> = HashMap::new();
         let meta = NamespaceMeta::default();
         let tail = HashSet::new();
-        let ctx = QueryContext {
-            docs: &map,
-            meta: &meta,
-            fts: None,
-            vectors: &HashMap::new(),
-            filter_index: None,
-            tail_doc_ids: &tail,
-            consistency: QueryConsistency::Strong,
-            storage_roundtrips: None,
-            cold_s3_keys_fetched: None,
-            ann_probed_clusters: None,
-            ann_rerank: None,
-        };
+        let vecs = HashMap::new();
+        let ctx = test_ctx(&map, &meta, &tail, &vecs);
         let req = QueryRequest {
             rank_by: json!(["BM25", "text", "x"]),
             top_k: Some(1),
