@@ -643,28 +643,11 @@ async fn get_object_bytes_optional(
     bucket: &str,
     key: &str,
 ) -> Result<Option<(String, Vec<u8>)>> {
-    let out = client.get_object().bucket(bucket).key(key).send().await;
-    match out {
-        Ok(resp) => {
-            let bytes = resp
-                .body
-                .collect()
-                .await
-                .context("read object body")?
-                .into_bytes()
-                .to_vec();
-            crate::metrics::inc_s3_get();
-            Ok(Some((key.to_string(), bytes)))
-        }
-        Err(e) => {
-            let service = e.into_service_error();
-            if service.is_no_such_key() {
-                Ok(None)
-            } else {
-                Err(anyhow::anyhow!("get object {key}: {service}"))
-            }
-        }
-    }
+    let result = crate::namespace::get_object_bytes_optional(client, bucket, key).await?;
+    Ok(result.map(|(bytes, _)| {
+        crate::metrics::inc_s3_get();
+        (key.to_string(), bytes)
+    }))
 }
 
 /// Cold query bootstrap: L0 + FTS + filter in one logical roundtrip. L1/clusters are per-query.

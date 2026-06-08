@@ -63,7 +63,7 @@ pub async fn read_wal_snapshot(
     namespace: &str,
 ) -> Result<Option<WalSnapshot>> {
     let key = WalSnapshot::key(namespace);
-    let Some(bytes) = get_object_bytes_optional(client, bucket, &key).await? else {
+    let Some((bytes, _)) = get_object_bytes_optional(client, bucket, &key).await? else {
         return Ok(None);
     };
     Ok(Some(decode_snapshot(&bytes)?))
@@ -355,24 +355,31 @@ async fn get_meta_json<T: serde::de::DeserializeOwned>(
 async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Vec<u8>> {
     get_object_bytes_optional(client, bucket, key)
         .await?
+        .map(|(b, _)| b)
         .ok_or_else(|| anyhow!("object not found: {key}"))
 }
 
-async fn get_object_bytes_optional(
+/// Fetch an S3 object as raw bytes, returning `None` when the key does not exist.
+///
+/// Returns `(bytes, etag)` on success so callers that need the ETag (e.g. cache
+/// validation) can use the same helper. Callers that only need bytes destructure
+/// with `(b, _)`.
+pub async fn get_object_bytes_optional(
     client: &Client,
     bucket: &str,
     key: &str,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<(Vec<u8>, Option<String>)>> {
     let out = client.get_object().bucket(bucket).key(key).send().await;
     match out {
         Ok(resp) => {
+            let etag = resp.e_tag().map(|s| s.to_string());
             let bytes = resp
                 .body
                 .collect()
                 .await
                 .context("read object body")?
                 .into_bytes();
-            Ok(Some(bytes.to_vec()))
+            Ok(Some((bytes.to_vec(), etag)))
         }
         Err(e) => {
             let service = e.into_service_error();

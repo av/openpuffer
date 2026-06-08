@@ -3,7 +3,7 @@
 //! Layout: `{cache_dir}/{bucket}/{s3_key}` with sibling `{path}.etag` for validation.
 //! Queries prefer cached bytes after a matching HEAD; cold misses GET from S3 then populate cache.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use aws_sdk_s3::Client;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,28 +142,8 @@ impl SegmentCache {
         bucket: &str,
         key: &str,
     ) -> Result<Option<(Vec<u8>, Option<String>)>> {
-        let out = client.get_object().bucket(bucket).key(key).send().await;
-        match out {
-            Ok(resp) => {
-                let etag = resp.e_tag().map(|s| Self::normalize_etag(s));
-                let bytes = resp
-                    .body
-                    .collect()
-                    .await
-                    .context("read object body")?
-                    .into_bytes()
-                    .to_vec();
-                Ok(Some((bytes, etag)))
-            }
-            Err(e) => {
-                let service = e.into_service_error();
-                if service.is_no_such_key() {
-                    Ok(None)
-                } else {
-                    Err(anyhow::anyhow!("get object {key}: {service}"))
-                }
-            }
-        }
+        let result = crate::namespace::get_object_bytes_optional(client, bucket, key).await?;
+        Ok(result.map(|(bytes, etag)| (bytes, etag.map(|e| Self::normalize_etag(&e)))))
     }
 
     /// Fetch index object: cache hit (HEAD etag match) avoids GetObject; miss fetches S3 and populates cache.
