@@ -30,6 +30,27 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
+/// PutObject to S3 and populate the local segment cache with the response etag.
+async fn put_and_cache(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    cache: &Arc<SegmentCache>,
+    ctx_msg: &str,
+) -> Result<()> {
+    let resp = client
+        .put_object()
+        .bucket(bucket)
+        .key(key)
+        .body(ByteStream::from(body.to_vec()))
+        .send()
+        .await
+        .context(ctx_msg.to_owned())?;
+    cache.populate_after_put(bucket, key, body, resp.e_tag());
+    Ok(())
+}
+
 /// Merge WAL `(index_cursor+1)..=wal_commit_seq` into index segments and CAS-advance `index_cursor`.
 ///
 /// When `max_segments` is `Some(n)`, indexes at most `n` WAL files per call (fair background slices).
@@ -95,32 +116,11 @@ pub async fn index_wal_range(
         filter_segment.segment_id = to;
         let filter_key = FilterSegment::key(namespace, to);
         let filter_body = filter_segment.encode()?;
-        let filter_resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&filter_key)
-            .body(ByteStream::from(filter_body.clone()))
-            .send()
-            .await
-            .with_context(|| format!("put filter segment {to:08}"))?;
-        cache.populate_after_put(
-            bucket,
-            &filter_key,
-            &filter_body,
-            filter_resp.e_tag(),
-        );
+        put_and_cache(client, bucket, &filter_key, &filter_body, cache, &format!("put filter segment {to:08}")).await?;
 
         let key = FtsSegment::key(namespace, to);
         let body = segment.encode()?;
-        let fts_resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&key)
-            .body(ByteStream::from(body.clone()))
-            .send()
-            .await
-            .with_context(|| format!("put fts segment {to:08}"))?;
-        cache.populate_after_put(bucket, &key, &body, fts_resp.e_tag());
+        put_and_cache(client, bucket, &key, &body, cache, &format!("put fts segment {to:08}")).await?;
 
         let mut vector_fields = meta.vector_fields.clone();
         if vector_fields.is_empty() && !meta.vector_field.is_empty() && meta.dimensions > 0 {
@@ -316,68 +316,28 @@ async fn write_vector_index(
     for l1 in vindex.l1.values() {
         let key = CentroidIndexL1::key(namespace, field, l1.coarse_id);
         let body = l1.encode()?;
-        let resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&key)
-            .body(ByteStream::from(body.clone()))
-            .send()
-            .await
-            .with_context(|| format!("put centroids-l1-{:08}", l1.coarse_id))?;
-        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+        put_and_cache(client, bucket, &key, &body, cache, &format!("put centroids-l1-{:08}", l1.coarse_id)).await?;
     }
 
     for (fine_id, cluster) in &vindex.clusters {
         let key = ClusterSegment::key(namespace, field, *fine_id);
         let body = cluster.encode()?;
-        let resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&key)
-            .body(ByteStream::from(body.clone()))
-            .send()
-            .await
-            .with_context(|| format!("put cluster {fine_id:08}"))?;
-        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+        put_and_cache(client, bucket, &key, &body, cache, &format!("put cluster {fine_id:08}")).await?;
     }
 
     if let Some(ref routing) = vindex.routing {
         let key = CentroidRouting::key(namespace, field);
         let body = routing.encode()?;
-        let resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&key)
-            .body(ByteStream::from(body.clone()))
-            .send()
-            .await
-            .context("put centroids-routing.bin")?;
-        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+        put_and_cache(client, bucket, &key, &body, cache, "put centroids-routing.bin").await?;
     }
 
     for ((coarse_id, l2_id), l2) in &vindex.l2 {
         let key = CentroidIndexL2::key(namespace, field, *coarse_id, *l2_id);
         let body = l2.encode()?;
-        let resp = client
-            .put_object()
-            .bucket(bucket)
-            .key(&key)
-            .body(ByteStream::from(body.clone()))
-            .send()
-            .await
-            .with_context(|| format!("put centroids-l2-{coarse_id:08}-{l2_id:08}"))?;
-        cache.populate_after_put(bucket, &key, &body, resp.e_tag());
+        put_and_cache(client, bucket, &key, &body, cache, &format!("put centroids-l2-{coarse_id:08}-{l2_id:08}")).await?;
     }
 
-    let l0_resp = client
-        .put_object()
-        .bucket(bucket)
-        .key(&l0_key)
-        .body(ByteStream::from(l0_body.clone()))
-        .send()
-        .await
-        .context("put centroids-l0.bin")?;
-    cache.populate_after_put(bucket, &l0_key, &l0_body, l0_resp.e_tag());
+    put_and_cache(client, bucket, &l0_key, &l0_body, cache, "put centroids-l0.bin").await?;
     Ok(())
 }
 
