@@ -270,20 +270,6 @@ pub fn sync_legacy_vector_fields(meta: &mut NamespaceMeta) {
     }
 }
 
-/// Lookup indexed config for a vector attribute name.
-pub fn vector_field_config<'a>(meta: &'a NamespaceMeta, name: &str) -> Option<&'a VectorFieldConfig> {
-    meta.vector_fields
-        .iter()
-        .find(|f| f.name == name)
-        .or_else(|| {
-            if meta.vector_field == name && meta.dimensions > 0 {
-                None // caller should use effective_vector_fields for legacy-only meta
-            } else {
-                None
-            }
-        })
-}
-
 /// True when this field's index lives at legacy `index/centroids-l0.bin` (pre multi-column).
 pub fn vector_index_uses_legacy_paths(meta: &NamespaceMeta, field: &str) -> bool {
     meta.vector_fields.is_empty()
