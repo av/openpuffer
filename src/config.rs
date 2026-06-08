@@ -245,6 +245,10 @@ impl ServeArgs {
                 Some(PathBuf::from(s))
             }
         };
+        let ann_probes = AnnProbeConfig {
+            coarse: self.ann_coarse_probe.max(1),
+            fine: self.ann_fine_probe.max(1),
+        };
         AppConfig {
             listen: self.listen.clone(),
             bucket: self.s3_bucket.clone(),
@@ -255,15 +259,11 @@ impl ServeArgs {
                 max_upsert_rows: self.max_upsert_rows,
                 max_filter_batch_rows: self.max_filter_batch_rows,
             },
-            ann_probes: AnnProbeConfig {
-                coarse: self.ann_coarse_probe.max(1),
-                fine: self.ann_fine_probe.max(1),
+            ann_probes,
+            ann_build: AnnBuildConfig {
+                probes: ann_probes,
+                ann_version: self.ann_version,
             },
-            ann_build: AnnBuildConfig::from_probes(AnnProbeConfig {
-                coarse: self.ann_coarse_probe.max(1),
-                fine: self.ann_fine_probe.max(1),
-            })
-            .with_ann_version(self.ann_version),
             ann_rerank: self.ann_rerank,
             wal_corrupt_policy: WalCorruptPolicy::from_env_str(&self.wal_corrupt_policy),
         }
