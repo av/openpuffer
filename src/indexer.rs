@@ -899,15 +899,15 @@ async fn load_vector_l0_for_field(
 
     let use_legacy = vector_index_uses_legacy_paths(meta, field);
     let l0_key = CentroidIndexL0::key(namespace, field);
-    let l0_bytes = if let Some(b) = cache.get_bytes(client, bucket, &l0_key).await? {
-        Some(b)
-    } else if use_legacy {
-        cache
-            .get_bytes(client, bucket, &CentroidIndexL0::legacy_key(namespace))
-            .await?
-    } else {
-        None
-    };
+    let legacy_l0 = use_legacy.then(|| CentroidIndexL0::legacy_key(namespace));
+    let l0_bytes = cache_get_with_legacy_fallback(
+        client,
+        bucket,
+        cache,
+        &l0_key,
+        legacy_l0.as_deref(),
+    )
+    .await?;
     let Some(l0_bytes) = l0_bytes else {
         return Ok(None);
     };
@@ -969,6 +969,23 @@ async fn fetch_index_objects_from_cache(
     Ok(out)
 }
 
+/// Fetch bytes from cache, falling back to a legacy key when the namespace predates field-scoped paths.
+async fn cache_get_with_legacy_fallback(
+    client: &Client,
+    bucket: &str,
+    cache: &Arc<SegmentCache>,
+    key: &str,
+    legacy_key: Option<&str>,
+) -> Result<Option<Vec<u8>>> {
+    if let Some(b) = cache.get_bytes(client, bucket, key).await? {
+        return Ok(Some(b));
+    }
+    if let Some(lk) = legacy_key {
+        return cache.get_bytes(client, bucket, lk).await;
+    }
+    Ok(None)
+}
+
 /// Full vector index for one field (indexer maintenance, recall, warm prefetch — not per-query ANN).
 pub async fn load_vector_index_full_for_field(
     client: &Client,
@@ -1001,20 +1018,10 @@ pub async fn load_vector_index_full_for_field(
     let mut l1 = HashMap::new();
     for coarse_id in 0..l0.num_coarse {
         let key = CentroidIndexL1::key(namespace, field, coarse_id);
-        let bytes = if let Some(b) = cache.get_bytes(client, bucket, &key).await? {
-            Some(b)
-        } else if use_legacy {
-            cache
-                .get_bytes(
-                    client,
-                    bucket,
-                    &CentroidIndexL1::legacy_key(namespace, coarse_id),
-                )
-                .await?
-        } else {
-            None
-        };
-        let Some(bytes) = bytes else {
+        let legacy = use_legacy.then(|| CentroidIndexL1::legacy_key(namespace, coarse_id));
+        let Some(bytes) = cache_get_with_legacy_fallback(
+            client, bucket, cache, &key, legacy.as_deref(),
+        ).await? else {
             continue;
         };
         let seg = CentroidIndexL1::decode(&bytes)?;
@@ -1024,16 +1031,10 @@ pub async fn load_vector_index_full_for_field(
     let mut clusters = HashMap::new();
     for fine_id in 0..l0.num_fine_total {
         let key = ClusterSegment::key(namespace, field, fine_id);
-        let bytes = if let Some(b) = cache.get_bytes(client, bucket, &key).await? {
-            Some(b)
-        } else if use_legacy {
-            cache
-                .get_bytes(client, bucket, &ClusterSegment::legacy_key(namespace, fine_id))
-                .await?
-        } else {
-            None
-        };
-        let Some(bytes) = bytes else {
+        let legacy = use_legacy.then(|| ClusterSegment::legacy_key(namespace, fine_id));
+        let Some(bytes) = cache_get_with_legacy_fallback(
+            client, bucket, cache, &key, legacy.as_deref(),
+        ).await? else {
             continue;
         };
         let seg = ClusterSegment::decode(&bytes)?;
