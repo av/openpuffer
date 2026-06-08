@@ -38,6 +38,8 @@ source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
 # shellcheck source=scripts/lib/tier-validate.sh
 source "$ROOT/scripts/lib/tier-validate.sh"
+# shellcheck source=scripts/lib/namespace-meta.sh
+source "$ROOT/scripts/lib/namespace-meta.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -98,6 +100,7 @@ init_run_context() {
   NAMESPACE="${OPENPUFFER_INGEST_NAMESPACE:-bench-large-${NUM_DOCS}}"
   V2_NS_URL="${BASE_URL}/v2/namespaces/${NAMESPACE}"
   V1_NS_URL="${BASE_URL}/v1/namespaces/${NAMESPACE}"
+  NS_URL="$V1_NS_URL"  # alias for shared verify_namespace_meta
   load_manifest_defaults "$mf"
   BATCH_SLEEP_SEC="${BATCH_SLEEP:-$MANIFEST_SLEEP}"
 }
@@ -197,36 +200,6 @@ run_dry_run() {
   fi
   large_preflight_aws_time_estimate "$TIER"
   exit 0
-}
-
-verify_namespace_meta() {
-  local meta
-  meta="$(curl -sf "${V1_NS_URL}" 2>/dev/null || true)"
-  if [[ -z "$meta" ]]; then
-    echo "namespace ${NAMESPACE} not found at ${V1_NS_URL}" >&2
-    return 1
-  fi
-
-  local cursor commit pref_ann
-  cursor="$(echo "$meta" | jq -r '.index_cursor // 0')"
-  commit="$(echo "$meta" | jq -r '.wal_commit_seq // 0')"
-  pref_ann="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
-
-  if [[ "$commit" == "0" ]]; then
-    echo "namespace ${NAMESPACE}: wal_commit_seq is 0 (no ingest?)" >&2
-    return 1
-  fi
-  if [[ "$cursor" != "$commit" ]]; then
-    echo "namespace ${NAMESPACE}: index_cursor=${cursor} != wal_commit_seq=${commit}" >&2
-    return 1
-  fi
-  if [[ "$pref_ann" != "3" ]]; then
-    echo "namespace ${NAMESPACE}: preferred_ann_version=${pref_ann} (expected 3)" >&2
-    return 1
-  fi
-
-  echo "$meta"
-  return 0
 }
 
 wait_until_indexed() {

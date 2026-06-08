@@ -12,6 +12,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/lib/namespace-meta.sh
+source "$ROOT/scripts/lib/namespace-meta.sh"
 
 DRY_RUN=0
 for arg in "$@"; do
@@ -102,37 +104,6 @@ wait_for_health() {
   done
   echo "serve did not become healthy on ${BASE_URL}/health" >&2
   return 1
-}
-
-# Returns JSON meta on stdout; exits 1 if not ready for cold query.
-verify_namespace_meta() {
-  local meta
-  meta="$(curl -sf "${NS_URL}" 2>/dev/null || true)"
-  if [[ -z "$meta" ]]; then
-    echo "namespace ${NAMESPACE} not found at ${NS_URL}" >&2
-    return 1
-  fi
-
-  local cursor commit pref_ann
-  cursor="$(echo "$meta" | jq -r '.index_cursor // 0')"
-  commit="$(echo "$meta" | jq -r '.wal_commit_seq // 0')"
-  pref_ann="$(echo "$meta" | jq -r '.preferred_ann_version // 2')"
-
-  if [[ "$commit" == "0" ]]; then
-    echo "namespace ${NAMESPACE}: wal_commit_seq is 0 (no ingest?)" >&2
-    return 1
-  fi
-  if [[ "$cursor" != "$commit" ]]; then
-    echo "namespace ${NAMESPACE}: index_cursor=${cursor} != wal_commit_seq=${commit}" >&2
-    return 1
-  fi
-  if [[ "$pref_ann" != "3" ]]; then
-    echo "namespace ${NAMESPACE}: preferred_ann_version=${pref_ann} (expected 3 for v0.3 1M)" >&2
-    return 1
-  fi
-
-  echo "$meta"
-  return 0
 }
 
 wait_until_indexed() {
