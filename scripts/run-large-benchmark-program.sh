@@ -29,6 +29,8 @@ cd "$ROOT"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 DRY_RUN=0
@@ -93,13 +95,7 @@ EOF
   shift
 done
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    echo "unknown tier: ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+validate_tier "$TIER"
 
 OP_RESULTS="${OPENPUFFER_BENCH_RESULTS:-$ROOT/benchmarks/results/large-aws-${TIER}.json}"
 TPUF_RESULTS="${TURBOPUFFER_BENCH_RESULTS:-$ROOT/benchmarks/results/tpuf-${TIER}.json}"

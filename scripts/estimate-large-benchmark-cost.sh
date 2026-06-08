@@ -14,6 +14,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
 source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 WARM=0
@@ -44,13 +46,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    echo "estimate-large-benchmark-cost: unknown tier ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+validate_tier "$TIER" "estimate-large-benchmark-cost"
 
 if [[ "$JSON" == "1" ]]; then
   large_benchmark_cost_compute "$TIER" "$WARM"

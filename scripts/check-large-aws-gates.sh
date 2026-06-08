@@ -15,6 +15,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-aws-gates.sh
 source "$ROOT/scripts/lib/large-benchmark-aws-gates.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER=""
 JSON_PATH=""
@@ -61,13 +63,7 @@ JSON_TIER="$(jq -r '.tier // empty' "$JSON_PATH")"
 [[ -z "$TIER" && -n "$JSON_TIER" ]] && TIER="$JSON_TIER"
 [[ -z "$TIER" ]] && TIER="l1"
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    echo "check-large-aws-gates: unknown tier: ${TIER}" >&2
-    exit 1
-    ;;
-esac
+validate_tier "$TIER" "check-large-aws-gates"
 
 RECALL_GATE="$(large_benchmark_tier_recall_gate "$TIER")"
 

@@ -23,6 +23,8 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 # shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
 source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 EXPORT_CREDS=0
 SKIP_S3=0
@@ -50,12 +52,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    large_benchmark_exit_preflight "preflight-aws-ec2: unknown tier ${TIER} (use l1, l2, or l3)"
-    ;;
-esac
+validate_tier "$TIER" "preflight-aws-ec2"
 
 IMDS_BASE="http://169.254.169.254/latest"
 IMDS_TOKEN=""

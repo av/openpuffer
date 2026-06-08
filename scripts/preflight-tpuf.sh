@@ -22,6 +22,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER="${TURBOPUFFER_BENCH_TIER:-l1}"
 WARN_ONLY=0
@@ -56,12 +58,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    large_benchmark_exit_preflight "preflight-tpuf: unknown tier ${TIER} (use l1, l2, or l3)"
-    ;;
-esac
+validate_tier "$TIER" "preflight-tpuf"
 
 IMDS_BASE="http://169.254.169.254/latest"
 IMDS_TOKEN=""

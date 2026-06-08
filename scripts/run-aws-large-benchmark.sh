@@ -22,6 +22,8 @@ export LARGE_PREFLIGHT_ROOT="$ROOT"
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
 # shellcheck source=scripts/lib/estimate-large-benchmark-cost.sh
 source "$ROOT/scripts/lib/estimate-large-benchmark-cost.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER="${OPENPUFFER_BENCH_TIER:-l1}"
 DRY_RUN=0
@@ -49,13 +51,7 @@ for arg in "$@"; do
   esac
 done
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    echo "unknown tier: ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+validate_tier "$TIER"
 
 RESULTS_DEFAULT="$ROOT/benchmarks/results/large-aws-${TIER}.json"
 RESULTS="${OPENPUFFER_BENCH_RESULTS:-$RESULTS_DEFAULT}"

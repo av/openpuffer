@@ -16,6 +16,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-tpuf-gates.sh
 source "$ROOT/scripts/lib/large-benchmark-tpuf-gates.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER=""
 JSON_PATH=""
@@ -63,13 +65,7 @@ BENCHMARK="$(jq -r '.benchmark // empty' "$JSON_PATH")"
 [[ -z "$TIER" && -n "$JSON_TIER" ]] && TIER="$JSON_TIER"
 [[ -z "$TIER" ]] && TIER="l1"
 
-case "$TIER" in
-  l1|l2|l3) ;;
-  *)
-    echo "check-tpuf-gates: unknown tier: ${TIER}" >&2
-    exit 1
-    ;;
-esac
+validate_tier "$TIER" "check-tpuf-gates"
 
 expected_benchmark="cold_tpuf_${TIER}"
 if [[ -n "$BENCHMARK" && "$BENCHMARK" != "$expected_benchmark" ]]; then
