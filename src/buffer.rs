@@ -415,7 +415,21 @@ impl WriteBufferManager {
                     let waiters = {
                         let mut st = buf.state.lock().await;
                         let _ = st.timer.take();
-                        std::mem::take(&mut st.waiters)
+                        // Only drain waiters as "committed" when the buffer is still empty.
+                        // Between the empty-check above and this lock acquisition, a new
+                        // write() may have enqueued data + waiters.  Those waiters must NOT
+                        // be told "success" — their data hasn't been committed yet.  Leave
+                        // them for the next flush cycle.
+                        if st.upserts.is_empty()
+                            && st.patches.is_empty()
+                            && st.deletes.is_empty()
+                            && st.schema_patch.is_none()
+                            && st.distance_metric.is_none()
+                        {
+                            std::mem::take(&mut st.waiters)
+                        } else {
+                            vec![]
+                        }
                     };
                     for w in waiters {
                         let batch = CommittedBatch {
