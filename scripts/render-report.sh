@@ -769,6 +769,38 @@ resolve_jq_input() {
   fi
 }
 
+render_query_type_table() {
+  local query_type="$1" heading="$2" op_count="$3" tpuf_count="$4" op_jq="$5" tpuf_jq="$6"
+  local runs_key="${query_type}_query_runs"
+  if [[ ("$op_count" == "0" || "$op_count" == "null") && ("$tpuf_count" == "0" || "$tpuf_count" == "null") ]]; then
+    return 0
+  fi
+  echo "#### ${heading}"
+  echo ""
+  echo "| Query | openpuffer (ms) | turbopuffer (ms) | Ratio (op/tpuf) |"
+  echo "|-------|----------------:|-----------------:|----------------:|"
+  jq -s -r --arg key "$runs_key" '
+    (.[0].[$key] // []) as $op
+    | (.[1].[$key] // []) as $tpuf
+    | ([$op[] | {name: .query_name, op: .latency_ms}]
+       + [$tpuf[] | {name: .query_name, tpuf: .latency_ms}])
+    | group_by(.name)
+    | map({
+        name: .[0].name,
+        op: (map(.op) | map(select(. != null)) | .[0] // null),
+        tpuf: (map(.tpuf) | map(select(. != null)) | .[0] // null)
+      })
+    | sort_by(.name)
+    | .[]
+    | "| \(.name) | \(.op // "—") | \(.tpuf // "—") | "
+      + (if (.op != null and .tpuf != null and .tpuf != 0)
+         then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
+         else "—" end)
+      + " |"
+  ' "$op_jq" "$tpuf_jq"
+  echo ""
+}
+
 render_secondary_query_table() {
   local tier="$1" op_file="$2" tpuf_file="$3"
   local op_jq tpuf_jq
@@ -792,59 +824,8 @@ Per-query latency from \`filter_query_runs\` / \`hybrid_query_runs\` (1× each).
 
 EOF
 
-  if [[ "$op_nf" != "0" && "$op_nf" != "null" || "$tpuf_nf" != "0" && "$tpuf_nf" != "null" ]]; then
-    echo "#### Filter queries"
-    echo ""
-    echo "| Query | openpuffer (ms) | turbopuffer (ms) | Ratio (op/tpuf) |"
-    echo "|-------|----------------:|-----------------:|----------------:|"
-    jq -s -r '
-      (.[0].filter_query_runs // []) as $op
-      | (.[1].filter_query_runs // []) as $tpuf
-      | ([$op[] | {name: .query_name, op: .latency_ms}]
-         + [$tpuf[] | {name: .query_name, tpuf: .latency_ms}])
-      | group_by(.name)
-      | map({
-          name: .[0].name,
-          op: (map(.op) | map(select(. != null)) | .[0] // null),
-          tpuf: (map(.tpuf) | map(select(. != null)) | .[0] // null)
-        })
-      | sort_by(.name)
-      | .[]
-      | "| \(.name) | \(.op // "—") | \(.tpuf // "—") | "
-        + (if (.op != null and .tpuf != null and .tpuf != 0)
-           then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
-           else "—" end)
-        + " |"
-    ' "$op_jq" "$tpuf_jq"
-    echo ""
-  fi
-
-  if [[ "$op_nh" != "0" && "$op_nh" != "null" || "$tpuf_nh" != "0" && "$tpuf_nh" != "null" ]]; then
-    echo "#### Hybrid queries"
-    echo ""
-    echo "| Query | openpuffer (ms) | turbopuffer (ms) | Ratio (op/tpuf) |"
-    echo "|-------|----------------:|-----------------:|----------------:|"
-    jq -s -r '
-      (.[0].hybrid_query_runs // []) as $op
-      | (.[1].hybrid_query_runs // []) as $tpuf
-      | ([$op[] | {name: .query_name, op: .latency_ms}]
-         + [$tpuf[] | {name: .query_name, tpuf: .latency_ms}])
-      | group_by(.name)
-      | map({
-          name: .[0].name,
-          op: (map(.op) | map(select(. != null)) | .[0] // null),
-          tpuf: (map(.tpuf) | map(select(. != null)) | .[0] // null)
-        })
-      | sort_by(.name)
-      | .[]
-      | "| \(.name) | \(.op // "—") | \(.tpuf // "—") | "
-        + (if (.op != null and .tpuf != null and .tpuf != 0)
-           then ((.op / .tpuf * 100 | round / 100 | tostring) + "×")
-           else "—" end)
-        + " |"
-    ' "$op_jq" "$tpuf_jq"
-    echo ""
-  fi
+  render_query_type_table "filter" "Filter queries" "$op_nf" "$tpuf_nf" "$op_jq" "$tpuf_jq"
+  render_query_type_table "hybrid" "Hybrid queries" "$op_nh" "$tpuf_nh" "$op_jq" "$tpuf_jq"
 
   local op_wf op_wh
   op_wf="$(jq_field "$op_file" '.warm_filter_query_runs | length')"
