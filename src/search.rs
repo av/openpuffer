@@ -160,10 +160,7 @@ pub fn execute_query(ctx: &QueryContext<'_>, req: &QueryRequest) -> Result<Query
     let mut candidates = planner.collect_candidates(&ranker, CandidateMerge::Union)?;
     if let Some(expr) = filter_expr.as_ref() {
         let allowed = matching_doc_ids_for_filter(&effective_ctx, expr)?;
-        candidates = candidates
-            .into_iter()
-            .filter(|id| allowed.contains(id))
-            .collect();
+        candidates.retain(|id| allowed.contains(id));
     }
     let scored = if candidates.is_empty() {
         Vec::new()

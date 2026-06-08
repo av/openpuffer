@@ -32,6 +32,10 @@ impl ViewCache {
         self.views.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.views.is_empty()
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.views.contains_key(name)
     }

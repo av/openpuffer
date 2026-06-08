@@ -379,7 +379,7 @@ impl CentroidIndexL0 {
         // Preserve on-disk `has_routing` (true only when indexer wrote centroids-routing.bin).
         let probes = build
             .map(|b| b.probes)
-            .unwrap_or_else(AnnProbeConfig::default);
+            .unwrap_or_default();
         if build.is_some() || self.probe_coarse == 0 {
             self.probe_coarse = probes.coarse;
         }
@@ -419,7 +419,7 @@ impl CentroidIndexL0 {
         self.fine_counts
             .iter()
             .take(coarse_id as usize)
-            .map(|&c| c)
+            .copied()
             .sum()
     }
 
@@ -1646,7 +1646,7 @@ impl VectorIndex {
         if self.l0.has_routing {
             keys.push(CentroidRouting::key(namespace, field));
         }
-        for ((coarse_id, l2_id), _) in &self.l2 {
+        for (coarse_id, l2_id) in self.l2.keys() {
             keys.push(CentroidIndexL2::key(namespace, field, *coarse_id, *l2_id));
         }
         keys.sort();
@@ -1778,7 +1778,7 @@ impl XorShift64 {
             .wrapping_add(k as u64);
         if let Some((_, v)) = pairs.first() {
             for (i, &x) in v.iter().take(8).enumerate() {
-                s = s.wrapping_add((x.to_bits() as u64).wrapping_mul(i as u64 + 1));
+                s = s.wrapping_add(x.to_bits().wrapping_mul(i as u64 + 1));
             }
         }
         if s == 0 {
@@ -1832,7 +1832,7 @@ fn kmeans_plus_plus_init(
             total += min_d;
         }
         let pick = if total <= f64::EPSILON {
-            (centroids.len() % n).max(0)
+            centroids.len() % n
         } else {
             let r = rng.unit_interval() * total;
             let mut acc = 0.0f64;

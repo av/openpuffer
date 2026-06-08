@@ -698,7 +698,7 @@ async fn write_namespace(
 
     let distance_metric = match body.distance_metric.as_deref() {
         None => None,
-        Some(s) if s.is_empty() => None,
+        Some("") => None,
         Some(s) => match parse_distance_metric(s) {
             Ok(m) => Some(m),
             Err(e) => return api_error(StatusCode::BAD_REQUEST, format!("{e:#}")),
@@ -888,9 +888,7 @@ fn apply_column_batch(
             .as_str()
             .ok_or_else(|| "id values must be strings".to_string())?
             .to_string();
-        if let Err(msg) = validate_doc_id(&id) {
-            return Err(msg);
-        }
+        validate_doc_id(&id)?;
         let mut attrs = std::collections::HashMap::new();
         for (key, values) in obj {
             if key == "id" {
