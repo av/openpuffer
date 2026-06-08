@@ -129,7 +129,9 @@ pub fn plan_cold_query(
     l1_by_field: Option<&HashMap<String, HashMap<u32, CentroidIndexL1>>>,
     opts: ColdPlanOpts,
 ) -> ColdQueryPlan {
-    let _ = validate_cold_namespace(namespace);
+    if validate_cold_namespace(namespace).is_err() {
+        return ColdQueryPlan::default();
+    }
     let mut plan = ColdQueryPlan::default();
 
     if opts.include_wal_round {
