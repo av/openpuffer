@@ -422,22 +422,11 @@ def load_op_ingest_throughput() -> list[tuple[int, float, float]]:
     return rows
 
 
-def _read_cold_json(path: Path) -> MeasuredPoint | None:
+def _read_scaling_json(path: Path, *, expected_path: str) -> MeasuredPoint | None:
     if not path.is_file():
         return None
     row = json.loads(path.read_text(encoding="utf-8"))
-    if row.get("path") != "cold":
-        return None
-    n = int(row["namespace_docs"])
-    label = path.stem.removeprefix("op-scaling-")
-    return MeasuredPoint(n=n, p50_ms=float(row["p50_ms"]), label=label)
-
-
-def _read_warm_json(path: Path) -> MeasuredPoint | None:
-    if not path.is_file():
-        return None
-    row = json.loads(path.read_text(encoding="utf-8"))
-    if row.get("path") != "warm":
+    if row.get("path") != expected_path:
         return None
     n = int(row["namespace_docs"])
     label = path.stem.removeprefix("op-scaling-")
@@ -448,7 +437,7 @@ def load_op_warm_points() -> list[MeasuredPoint]:
     """Warm tiers from op-scaling-*-warm.json (10k, 100k)."""
     points: list[MeasuredPoint] = []
     for path in sorted(RESULTS.glob("op-scaling-*-warm.json")):
-        mp = _read_warm_json(path)
+        mp = _read_scaling_json(path, expected_path="warm")
         if mp is not None:
             points.append(mp)
     points.sort(key=lambda p: p.n)
@@ -471,11 +460,11 @@ def load_op_scaling_points() -> list[MeasuredPoint]:
             continue
         if path.name == SYNTH128_PATH.name:
             continue
-        mp = _read_cold_json(path)
+        mp = _read_scaling_json(path, expected_path="cold")
         if mp is None or mp.n not in FIT_DOC_COUNTS:
             continue
         points.append(mp)
-    synth = _read_cold_json(SYNTH128_PATH)
+    synth = _read_scaling_json(SYNTH128_PATH, expected_path="cold")
     if synth is not None:
         points.append(synth)
     points.sort(key=lambda p: (p.n, p.label))
