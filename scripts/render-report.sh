@@ -157,125 +157,20 @@ PY
 
 validate_measured_json_pair() {
   local tier="$1" op_file="$2" tpuf_file="$3"
-  python3 - "$tier" "$op_file" "$tpuf_file" <<'PY'
-import json, sys
-from pathlib import Path
-
-tier, op_path, tpuf_path = sys.argv[1:4]
-
-OP_REQUIRED = (
-    "benchmark", "tier", "environment", "workload_dir", "namespace",
-    "namespace_docs", "dimensions", "seed", "embedding_fn",
-    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
-    "index_cursor_eq_wal_commit_seq",
-)
-TPUF_REQUIRED = (
-    "benchmark", "tier", "environment", "workload_dir", "namespace",
-    "namespace_docs", "dimensions", "seed", "embedding_fn",
-    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
-    "index_up_to_date",
-)
-MATCH_KEYS = ("tier", "namespace_docs", "dimensions", "seed", "embedding_fn")
-
-def load(path: str) -> dict:
-    p = Path(path)
-    if not p.is_file():
-        raise SystemExit(f"render-report: missing JSON: {path}")
-    try:
-        return json.loads(p.read_text())
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"render-report: invalid JSON {path}: {exc}") from exc
-
-def require(data: dict, keys: tuple, label: str, path: str) -> None:
-    missing = [k for k in keys if k not in data or data[k] is None]
-    if missing:
-        raise SystemExit(
-            f"render-report: {label} schema missing fields in {path}: {', '.join(missing)}"
-        )
-
-op = load(op_path)
-tpuf = load(tpuf_path)
-require(op, OP_REQUIRED, "openpuffer", op_path)
-require(tpuf, TPUF_REQUIRED, "turbopuffer", tpuf_path)
-
-if str(op.get("tier")) != tier:
-    raise SystemExit(
-        f"render-report: openpuffer tier={op.get('tier')!r} does not match --tier {tier}"
-    )
-if str(tpuf.get("tier")) != tier:
-    raise SystemExit(
-        f"render-report: turbopuffer tier={tpuf.get('tier')!r} does not match --tier {tier}"
-    )
-
-for key in MATCH_KEYS:
-    if op.get(key) != tpuf.get(key):
-        raise SystemExit(
-            f"render-report: workload mismatch on {key}: openpuffer={op.get(key)!r} "
-            f"turbopuffer={tpuf.get(key)!r}"
-        )
-
-op_env = str(op.get("environment", ""))
-if "minio" in op_env.lower():
-    print(
-        f"render-report: warning openpuffer environment={op_env!r} "
-        "(not aws-s3; measured COMPARISON rows expect live AWS JSON)",
-        file=sys.stderr,
-    )
-
-print(f"render-report: schema OK tier={tier} op={op_path} tpuf={tpuf_path}", file=sys.stderr)
-PY
+  PYTHONPATH="$ROOT/benchmarks/report${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c "
+import sys; from render_report_schema import validate_pair
+validate_pair(sys.argv[1], sys.argv[2], sys.argv[3])
+" "$tier" "$op_file" "$tpuf_file"
 }
 
 validate_measured_json_single() {
   local side="$1" tier="$2" path="$3"
-  python3 - "$side" "$tier" "$path" <<'PY'
-import json, sys
-from pathlib import Path
-
-side, tier, path = sys.argv[1:4]
-
-OP_REQUIRED = (
-    "benchmark", "tier", "environment", "workload_dir", "namespace",
-    "namespace_docs", "dimensions", "seed", "embedding_fn",
-    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
-    "index_cursor_eq_wal_commit_seq",
-)
-TPUF_REQUIRED = (
-    "benchmark", "tier", "environment", "workload_dir", "namespace",
-    "namespace_docs", "dimensions", "seed", "embedding_fn",
-    "p50_query_latency_ms", "p95_query_latency_ms", "recall_at_10",
-    "index_up_to_date",
-)
-REQUIRED = OP_REQUIRED if side == "op" else TPUF_REQUIRED
-LABEL = "openpuffer" if side == "op" else "turbopuffer"
-
-p = Path(path)
-if not p.is_file():
-    raise SystemExit(f"render-report: missing JSON: {path}")
-try:
-    data = json.loads(p.read_text())
-except json.JSONDecodeError as exc:
-    raise SystemExit(f"render-report: invalid JSON {path}: {exc}") from exc
-
-missing = [k for k in REQUIRED if k not in data or data[k] is None]
-if missing:
-    raise SystemExit(
-        f"render-report: {LABEL} schema missing fields in {path}: {', '.join(missing)}"
-    )
-if str(data.get("tier")) != tier:
-    raise SystemExit(
-        f"render-report: {LABEL} tier={data.get('tier')!r} does not match --tier {tier}"
-    )
-
-if side == "op" and "minio" in str(data.get("environment", "")).lower():
-    print(
-        f"render-report: warning openpuffer environment={data.get('environment')!r} "
-        "(not aws-s3; measured COMPARISON rows expect live AWS JSON)",
-        file=sys.stderr,
-    )
-
-print(f"render-report: schema OK tier={tier} {LABEL}={path} (partial, single side)", file=sys.stderr)
-PY
+  PYTHONPATH="$ROOT/benchmarks/report${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c "
+import sys; from render_report_schema import validate_single
+validate_single(sys.argv[1], sys.argv[2], sys.argv[3])
+" "$side" "$tier" "$path"
 }
 
 json_file_exists() {
