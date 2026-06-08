@@ -2092,7 +2092,8 @@ pub fn measure_recall_at_k(
                 .collect()
         };
         let hits = brute.iter().filter(|id| ann.contains(*id)).count();
-        recall_sum += hits as f64 / top_k as f64;
+        let denom = brute.len().min(top_k).max(1);
+        recall_sum += hits as f64 / denom as f64;
     }
     recall_sum / queries as f64
 }
@@ -3083,5 +3084,40 @@ mod tests {
         let plus = super::kmeans_plus_plus_init(&pairs, k, metric);
         let first_k: Vec<Vec<f64>> = pairs.iter().take(k).map(|(_, v)| v.clone()).collect();
         assert_ne!(plus, first_k, "k-means++ should not equal first-k seeding");
+    }
+
+    #[test]
+    fn measure_recall_at_k_perfect_when_corpus_smaller_than_top_k() {
+        // When the corpus has fewer docs than top_k, brute-force returns fewer
+        // than top_k results.  The denominator must be brute.len(), not top_k,
+        // otherwise perfect retrieval reports fractional recall.
+        let dim = 4;
+        let mut docs = Vec::new();
+        let mut vectors = Vec::new();
+        for i in 0..3 {
+            let v = bench_synthetic_embedding(i, dim);
+            let id = format!("d{i}");
+            vectors.push((id.clone(), v.clone()));
+            docs.push(super::tests::vec_doc(&id, v));
+        }
+        let schema = serde_json::json!({ "embedding": format!("[{dim}]f32") });
+        let index = VectorIndex::build(
+            1,
+            "embedding",
+            DistanceMetric::CosineDistance,
+            &docs,
+            &schema,
+            AnnBuildConfig::default(),
+        )
+        .unwrap()
+        .expect("tiny index");
+
+        let view = |id: &str| vectors.iter().find(|(d, _)| d == id).map(|(_, v)| v.clone());
+        // top_k=10 but only 3 docs — denominator must be 3, not 10.
+        let recall = measure_recall_at_k(&index, &vectors, 1, 10, false, view);
+        assert!(
+            (recall - 1.0).abs() < 1e-9,
+            "expected perfect recall 1.0, got {recall}"
+        );
     }
 }

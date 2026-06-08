@@ -24,7 +24,7 @@ pub async fn fetch_meta(
     bucket: &str,
     namespace: &str,
 ) -> Result<Option<(NamespaceMeta, Option<String>)>> {
-    get_meta(client, bucket, &meta_key(namespace)).await
+    get_meta_with_retry(client, bucket, &meta_key(namespace)).await
 }
 
 /// Fetch and decode one WAL segment.
@@ -277,14 +277,6 @@ async fn put_wal_with_retry(
         .map(|e| e.into_service_error())
         .map(|s| anyhow!("put wal segment {seq:08}: {s}"))
         .unwrap_or_else(|| anyhow!("put wal segment {seq:08}")))
-}
-
-async fn get_meta(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-) -> Result<Option<(NamespaceMeta, Option<String>)>> {
-    get_meta_with_retry(client, bucket, key).await
 }
 
 async fn get_meta_with_retry(
