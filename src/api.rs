@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::export::MAX_EXPORT_LIMIT;
 use crate::limits::{self, validate_namespace_name};
 use crate::models::{
-    validate_doc_id, ApiErrorResponse, ColdPlanDebugResponse, Document, ExportRequest,
+    validate_doc_id, ApiErrorResponse, Document, ExportRequest,
     ExportResponse, HealthResponse, NamespaceSummary, NamespacesResponse, QueryRequest,
     ReadyResponse,
     RecallRequest, RecallResponse, WriteRequest,
@@ -299,10 +299,7 @@ async fn export_namespace_impl(
         Ok(page) => export_page_response(page, format),
         Err(e) => {
             error!("export namespace {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -369,11 +366,8 @@ async fn recall_namespace_handler(
         return api_error(StatusCode::BAD_REQUEST, "top_k must be at least 1");
     }
     if let Err(e) = state.storage.require_namespace(&name).await {
-        if e.to_string().contains("namespace not found") {
-            return api_error(StatusCode::NOT_FOUND, "namespace not found");
-        }
         error!("recall namespace existence {name}: {e:#}");
-        return storage_error_response(e);
+        return namespace_or_storage_error(e);
     }
     match state
         .storage
@@ -416,10 +410,7 @@ async fn recall_namespace_handler(
         }
         Err(e) => {
             error!("recall load {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -435,10 +426,7 @@ async fn warm_namespace_handler(
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(e) => {
             error!("warm namespace {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -483,10 +471,7 @@ async fn cold_plan_debug(
         Ok(plan) => (StatusCode::OK, Json(plan)).into_response(),
         Err(e) => {
             error!("cold-plan debug {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -502,10 +487,7 @@ async fn get_namespace_metadata(
         Ok(meta) => (StatusCode::OK, Json(meta)).into_response(),
         Err(e) => {
             error!("namespace metadata {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -936,11 +918,8 @@ async fn query_namespace(
         return resp;
     }
     if let Err(e) = state.storage.require_namespace(&name).await {
-        if e.to_string().contains("namespace not found") {
-            return api_error(StatusCode::NOT_FOUND, "namespace not found");
-        }
         error!("query namespace existence {name}: {e:#}");
-        return storage_error_response(e);
+        return namespace_or_storage_error(e);
     }
     let consistency = match search::QueryConsistency::parse(body.consistency.as_deref()) {
         Ok(c) => c,
@@ -991,10 +970,7 @@ async fn query_namespace(
         }
         Err(e) => {
             error!("query load {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -1014,10 +990,7 @@ async fn delete_namespace(
             .into_response(),
         Err(e) => {
             error!("delete namespace {name}: {e:#}");
-            if e.to_string().contains("namespace not found") {
-                return api_error(StatusCode::NOT_FOUND, "namespace not found");
-            }
-            storage_error_response(e)
+            namespace_or_storage_error(e)
         }
     }
 }
@@ -1101,6 +1074,16 @@ fn copy_namespace_error_response(e: impl Into<anyhow::Error>) -> axum::response:
         return storage_error_response(err);
     };
     api_error(status, msg)
+}
+
+/// Classify a storage error as 404 when the message contains "namespace not found",
+/// else fall through to `storage_error_response` for generic S3/internal errors.
+fn namespace_or_storage_error(e: impl Into<anyhow::Error>) -> axum::response::Response {
+    let err: anyhow::Error = e.into();
+    if err.to_string().contains("namespace not found") {
+        return api_error(StatusCode::NOT_FOUND, "namespace not found");
+    }
+    storage_error_response(err)
 }
 
 fn storage_error_response(e: impl Into<anyhow::Error>) -> axum::response::Response {
