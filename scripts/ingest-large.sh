@@ -36,6 +36,8 @@ source "$ROOT/scripts/lib/ingest-large-retry.sh"
 source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 # shellcheck source=scripts/lib/benchmark-utc-timestamp.sh
 source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 DRY_RUN=0
 TIER="${OPENPUFFER_INGEST_TIER:-l1}"
@@ -72,15 +74,7 @@ ingest_large_guard_sequential_only() {
 ingest_large_guard_sequential_only
 
 # Tier defaults (wired to synthetic-128 manifests per plan).
-case "$TIER" in
-  l1) TIER_DOCS=100000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l1-100k" ;;
-  l2) TIER_DOCS=500000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l2-500k" ;;
-  l3) TIER_DOCS=1000000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l3-1m" ;;
-  *)
-    echo "unknown tier: ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+tier_defaults "$TIER"
 
 WORKLOAD_DIR="${OPENPUFFER_INGEST_WORKLOAD_DIR:-$TIER_WORKLOAD}"
 LISTEN="${OPENPUFFER_INGEST_LISTEN:-127.0.0.1:8080}"

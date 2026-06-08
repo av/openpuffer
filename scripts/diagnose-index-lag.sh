@@ -19,6 +19,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export LARGE_PREFLIGHT_ROOT="$ROOT"
 # shellcheck source=scripts/lib/large-benchmark-preflight.sh
 source "$ROOT/scripts/lib/large-benchmark-preflight.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 
 TIER="${OPENPUFFER_DIAG_TIER:-${OPENPUFFER_INGEST_TIER:-l1}}"
 NAMESPACE="${OPENPUFFER_DIAG_NAMESPACE:-}"
@@ -62,15 +64,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$TIER" in
-  l1) TIER_DOCS=100000 ;;
-  l2) TIER_DOCS=500000 ;;
-  l3) TIER_DOCS=1000000 ;;
-  *)
-    echo "diagnose-index-lag: unknown tier ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+tier_defaults "$TIER"
 
 if [[ -z "$NAMESPACE" ]]; then
   NAMESPACE="${OPENPUFFER_INGEST_NAMESPACE:-bench-large-${TIER_DOCS}}"

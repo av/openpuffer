@@ -23,3 +23,16 @@ validate_tier() {
       ;;
   esac
 }
+
+# tier_defaults TIER
+# Sets TIER_DOCS and TIER_WORKLOAD for the given tier.
+# Exits 1 if the tier is invalid (delegates to validate_tier).
+tier_defaults() {
+  local tier="${1:?tier_defaults: tier value required}"
+  validate_tier "$tier" "tier_defaults"
+  case "$tier" in
+    l1) TIER_DOCS=100000;  TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l1-100k" ;;
+    l2) TIER_DOCS=500000;  TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l2-500k" ;;
+    l3) TIER_DOCS=1000000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l3-1m" ;;
+  esac
+}

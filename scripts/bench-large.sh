@@ -23,6 +23,8 @@ source "$ROOT/scripts/lib/large-benchmark-serve-ready.sh"
 source "$ROOT/scripts/lib/large-benchmark-json-version.sh"
 # shellcheck source=scripts/lib/benchmark-utc-timestamp.sh
 source "$ROOT/scripts/lib/benchmark-utc-timestamp.sh"
+# shellcheck source=scripts/lib/tier-validate.sh
+source "$ROOT/scripts/lib/tier-validate.sh"
 large_benchmark_json_schema_version >/dev/null
 
 DRY_RUN=0
@@ -52,15 +54,7 @@ if [[ "$ANN_VERSION" != "3" ]]; then
 fi
 export OPENPUFFER_ANN_VERSION="$ANN_VERSION"
 
-case "$TIER" in
-  l1) TIER_DOCS=100000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l1-100k" ;;
-  l2) TIER_DOCS=500000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l2-500k" ;;
-  l3) TIER_DOCS=1000000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l3-1m" ;;
-  *)
-    echo "unknown tier: ${TIER} (use l1, l2, or l3)" >&2
-    exit 1
-    ;;
-esac
+tier_defaults "$TIER"
 
 WORKLOAD_DIR="${OPENPUFFER_BENCH_WORKLOAD_DIR:-$TIER_WORKLOAD}"
 LISTEN="${OPENPUFFER_BENCH_LISTEN:-127.0.0.1:8080}"
