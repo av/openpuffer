@@ -395,16 +395,7 @@ pub fn round1_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
 
 /// Round 1 index objects when `meta.json` is already in memory.
 pub fn round1_index_keys(namespace: &str, meta: &NamespaceMeta) -> Vec<String> {
-    let mut keys = Vec::new();
-    for cfg in effective_vector_fields(meta) {
-        if cfg.segment_id > 0 && meta.index_cursor > 0 && cfg.dimensions > 0 {
-            if vector_index_uses_legacy_paths(meta, &cfg.name) {
-                keys.push(CentroidIndexL0::legacy_key(namespace));
-            } else {
-                keys.push(CentroidIndexL0::key(namespace, &cfg.name));
-            }
-        }
-    }
+    let mut keys = l0_keys_for_meta(namespace, meta);
     if meta.fts_segment_id > 0 && meta.index_cursor > 0 {
         keys.push(FtsSegment::key(namespace, meta.fts_segment_id));
     }
