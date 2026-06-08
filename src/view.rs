@@ -223,7 +223,9 @@ fn update_doc_wal_seq_map(map: &mut HashMap<String, u64>, seq: u64, entry: &WalE
         }
     }
     for patch in &entry.patches {
-        map.insert(patch.id.clone(), seq);
+        if map.contains_key(&patch.id) {
+            map.insert(patch.id.clone(), seq);
+        }
     }
 }
 
@@ -281,5 +283,58 @@ mod tests {
         view.apply_committed(2, &e2).unwrap();
         assert_eq!(view.last_applied_wal_seq, 2);
         assert!(!view.docs.contains_key("a"));
+    }
+
+    #[test]
+    fn patch_nonexistent_doc_not_tracked_in_wal_seq_map() {
+        // Patching a doc that was never upserted (or was deleted) should NOT
+        // create an entry in doc_last_wal_seq, matching apply_entry behavior
+        // which skips patches for missing docs.
+        let mut map = HashMap::new();
+
+        // Patch "ghost" which doesn't exist in the map.
+        let patch_only = WalEntry::from_write(
+            vec![],
+            vec![Document {
+                id: "ghost".into(),
+                attributes: [("k".into(), json!(1))].into(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        update_doc_wal_seq_map(&mut map, 1, &patch_only);
+        assert!(
+            !map.contains_key("ghost"),
+            "patch to non-existent doc should not appear in wal seq map"
+        );
+
+        // Upsert "real", then patch it — patch SHOULD update the seq.
+        let upsert = WalEntry::from_write(
+            vec![Document {
+                id: "real".into(),
+                attributes: [("k".into(), json!(1))].into(),
+            }],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        update_doc_wal_seq_map(&mut map, 2, &upsert);
+        assert_eq!(map.get("real"), Some(&2));
+
+        let patch_real = WalEntry::from_write(
+            vec![],
+            vec![Document {
+                id: "real".into(),
+                attributes: [("k".into(), json!(2))].into(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        update_doc_wal_seq_map(&mut map, 3, &patch_real);
+        assert_eq!(
+            map.get("real"),
+            Some(&3),
+            "patch to existing doc should update wal seq"
+        );
     }
 }
