@@ -96,7 +96,7 @@ BASE_URL="http://${LISTEN}"
 init_run_context() {
   local mf
   mf="$(manifest_path)"
-  resolve_num_docs "$mf"
+  resolve_num_docs OPENPUFFER_INGEST_DOCS "$mf"
   NAMESPACE="${OPENPUFFER_INGEST_NAMESPACE:-bench-large-${NUM_DOCS}}"
   V2_NS_URL="${BASE_URL}/v2/namespaces/${NAMESPACE}"
   V1_NS_URL="${BASE_URL}/v1/namespaces/${NAMESPACE}"
@@ -154,20 +154,6 @@ load_manifest_defaults() {
   MANIFEST_SLEEP="$(jq -r '.ingest_cadence.sleep_seconds_between_batches // 1.1' "$mf")"
 }
 
-resolve_num_docs() {
-  local mf="$1"
-  if [[ -n "${OPENPUFFER_INGEST_DOCS:-}" ]]; then
-    NUM_DOCS="$OPENPUFFER_INGEST_DOCS"
-    return 0
-  fi
-  if [[ -n "$mf" && -f "$mf" ]]; then
-    NUM_DOCS="$(jq -r '.num_docs // empty' "$mf")"
-    if [[ -n "$NUM_DOCS" && "$NUM_DOCS" != "null" ]]; then
-      return 0
-    fi
-  fi
-  NUM_DOCS="$TIER_DOCS"
-}
 
 run_dry_run() {
   validate_toolchain

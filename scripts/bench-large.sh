@@ -74,7 +74,7 @@ init_run_context() {
   local mf qf
   mf="$(manifest_path)"
   qf="$(queries_path)"
-  resolve_num_docs "$mf"
+  resolve_num_docs OPENPUFFER_BENCH_DOCS "$mf"
   NAMESPACE="${OPENPUFFER_BENCH_NAMESPACE:-bench-large-${NUM_DOCS}}"
   DOCS="$NUM_DOCS"
   NS_URL="${BASE_URL}/v1/namespaces/${NAMESPACE}"
@@ -136,20 +136,6 @@ load_manifest_defaults() {
   MANIFEST_EMBEDDING_FN="$(jq -r '.embedding_fn // "bench_sin_v1"' "$mf")"
 }
 
-resolve_num_docs() {
-  local mf="$1"
-  if [[ -n "${OPENPUFFER_BENCH_DOCS:-}" ]]; then
-    NUM_DOCS="$OPENPUFFER_BENCH_DOCS"
-    return 0
-  fi
-  if [[ -n "$mf" && -f "$mf" ]]; then
-    NUM_DOCS="$(jq -r '.num_docs // empty' "$mf")"
-    if [[ -n "$NUM_DOCS" && "$NUM_DOCS" != "null" ]]; then
-      return 0
-    fi
-  fi
-  NUM_DOCS="$TIER_DOCS"
-}
 
 load_query_protocol() {
   local qf="$1"

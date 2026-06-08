@@ -36,3 +36,23 @@ tier_defaults() {
     l3) TIER_DOCS=1000000; TIER_WORKLOAD="benchmarks/workloads/synthetic-128/l3-1m" ;;
   esac
 }
+
+# resolve_num_docs ENV_VAR MANIFEST_FILE
+# Sets NUM_DOCS from: (1) the named env var override, (2) the manifest's
+# num_docs field, or (3) the TIER_DOCS default set by tier_defaults().
+resolve_num_docs() {
+  local env_var="${1:?resolve_num_docs: env var name required}"
+  local mf="$2"
+  local override="${!env_var:-}"
+  if [[ -n "$override" ]]; then
+    NUM_DOCS="$override"
+    return 0
+  fi
+  if [[ -n "$mf" && -f "$mf" ]]; then
+    NUM_DOCS="$(jq -r '.num_docs // empty' "$mf")"
+    if [[ -n "$NUM_DOCS" && "$NUM_DOCS" != "null" ]]; then
+      return 0
+    fi
+  fi
+  NUM_DOCS="$TIER_DOCS"
+}
