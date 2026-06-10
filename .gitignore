@@ -21,8 +21,8 @@ Thumbs.db
 .minio-data/
 docker-compose.override.yml
 
-# Facts agent cache (if any)
-.facts-agent/__pycache__/
+# Python cache
+__pycache__/
 
 # Live large-dataset measured JSON (G3/G4/G3b) — not ignored from git permanently;
 # operators `git add -f` after EC2 preflight. CI gate: scripts/check-benchmark-artifacts.sh
