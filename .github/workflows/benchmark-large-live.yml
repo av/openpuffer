@@ -63,11 +63,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Mask turbopuffer key in logs
-        if: secrets.TURBOPUFFER_API_KEY != ''
         run: echo "::add-mask::${{ secrets.TURBOPUFFER_API_KEY }}"
 
       - name: Mask S3 secret key in logs
-        if: secrets.OPENPUFFER_S3_SECRET_KEY != ''
         run: echo "::add-mask::${{ secrets.OPENPUFFER_S3_SECRET_KEY }}"
 
       - name: Check required repository secrets
