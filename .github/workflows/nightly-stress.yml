@@ -57,9 +57,9 @@ jobs:
       - name: cargo test --lib (100k ANN ignored)
         run: >-
           cargo test --release --lib
+          -- --ignored --nocapture
           recall_at_10_100k_synthetic_at_least_point_nine
           ann_v3_built_index_object_count_100k_under_five_hundred
-          -- --ignored --nocapture
 
   # Mid-tier between CI 10k and L1 100k; independent of large-dataset-program dry-run.
   stress-50k:

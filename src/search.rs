@@ -519,14 +519,12 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
                 parts.iter().product::<f64>()
             };
             // Min-max per signal can zero every normalized part for a doc that still has
-            // positive raw BM25/vector (common for strong WAL tail docs in hybrid Sum).
-            let keep = if sum {
-                score.is_finite()
-                    && (score > 0.0
-                        || any_positive_raw.get(id).copied().unwrap_or(false))
-            } else {
-                score.is_finite() && score > 0.0
-            };
+            // positive raw BM25/vector (common for WAL tail docs in hybrid queries).
+            // For Product, a single 0.0-normalized signal zeros the product even when
+            // other signals are strong — the same fallback applies.
+            let keep = score.is_finite()
+                && (score > 0.0
+                    || any_positive_raw.get(id).copied().unwrap_or(false));
             if keep {
                 out.push((id.clone(), score.max(0.0)));
             }
