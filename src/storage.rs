@@ -539,23 +539,38 @@ impl Storage {
             loaded.cold_s3_keys_fetched =
                 loaded.cold_s3_keys_fetched.saturating_add(l0_keys);
         }
-        if loaded.cold_vector_l0.is_empty() {
-            return Ok(());
-        }
-        let mut by_field: HashMap<String, Vec<f64>> = HashMap::new();
-        for (field, query) in probes {
-            by_field.insert(field.clone(), query.clone());
-        }
-        for (field, query) in by_field {
-            if loaded.vectors.contains_key(&field) {
-                continue;
+        if !loaded.cold_vector_l0.is_empty() {
+            let mut by_field: HashMap<String, Vec<f64>> = HashMap::new();
+            for (field, query) in probes {
+                by_field.insert(field.clone(), query.clone());
             }
-            let Some(l0) = loaded.cold_vector_l0.remove(&field) else {
-                continue;
-            };
-            let (vindex, probed_clusters) = if cold_batch {
-                let (vindex, probe_roundtrips, probe_keys, probed_clusters) =
-                    crate::s3_batch::fetch_cold_vector_probed(
+            for (field, query) in by_field {
+                if loaded.vectors.contains_key(&field) {
+                    continue;
+                }
+                let Some(l0) = loaded.cold_vector_l0.remove(&field) else {
+                    continue;
+                };
+                let (vindex, probed_clusters) = if cold_batch {
+                    let (vindex, probe_roundtrips, probe_keys, probed_clusters) =
+                        crate::s3_batch::fetch_cold_vector_probed(
+                            &self.client,
+                            &self.bucket,
+                            name,
+                            &loaded.meta,
+                            &field,
+                            l0,
+                            &query,
+                        )
+                        .await?;
+                    if let Some(rt) = loaded.storage_roundtrips.as_mut() {
+                        *rt = rt.saturating_add(probe_roundtrips);
+                    }
+                    loaded.cold_s3_keys_fetched =
+                        loaded.cold_s3_keys_fetched.saturating_add(probe_keys);
+                    (vindex, probed_clusters)
+                } else {
+                    crate::indexer::load_vector_index_probed_for_query(
                         &self.client,
                         &self.bucket,
                         name,
@@ -563,31 +578,15 @@ impl Storage {
                         &field,
                         l0,
                         &query,
+                        &self.cache,
                     )
-                    .await?;
-                if let Some(rt) = loaded.storage_roundtrips.as_mut() {
-                    *rt = rt.saturating_add(probe_roundtrips);
-                }
-                loaded.cold_s3_keys_fetched =
-                    loaded.cold_s3_keys_fetched.saturating_add(probe_keys);
-                (vindex, probed_clusters)
-            } else {
-                crate::indexer::load_vector_index_probed_for_query(
-                    &self.client,
-                    &self.bucket,
-                    name,
-                    &loaded.meta,
-                    &field,
-                    l0,
-                    &query,
-                    &self.cache,
-                )
-                .await?
-            };
-            loaded.ann_probed_clusters = loaded
-                .ann_probed_clusters
-                .saturating_add(probed_clusters);
-            loaded.vectors.insert(field, vindex);
+                    .await?
+                };
+                loaded.ann_probed_clusters = loaded
+                    .ann_probed_clusters
+                    .saturating_add(probed_clusters);
+                loaded.vectors.insert(field, vindex);
+            }
         }
         if cold_batch {
             crate::s3_batch::ensure_cold_fts_for_hybrid(
