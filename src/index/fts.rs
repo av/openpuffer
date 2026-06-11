@@ -204,10 +204,27 @@ fn value_to_text(v: &Value) -> String {
 }
 
 /// Fields to index from schema hints (string / full_text types), or all string attrs.
+///
+/// When any field carries an explicit `full_text_search: true` annotation, only those
+/// fields are returned (opt-in mode). Otherwise all string-typed fields are eligible
+/// (backward-compat for schemas without `full_text_search` annotations).
 pub fn index_fields_from_schema(schema: &Value) -> Vec<String> {
     let Some(obj) = schema.as_object() else {
         return Vec::new();
     };
+    let explicit: Vec<String> = obj
+        .iter()
+        .filter(|(_, spec)| {
+            spec.as_object()
+                .and_then(|m| m.get("full_text_search"))
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !explicit.is_empty() {
+        return explicit;
+    }
     let mut fields = Vec::new();
     for (name, spec) in obj {
         if field_is_indexable(spec) {
