@@ -520,11 +520,16 @@ impl<'a, 'b> QueryPlanner<'a, 'b> {
             };
             // Min-max per signal can zero every normalized part for a doc that still has
             // positive raw BM25/vector (common for WAL tail docs in hybrid queries).
-            // For Product, a single 0.0-normalized signal zeros the product even when
-            // other signals are strong — the same fallback applies.
-            let keep = score.is_finite()
-                && (score > 0.0
-                    || any_positive_raw.get(id).copied().unwrap_or(false));
+            // Only apply the fallback for Sum: one positive raw signal is enough to keep
+            // the doc.  For Product, a zero in any signal is semantically correct (the
+            // doc failed one criterion), so drop it.
+            let keep = if sum {
+                score.is_finite()
+                    && (score > 0.0
+                        || any_positive_raw.get(id).copied().unwrap_or(false))
+            } else {
+                score.is_finite() && score > 0.0
+            };
             if keep {
                 out.push((id.clone(), score.max(0.0)));
             }
